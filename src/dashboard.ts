@@ -34,6 +34,7 @@ export function buildDashboard(input: {
   snapshot: Snapshot | null;
   discoveryError: string | null;
   source: "mock" | "host";
+  ignored?: { not_agent_vm: number; invalid_project_name: number } | null;
 }): Record<string, unknown> {
   const { store, principal } = input;
   const grants = [...principal.grants];
@@ -81,6 +82,14 @@ export function buildDashboard(input: {
     host_verification: "not_verified",
     observed_at: snapshot?.observed_at ?? null,
     discovery_error: input.discoveryError,
+    // Diagnosis without inventory disclosure: counts only, never names outside the grants.
+    discovery: {
+      ok: input.snapshot !== null,
+      observed_vms: input.snapshot?.vms.length ?? null,
+      outside_grants: input.snapshot && snapshot ? input.snapshot.vms.length - snapshot.vms.length : null,
+      ignored_not_agent: input.ignored?.not_agent_vm ?? 0,
+      ignored_invalid_project: input.ignored?.invalid_project_name ?? 0,
+    },
     projects: snapshot?.projects ?? grants,
     vms,
     sessions: sessionViews.slice(0, 100),

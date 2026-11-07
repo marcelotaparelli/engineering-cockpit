@@ -17,6 +17,13 @@ export function safeCode(error: unknown): string {
 export function validProject(value: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{0,62}$/.test(value);
 }
+/** Why an MSB name cannot be a Cockpit agent VM; null when it can. */
+export type VmNameIssue = "not_agent_vm" | "invalid_project_name";
+export function vmNameIssue(value: string): VmNameIssue | null {
+  const match = /^(codex|claude|opencode)-(.+)$/s.exec(value);
+  if (!match || !match[2]) return "not_agent_vm";
+  return validProject(match[2]) ? null : "invalid_project_name";
+}
 export function vmIdentity(value: string): Omit<Vm, "state" | "orphaned"> {
   const match = /^(codex|claude|opencode)-(.+)$/.exec(value);
   if (!match || !match[1] || !match[2] || !validProject(match[2])) throw new SafeError("invalid_vm_name");

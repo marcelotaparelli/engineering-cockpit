@@ -34,8 +34,9 @@ case "$COMMAND" in
   start) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file src/index.ts ;;
   verify) [ "$#" -eq 0 ] || exit 2; "$RUNTIME" --no-env-file run typecheck; exec "$RUNTIME" --no-env-file test ;;
   host-check) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/host-check.ts ;;
+  discovery-report) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/discovery-report.ts ;;
   m0b1a-smoke) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/m0b1a-smoke.ts ;;
   frontend-test) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file test tests/frontend.test.ts ;;
   artifact) exec "$RUNTIME" --no-env-file scripts/artifact.ts "$@" ;;
-  *) echo 'Usage: ./scripts/cockpit [bootstrap|start|verify|host-check|m0b1a-smoke|frontend-test|artifact]' >&2; exit 2 ;;
+  *) echo 'Usage: ./scripts/cockpit [bootstrap|start|verify|host-check|discovery-report|m0b1a-smoke|frontend-test|artifact]' >&2; exit 2 ;;
 esac

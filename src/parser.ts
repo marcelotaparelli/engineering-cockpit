@@ -1,11 +1,18 @@
-import { SafeError, vmIdentity, type Vm, type VmState } from "./model.ts";
+import { SafeError, vmIdentity, vmNameIssue, type Vm, type VmNameIssue, type VmState } from "./model.ts";
 
 function state(value: string, format: "msb-json" | "legacy-table"): VmState {
   if (value === "Running" || (format === "legacy-table" && value === "running")) return "running";
   if (value === "Stopped" || (format === "legacy-table" && value === "stopped")) return "stopped";
   throw new SafeError("unsupported_vm_state");
 }
-export function parseVmList(output: string): Vm[] {
+export interface VmInventory {
+  vms: Vm[];
+  /** MSB sandboxes that are not Cockpit agent VMs, counted by reason only: never exposed, never executable. */
+  ignored: Record<VmNameIssue, number>;
+}
+/** Strict for the list itself (format, rows, states, duplicates); per record for names that are not agent VMs. */
+export function parseVmList(output: string): Vm[] { return parseVmInventory(output).vms; }
+export function parseVmInventory(output: string): VmInventory {
   const input = output.trim();
   if (!input) throw new SafeError("empty_vm_output");
   let rows: { name: string; status: string }[];
@@ -40,10 +47,18 @@ export function parseVmList(output: string): Vm[] {
     });
   }
   const seen = new Set<string>();
-  return rows.map(row => {
-    const identity = vmIdentity(row.name);
+  const ignored: Record<VmNameIssue, number> = { not_agent_vm: 0, invalid_project_name: 0 };
+  const vms: Vm[] = [];
+  for (const row of rows) {
     if (seen.has(row.name)) throw new SafeError("duplicate_vm_name");
     seen.add(row.name);
-    return { ...identity, state: state(row.status, format), orphaned: false };
-  });
+    // Root cause of `Discovery indisponível (invalid_vm_name)`: any other sandbox on the host
+    // (e.g. `msb run --name devbox`, other tools) failed the whole inventory. It is now skipped
+    // per record, so a name outside the strict `<provider>-<project>` grammar still never
+    // reaches the API, a grant or `msb exec`.
+    const issue = vmNameIssue(row.name);
+    if (issue) { ignored[issue]++; continue; }
+    vms.push({ ...vmIdentity(row.name), state: state(row.status, format), orphaned: false });
+  }
+  return { vms, ignored };
 }

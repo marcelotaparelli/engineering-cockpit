@@ -16,7 +16,7 @@ export interface RequestLog {
   error_code: string | null;
 }
 export interface ServerOptions {
-  discovery: Pick<Discovery, "refresh">;
+  discovery: Pick<Discovery, "refresh"> & Partial<Pick<Discovery, "ignored">>;
   source: "mock" | "host";
   port: number;
   security: LocalSecurity;
@@ -325,7 +325,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           let snapshot: Snapshot | null = null;
           let discoveryError: string | null = null;
           try { snapshot = await options.discovery.refresh(); } catch (error) { discoveryError = safeCode(error); }
-          return json(buildDashboard({ store, execution: options.execution, principal, security: options.security, snapshot, discoveryError, source: options.source }));
+          return json(buildDashboard({ store, execution: options.execution, principal, security: options.security, snapshot, discoveryError, source: options.source, ignored: options.discovery.ignored ?? null }));
         }
 
         let snapshot;

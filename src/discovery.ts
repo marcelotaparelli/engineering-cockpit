@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { listProjects } from "./projects.ts";
-import { parseVmList } from "./parser.ts";
+import { parseVmInventory, type VmInventory } from "./parser.ts";
 import { SafeError, type Snapshot } from "./model.ts";
 import type { SnapshotStore } from "./store.ts";
 
@@ -15,6 +15,8 @@ export function mockOutput(): Promise<string> {
 }
 export class Discovery {
   private pending: Promise<Snapshot> | null = null;
+  /** Non-agent sandboxes skipped in the last successful observation (counts only). */
+  ignored: VmInventory["ignored"] | null = null;
   constructor(private readonly options: DiscoveryOptions) {}
   refresh(): Promise<Snapshot> {
     if (this.pending) return this.pending;
@@ -23,7 +25,8 @@ export class Discovery {
   }
   private async collect(): Promise<Snapshot> {
     const projects = await listProjects(this.options.projectsBase);
-    const discovered = parseVmList(await this.options.readOutput());
+    const inventory = parseVmInventory(await this.options.readOutput());
+    const discovered = inventory.vms;
     // Keep every valid MSB VM. Project directories remain an independent inventory;
     // a missing directory marks an orphan and never creates a fictional project.
     const vms = discovered
@@ -31,6 +34,7 @@ export class Discovery {
       .sort((a, b) => a.vm_name < b.vm_name ? -1 : a.vm_name > b.vm_name ? 1 : 0);
     const snapshot: Snapshot = { source: this.options.source, observed_at: new Date().toISOString(), host_verification: "not_verified", projects, vms };
     try { this.options.store.replace(snapshot); } catch { throw new SafeError("snapshot_write_failed"); }
+    this.ignored = inventory.ignored;
     return snapshot;
   }
 }

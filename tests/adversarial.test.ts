@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readHostVmList, type Spawn } from "../src/adapter.ts";
 import { parseVmList } from "../src/parser.ts";
+import { vmIdentity } from "../src/model.ts";
 import { listProjects } from "../src/projects.ts";
 import { startServer, type RequestLog } from "../src/server.ts";
 import { LocalSecurity } from "../src/local-security.ts";
@@ -132,7 +133,9 @@ test("adversarial H2 probe: journal hardlink must not modify a synthetic outside
 
 test("adversarial H3: shell and markup names are rejected and raw subprocess errors stay out of logs", async () => {
   for (const name of ["codex-../escape", "codex-$(synthetic)", "codex-a;synthetic", "codex-<svg>", "codex-a\ncanary"]) {
-    expect(() => parseVmList(JSON.stringify([{ created_at: "2026-10-25T13:54:12Z", image: "node:22", name, status: "Running" }]))).toThrow("invalid_vm_name");
+    // Never an agent VM, never in the inventory, never reaches msb exec (strict grammar unchanged).
+    expect(parseVmList(JSON.stringify([{ created_at: "2026-10-25T13:54:12Z", image: "node:22", name, status: "Running" }]))).toEqual([]);
+    expect(() => vmIdentity(name)).toThrow("invalid_vm_name");
   }
   const canary = "SYNTHETIC_STDERR_CANARY";
   let calls = 0;
