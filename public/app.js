@@ -1,7 +1,7 @@
 'use strict';
 // Engineering Cockpit UI. Plain DOM, textContent only (no HTML from data), same-origin fetch with session proof.
 const $ = id => document.getElementById(id);
-const STATE_LABEL = { working: 'Trabalhando', awaiting_approval: 'Aguardando você', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', unknown: 'Não confirmado', idle: 'Ocioso', offline: 'Offline' };
+const STATE_LABEL = { working: 'Trabalhando', blocked: 'Travado — precisa de você', awaiting_approval: 'Aguardando você', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', unknown: 'Não confirmado', idle: 'Ocioso', offline: 'Offline' };
 const RUN_LABEL = { prepared: 'Preparando', dispatching: 'Enviando', running: 'Executando', awaiting_approval: 'Aguardando aprovação', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', unknown: 'Não confirmado' };
 const REASON = {
   transport_lost: 'A conexão com a VM caiu durante a execução. Nada foi reenviado.',
@@ -210,7 +210,7 @@ function renderDiscovery(data) {
 
 function renderAgents(data) {
   const c = data.counts;
-  const parts = [[c.working, 'executando'], [c.awaiting_approval, 'aguardando você'], [c.failed + c.unknown, 'com problema'], [c.completed, c.completed === 1 ? 'concluído' : 'concluídos']].filter(([n]) => n > 0);
+  const parts = [[c.working, 'executando'], [c.blocked, 'travado(s)'], [c.awaiting_approval, 'aguardando você'], [c.failed + c.unknown, 'com problema'], [c.completed, c.completed === 1 ? 'concluído' : 'concluídos']].filter(([n]) => n > 0);
   $('counts').textContent = parts.length ? parts.map(([n, label]) => `${n} ${label}`).join(' · ') : `${data.vms.length} agente(s), nenhum em execução`;
   const list = $('agents');
   const filter = $('filter').value.trim().toLowerCase();
@@ -223,7 +223,7 @@ function renderAgents(data) {
   for (const [project, members] of [...groups].sort((a, b) => a[0].localeCompare(b[0]))) {
     const group = el('li', null, 'project');
     const head = el('div', null, 'project-name');
-    const busy = members.filter(vm => vm.state === 'working' || vm.state === 'awaiting_approval').length;
+    const busy = members.filter(vm => vm.state === 'working' || vm.state === 'blocked' || vm.state === 'awaiting_approval').length;
     head.append(el('span', project), el('span', busy ? `${busy} ativo` : ''));
     const ul = el('ul', null, 'agents');
     for (const vm of members) {
@@ -283,6 +283,17 @@ function renderAttention(items) {
     if (item.kind === 'approval') { list.append(approvalCard(item, refreshAll)); continue; }
     const li = el('li', null, 'card bad');
     const head = el('div', null, 'head');
+    if (item.kind === 'blocked') {
+      head.append(el('strong', 'Agente travado'), el('span', ago(item.created_at), 'where'));
+      li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
+      li.append(el('div', `O Codex pediu algo que o Cockpit não consegue responder com segurança (${item.method}${item.occurrences > 1 ? `, ${item.occurrences}×` : ''}). A tarefa não avança sozinha.`, 'muted small'));
+      li.append(el('div', 'O que fazer: abra a sessão, interrompa a execução e reformule o prompt sem exigir essa interação.', 'muted small'));
+      const actions = el('div', null, 'actions');
+      actions.append(button('Abrir e interromper', () => selectVm(item.vm_name, item.session_id), 'danger'));
+      li.append(actions);
+      list.append(li);
+      continue;
+    }
     head.append(el('strong', item.kind === 'unknown_run' ? 'Execução não confirmada' : 'Execução falhou'), el('span', ago(item.created_at), 'where'));
     li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
     li.append(el('div', REASON[item.reason_code] || item.reason_code || '', 'muted small'));
@@ -438,8 +449,9 @@ function renderRun() {
   $('run-bar').hidden = !run;
   if (!run) return;
   syncRunEnd();
-  $('run-status').textContent = RUN_LABEL[run.status] || run.status;
-  $('run-status').className = `chip s-${run.status}`;
+  const blocked = state.dashboard && state.dashboard.attention.some(item => item.kind === 'blocked' && item.run_id === run.run_id);
+  $('run-status').textContent = blocked ? 'Travado — precisa de você' : RUN_LABEL[run.status] || run.status;
+  $('run-status').className = `chip s-${blocked ? 'blocked' : run.status}`;
   const parts = [];
   if (run.reason_code) parts.push(REASON[run.reason_code] || run.reason_code);
   const metrics = run.metrics || {};

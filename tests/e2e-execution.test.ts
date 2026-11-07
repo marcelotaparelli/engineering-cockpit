@@ -240,6 +240,27 @@ describe("MVP vertical flow over HTTP", () => {
     expect(final.reason_code).toBe("provider_turn_failed");
   });
 
+  test("E1: unsupported provider request marks the run blocked, shows once in attention, and clears on interrupt", async () => {
+    const auth = await login();
+    const sessionId = await openSession(auth);
+    const run = await (await startRun(auth, sessionId, "elicit something")).json() as { run_id: string };
+    type Dash = { attention: Array<{ kind: string; method?: string; occurrences?: number; run_id: string }>; counts: { working: number; blocked: number }; vms: Array<{ vm_name: string; state: string; next_step: string }>; sessions: Array<{ state: string }> };
+    const dash = async () => await (await get(auth, "api/dashboard")).json() as Dash;
+    const blocked = await until(dash, value => value.attention.some(item => item.kind === "blocked"));
+    const items = blocked.attention.filter(item => item.kind === "blocked");
+    expect(items).toHaveLength(1); // two equivalent requests collapse into one entry
+    expect(items[0]).toMatchObject({ method: "item/tool/requestUserInput", run_id: run.run_id, occurrences: 2 });
+    expect(blocked.counts).toMatchObject({ blocked: 1, working: 0 });
+    expect(blocked.vms.find(vm => vm.vm_name === "codex-alpha")?.state).toBe("blocked");
+    expect((await runStatus(auth, run.run_id)()).status).toBe("running"); // no new lifecycle state, nothing persisted that needs a migration
+    const interrupt = await post(auth, `api/runs/${run.run_id}/interrupt`, {});
+    expect(interrupt.status).toBeLessThan(300);
+    await until(runStatus(auth, run.run_id), value => value.status === "interrupted");
+    const after = await dash();
+    expect(after.attention.some(item => item.kind === "blocked")).toBe(false);
+    expect(after.counts.blocked).toBe(0);
+  });
+
   test("structured provider errors keep a specific safe reason code and never persist the raw message", async () => {
     const auth = await login();
     for (const [prompt, code] of [["estourou a quota", "provider_usage_limit"], ["unauthorized agora", "provider_auth_failed"]] as const) {

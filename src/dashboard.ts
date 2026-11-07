@@ -3,10 +3,11 @@ import type { LocalPrincipal, LocalSecurity } from "./local-security.ts";
 import type { RunRecord, RuntimeStore } from "./runtime-store.ts";
 import type { ExecutionService } from "./execution.ts";
 
-export type AgentState = "working" | "awaiting_approval" | "completed" | "failed" | "interrupted" | "unknown" | "idle" | "offline";
+export type AgentState = "working" | "blocked" | "awaiting_approval" | "completed" | "failed" | "interrupted" | "unknown" | "idle" | "offline";
 
 const NEXT_STEP: Readonly<Record<AgentState, string>> = {
   working: "Acompanhar ou interromper",
+  blocked: "Agente travado: pediu algo que o Cockpit não suporta. Interrompa e reformule a tarefa",
   awaiting_approval: "Decidir aprovação pendente",
   completed: "Revisar resultado e enviar próximo prompt",
   failed: "Ver erro; reenviar só se fizer sentido",
@@ -16,10 +17,11 @@ const NEXT_STEP: Readonly<Record<AgentState, string>> = {
   offline: "VM parada ou ausente: iniciar pelo launcher",
 };
 
-function agentState(run: RunRecord | null): AgentState {
+function agentState(run: RunRecord | null, blocked: boolean): AgentState {
   if (!run) return "idle";
   switch (run.status) {
-    case "prepared": case "dispatching": case "running": return "working";
+    case "running": return blocked ? "blocked" : "working";
+    case "prepared": case "dispatching": return "working";
     case "awaiting_approval": return "awaiting_approval";
     default: return run.status;
   }
@@ -46,7 +48,7 @@ export function buildDashboard(input: {
       session_id: session.sessionId, project: session.target.projectId, vm_name: session.target.vmName, thread_id: session.providerSessionId,
       last_activity: run && (run.endedAt ?? run.startedAt ?? run.createdAt) > session.lastObservedAt ? (run.endedAt ?? run.startedAt ?? run.createdAt) : session.lastObservedAt,
       latest_run: run ? { run_id: run.runId, status: run.status, reason_code: run.reasonCode, created_at: run.createdAt, ended_at: run.endedAt } : null,
-      state: agentState(run),
+      state: agentState(run, run !== null && (input.execution?.blockedRequests(run.runId).length ?? 0) > 0),
     };
   });
 
@@ -55,7 +57,7 @@ export function buildDashboard(input: {
   const vms = [...vmNames].sort().map(name => {
     const vm = snapshot?.vms.find(item => item.vm_name === name) ?? null;
     const forVm = sessionViews.filter(view => view.vm_name === name).sort((a, b) => b.last_activity.localeCompare(a.last_activity));
-    const active = forVm.find(view => view.state === "working" || view.state === "awaiting_approval");
+    const active = forVm.find(view => view.state === "working" || view.state === "blocked" || view.state === "awaiting_approval");
     const focus = active ?? forVm[0] ?? null;
     const runnable = vm !== null && vm.provider === "codex" && vm.state === "running" && !vm.orphaned;
     let state: AgentState = focus?.state ?? "idle";
@@ -72,6 +74,10 @@ export function buildDashboard(input: {
   const attention = [
     ...approvals.map(view => ({ kind: "approval", approval_id: view.approvalId, run_id: view.runId, session_id: view.sessionId, project: view.projectId,
       vm_name: view.vmName, version: view.version, action_type: view.actionType, created_at: view.createdAt, summary: view.summary })),
+    ...sessionViews.filter(view => view.state === "blocked").flatMap(view => (input.execution?.blockedRequests(view.latest_run!.run_id) ?? []).map(request => ({
+      kind: "blocked", run_id: view.latest_run!.run_id, session_id: view.session_id, project: view.project, vm_name: view.vm_name,
+      reason_code: "provider_request_unsupported", method: request.method, occurrences: request.occurrences,
+      action: "interrupt_and_rephrase", created_at: request.since }))),
     ...sessionViews.filter(view => view.state === "unknown" || view.state === "failed").map(view => ({
       kind: view.state === "unknown" ? "unknown_run" : "failed_run", run_id: view.latest_run!.run_id, session_id: view.session_id,
       project: view.project, vm_name: view.vm_name, reason_code: view.latest_run!.reason_code, created_at: view.latest_run!.ended_at ?? view.latest_run!.created_at })),
@@ -94,7 +100,7 @@ export function buildDashboard(input: {
     vms,
     sessions: sessionViews.slice(0, 100),
     attention,
-    counts: { working: count("working"), awaiting_approval: approvals.length, completed: count("completed"), failed: count("failed"),
+    counts: { working: count("working"), blocked: count("blocked"), awaiting_approval: approvals.length, completed: count("completed"), failed: count("failed"),
       unknown: count("unknown"), interrupted: count("interrupted") },
     cursor: store.lastSequence(),
   };

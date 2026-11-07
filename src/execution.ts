@@ -52,6 +52,7 @@ const ERROR_REASON: Readonly<Record<ProviderErrorClass, string>> = Object.freeze
   usage_limit: "provider_usage_limit", auth: "provider_auth_failed", transport: "provider_transport_error", context_window: "provider_context_window",
   bad_request: "provider_bad_request", overloaded: "provider_overloaded", sandbox: "provider_sandbox_error", provider_internal: "provider_internal_error",
 });
+export interface BlockedRequest { method: string; since: string; occurrences: number }
 interface PendingApproval { approvalId: string; runId: string; live: Live; ref: ProviderApprovalRef; summary: ApprovalSummary & { files: string[] } }
 
 const MAX_PROMPT_CHARS = 64 * 1024;
@@ -87,6 +88,8 @@ export class ExecutionService {
   readonly #lives = new Map<string, Live>();
   readonly #active = new Map<string, ActiveRun>(); // key: vm \0 providerSessionId
   readonly #approvals = new Map<string, PendingApproval>();
+  /** Provider requests the Cockpit cannot answer, per run. Memory-only: it describes a live process and dies with it. */
+  readonly #blocked = new Map<string, Map<string, BlockedRequest>>();
   #closed = false;
 
   constructor(options: ExecutionOptions) {
@@ -195,6 +198,13 @@ export class ExecutionService {
     }
     if (result.status === "unknown") return run;
     return this.#move(run.runId, result.status, { reasonCode: "reconciled" }) ?? run;
+  }
+
+  /** Unsupported provider requests currently holding this run, deduplicated by method. Empty when none. */
+  blockedRequests(runId: string): BlockedRequest[] {
+    const run = this.#store.getRun(runId);
+    if (!run || TERMINAL.includes(run.status) || run.status === "unknown") return [];
+    return [...(this.#blocked.get(runId)?.values() ?? [])];
   }
 
   approvalView(approval: ApprovalRecord): ApprovalView | null {
@@ -339,6 +349,7 @@ export class ExecutionService {
     for (const [key, active] of this.#active) {
       if (active.live !== live) continue;
       this.#active.delete(key);
+      this.#blocked.delete(active.runId);
       const run = this.#store.getRun(active.runId);
       if (run && UNCERTAIN.includes(run.status)) this.#move(run.runId, "unknown", { reasonCode });
       this.#store.expireApprovals(active.runId, reasonCode, this.#iso());
@@ -397,11 +408,19 @@ export class ExecutionService {
           this.#hub.journal();
         }
         return;
-      case "request.unsupported":
-        this.#store.appendJournal({ eventId: `${active.runId}:unsup:${randomUUID()}`, runId: active.runId, type: "operation.notice", occurredAt: this.#iso(), payload: { reasonCode: "provider_request_unsupported" } });
-        this.#hub.live({ ...base, kind: "notice", data: { code: "provider_request_unsupported", method: event.method } });
+      case "request.unsupported": {
+        // Equivalent requests (same method, same run) are one blockage: count them, notify once.
+        const method = /^[A-Za-z0-9/_.-]{1,128}$/.test(event.method) ? event.method : "unknown_method";
+        const entries = this.#blocked.get(active.runId) ?? new Map<string, BlockedRequest>();
+        this.#blocked.set(active.runId, entries);
+        const known = entries.get(method);
+        if (known) { known.occurrences += 1; return; }
+        entries.set(method, { method, since: this.#iso(), occurrences: 1 });
+        this.#store.appendJournal({ eventId: `${active.runId}:unsup:${method}`, runId: active.runId, type: "operation.notice", occurredAt: this.#iso(), payload: { reasonCode: "provider_request_unsupported" } });
+        this.#hub.live({ ...base, kind: "notice", data: { code: "provider_request_unsupported", method } });
         this.#hub.journal();
         return;
+      }
       case "approval.requested": {
         const approvalId = `apr-${randomUUID()}`;
         const at = this.#now();
@@ -420,6 +439,7 @@ export class ExecutionService {
       case "run.status_changed": {
         if (!TERMINAL.includes(event.status) && event.status !== "unknown") return;
         this.#active.delete(this.#key(live.vmName, event.sessionId));
+        this.#blocked.delete(active.runId);
         for (const [id, pending] of this.#approvals) if (pending.runId === active.runId) this.#approvals.delete(id);
         this.#store.expireApprovals(active.runId, "run_ended", this.#iso());
         const reasonCode = event.status === "unknown" ? "provider_status_unknown" : event.status === "failed" ? failureReason(event.errorClass ?? active.errorClass) : undefined;

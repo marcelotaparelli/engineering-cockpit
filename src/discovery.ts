@@ -15,9 +15,18 @@ export function mockOutput(): Promise<string> {
 }
 export class Discovery {
   private pending: Promise<Snapshot> | null = null;
+  private last: { at: number; snapshot: Snapshot } | null = null;
   /** Non-agent sandboxes skipped in the last successful observation (counts only). */
   ignored: VmInventory["ignored"] | null = null;
   constructor(private readonly options: DiscoveryOptions) {}
+  /**
+   * Display-only read: a successful observation younger than `maxAgeMs` is reused to spare MSB.
+   * Never use for authorization or dispatch decisions — those call `refresh()`, which always observes.
+   */
+  cached(maxAgeMs = 3000): Promise<Snapshot> {
+    if (this.last && Date.now() - this.last.at < maxAgeMs) return Promise.resolve(this.last.snapshot);
+    return this.refresh();
+  }
   refresh(): Promise<Snapshot> {
     if (this.pending) return this.pending;
     this.pending = this.collect().finally(() => { this.pending = null; });
@@ -35,6 +44,7 @@ export class Discovery {
     const snapshot: Snapshot = { source: this.options.source, observed_at: new Date().toISOString(), host_verification: "not_verified", projects, vms };
     try { this.options.store.replace(snapshot); } catch { throw new SafeError("snapshot_write_failed"); }
     this.ignored = inventory.ignored;
+    this.last = { at: Date.now(), snapshot };
     return snapshot;
   }
 }

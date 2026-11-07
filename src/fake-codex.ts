@@ -176,6 +176,14 @@ export class FakeCodexTransport implements RpcTransport {
       this.#emit("item/completed", { ...base, item: command, completedAtMs: Date.now() });
     }
 
+    if (lower.includes("elicit")) {
+      // Simulated server request the adapter cannot answer (the real turn would hang until interrupted). Sent twice: duplicates must collapse.
+      for (const id of [`fake-unsupported-${this.#nextRequest++}`, `fake-unsupported-${this.#nextRequest++}`]) {
+        this.#emit("item/tool/requestUserInput", { ...base, itemId: randomUUID(), questions: [] }, id);
+      }
+      await new Promise<void>(resolve => { wake = resolve; if (interrupted) resolve(); });
+      return finish("interrupted");
+    }
     const structured = lower.includes("quota") ? "usageLimitExceeded" : lower.includes("unauthorized") ? "unauthorized" : null;
     if (structured) {
       await pause();

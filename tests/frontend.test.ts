@@ -9,7 +9,7 @@ const vm = { vm_name: "codex-demo", project: "demo", provider: "codex", vm_state
 const dashboard = (overrides: Record<string, unknown> = {}) => ({ source: "mock", host_verification: "not_verified", observed_at: new Date().toISOString(),
   discovery_error: null, projects: ["demo"], vms: [vm], cursor: 7, attention: [],
   sessions: [{ session_id: "ses-1", project: "demo", vm_name: "codex-demo", thread_id: "thread-0001", last_activity: new Date().toISOString(), latest_run: null, state: "idle" }],
-  counts: { working: 0, awaiting_approval: 0, completed: 0, failed: 0, unknown: 0, interrupted: 0 }, ...overrides });
+  counts: { working: 0, blocked: 0, awaiting_approval: 0, completed: 0, failed: 0, unknown: 0, interrupted: 0 }, ...overrides });
 const sessionData = (runs: unknown[] = [], approvals: unknown[] = []) => ({ session: { session_id: "ses-1" }, runs, approvals });
 
 type Call = { method: string; path: string; headers: Record<string, string>; body: string | null };
@@ -313,5 +313,34 @@ test("running run still shows 'Raciocinando…'; concurrent live events after th
     expect(text).not.toContain("Raciocinando");
     expect(text).toContain("Execução interrompida");
     expect(ui.document.querySelectorAll(".run-end").length).toBe(1);
+  });
+});
+
+test("E1: a blocked agent is flagged in the list and in the inbox with cause and action, not as 'working'", async () => {
+  const run = { run_id: "run-b", status: "running", reason_code: null, created_at: new Date().toISOString(), ended_at: null };
+  const blocked = dashboard({
+    vms: [{ ...vm, state: "blocked", next_step: "Agente travado", run_id: "run-b" }],
+    sessions: [{ session_id: "ses-1", project: "demo", vm_name: "codex-demo", thread_id: "thread-0001", last_activity: run.created_at, latest_run: run, state: "blocked" }],
+    attention: [{ kind: "blocked", run_id: "run-b", session_id: "ses-1", project: "demo", vm_name: "codex-demo", reason_code: "provider_request_unsupported",
+      method: "item/tool/requestUserInput", occurrences: 2, action: "interrupt_and_rephrase", created_at: run.created_at }],
+    counts: { working: 0, blocked: 1, awaiting_approval: 0, completed: 0, failed: 0, unknown: 0, interrupted: 0 },
+  });
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: blocked };
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([{ ...run, session_id: "ses-1", provider_bound: true, metrics: {} }]) };
+    return undefined;
+  });
+  await withUi(router, async ui => {
+    const card = ui.document.getElementById("attention")!.textContent!;
+    expect(card).toContain("Agente travado");
+    expect(card).toContain("item/tool/requestUserInput");
+    expect(card).toContain("interrompa");
+    expect(ui.document.getElementById("attention-count")!.textContent).toBe("1");
+    expect(ui.document.querySelector(".agent")!.textContent).toContain("Travado");
+    expect(ui.document.querySelector(".agent")!.textContent).not.toContain("Trabalhando");
+    expect(ui.document.getElementById("counts")!.textContent).toContain("1 travado");
+    click([...ui.document.querySelectorAll("#attention button")].find(node => node.textContent === "Abrir e interromper"));
+    await settle(120);
+    expect(ui.document.getElementById("run-status")!.textContent).toContain("Travado");
   });
 });

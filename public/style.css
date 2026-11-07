@@ -79,7 +79,7 @@ input, select, textarea { font: inherit; color: inherit; background: var(--bg); 
 .s-working, .s-running, .s-dispatching, .s-prepared { --c: var(--info); }
 .s-awaiting_approval { --c: var(--warn); }
 .s-completed { --c: var(--accent); }
-.s-failed, .s-unknown { --c: var(--bad); }
+.s-failed, .s-unknown, .s-blocked { --c: var(--bad); }
 .s-interrupted, .s-idle, .s-offline { --c: var(--idle); }
 .dot[class*="s-"] { background: var(--c); }
 .chip[class*="s-"] { color: var(--c); background: color-mix(in srgb, var(--c) 16%, transparent); }

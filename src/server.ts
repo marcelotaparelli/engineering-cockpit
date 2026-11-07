@@ -16,7 +16,7 @@ export interface RequestLog {
   error_code: string | null;
 }
 export interface ServerOptions {
-  discovery: Pick<Discovery, "refresh"> & Partial<Pick<Discovery, "ignored">>;
+  discovery: Pick<Discovery, "refresh"> & Partial<Pick<Discovery, "ignored" | "cached">>;
   source: "mock" | "host";
   port: number;
   security: LocalSecurity;
@@ -324,7 +324,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           const store = requireRuntime();
           let snapshot: Snapshot | null = null;
           let discoveryError: string | null = null;
-          try { snapshot = await options.discovery.refresh(); } catch (error) { discoveryError = safeCode(error); }
+          try { snapshot = await (options.discovery.cached?.() ?? options.discovery.refresh()); } catch (error) { discoveryError = safeCode(error); }
           return json(buildDashboard({ store, execution: options.execution, principal, security: options.security, snapshot, discoveryError, source: options.source, ignored: options.discovery.ignored ?? null }));
         }
 

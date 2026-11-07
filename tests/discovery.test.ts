@@ -172,3 +172,23 @@ test("mock is default, host needs explicit dual opt-in and absolute project base
   expect(host.databasePath).not.toBe(config({}).databasePath);
   for (const PORT of ["-1", "65536", "1x", "01", "", "1.2"]) expect(() => config({ PORT })).toThrow("invalid_port");
 });
+test("E1: cached() spares MSB for display reads but refresh() always observes and errors are never cached", async () => {
+  const db = store("cache.sqlite");
+  let calls = 0;
+  let output = "NAME STATUS\ncodex-demo running";
+  const discovery = new Discovery({ source: "mock", projectsBase: new URL("../fixtures/projects", import.meta.url).pathname, store: db, readOutput: async () => { calls += 1; return output; } });
+  const first = await discovery.cached(60_000);
+  expect(await discovery.cached(60_000)).toBe(first);
+  expect(calls).toBe(1);
+  output = "NAME STATUS\ncodex-demo stopped";
+  expect((await discovery.cached(60_000)).vms[0]?.state).toBe("running"); // display may be briefly stale…
+  expect((await discovery.refresh()).vms[0]?.state).toBe("stopped"); // …dispatch decisions never are
+  expect(calls).toBe(2);
+  expect((await discovery.cached(60_000)).vms[0]?.state).toBe("stopped"); // refresh feeds the cache
+  expect((await discovery.cached(0)).vms[0]?.state).toBe("stopped");
+  expect(calls).toBe(3);
+  output = "bad format";
+  await expect(discovery.cached(0)).rejects.toThrow("unsupported_vm_format");
+  await expect(discovery.cached(60_000)).resolves.toBeDefined(); // last good snapshot only within TTL; failure itself was not stored
+  expect(calls).toBe(4);
+});
