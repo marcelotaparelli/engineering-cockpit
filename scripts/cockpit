@@ -4,6 +4,11 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 cd "$ROOT"
 EXPECTED=$(cat .bun-version)
 RUNTIME=$(command -v bun || true)
+# Prefer a project-local pinned runtime when the PATH one is missing or a different version.
+LOCAL_RUNTIME="$ROOT/tools/runtime/node_modules/.bin/bun"
+if [ -x "$LOCAL_RUNTIME" ] && [ "$("$LOCAL_RUNTIME" --version 2>/dev/null || true)" = "$EXPECTED" ]; then
+  if [ -z "$RUNTIME" ] || [ "$("$RUNTIME" --version 2>/dev/null || true)" != "$EXPECTED" ]; then RUNTIME="$LOCAL_RUNTIME"; fi
+fi
 COMMAND=${1:-start}
 if [ "$#" -gt 0 ]; then shift; fi
 if [ "$COMMAND" = bootstrap ]; then

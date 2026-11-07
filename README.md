@@ -1,6 +1,21 @@
-# Engineering Cockpit — M0a.2 preservado, M0b.1b segurança HTTP local
+# Engineering Cockpit — central local de agentes de engenharia
 
-Descoberta **somente leitura**, API Bun/TypeScript strict, SQLite próprio e interface local. O padrão é **mock**, explicitamente identificado como simulação. M0b.1a acrescentou a fundação interna de provider/transporte/runtime. M0b.1b protege a leitura HTTP com autenticação local, CSRF para logout e autorização por projeto/VM/run. Nenhum endpoint de prompt, execução via browser, approval, interrupt ou SSE foi exposto.
+Painel local (127.0.0.1) para operar agentes Codex em micro-VMs Microsandbox: selecionar VM, abrir ou retomar sessão, enviar prompt, acompanhar em streaming, interromper, decidir aprovações e ver numa única tela o que está trabalhando, o que terminou e o que depende de você. Bun 1.4.4, TypeScript strict, SQLite. O padrão é **mock**, com agente simulado e identificado como "SIMULAÇÃO".
+
+**Estado:** fluxo de execução (M0b Fatia 3) e painel de atenção implementados e verificados localmente; **aceite no Arch pendente**. Veja [docs/m0b-fatia3.md](docs/m0b-fatia3.md) para o que funciona, as garantias e o roteiro de aceite.
+
+## Experimentar em modo mock
+
+```sh
+export COCKPIT_LOCAL_TOKEN=$(openssl rand -hex 32); echo "$COCKPIT_LOCAL_TOKEN"
+COCKPIT_ALLOWED_PROJECTS=demo,lab PORT=8787 ./scripts/cockpit start
+```
+
+Abra `http://127.0.0.1:8787` e digite a credencial. Palavras no prompt controlam a simulação: "aprovação" pede aprovação, "lento" deixa o stream lento (bom para testar a interrupção), "falha" encerra com erro.
+
+## Histórico de marcos
+
+M0a e M0a.2 trouxeram a descoberta somente leitura. M0b.1a criou a fundação de provider, transporte e runtime; o smoke no Arch passou em 26/10, por atestado do operador. M0b.1b adicionou autenticação local, CSRF e autorização por projeto, VM e run. A Fatia 3 acrescentou sessões, runs idempotentes, SSE, interrupt, aprovações, reconcile e o painel.
 
 ## Inicialização reproduzível
 
@@ -85,6 +100,6 @@ Se o check passar, use as mesmas variáveis e `./scripts/cockpit start` no host.
 - [Manifesto de código/locks/fixtures](docs/artifact.sha256): `./scripts/cockpit artifact --check`.
 - [Entrega histórica M0a](docs/m0a.md).
 
-API: GET `/api/health` público; inventário e consulta de run exigem login local. `POST /api/auth/login` e `/api/auth/logout` são as únicas mutações HTTP; logout exige CSRF e nonce. Não há envio de prompts. Health não atesta readiness do host. Queries arbitrárias, origens externas e recursos fora da allowlist são recusados. SQLite rejeita symlinks e bancos estrangeiros. Falha de descoberta preserva o último snapshot persistido, mas não o apresenta como atual. Veja o [threat model M0b.1b](docs/m0b1b-threat-model.md) e [ADR-0002](docs/adr-0002-m0b1b-local-http-security.md).
+API: GET `/api/health` é público; todo o resto exige login local. Mutações: login/logout, sessões, runs (com `Idempotency-Key`), interrupt, reconcile e decisão de aprovação, todas com CSRF, nonce e `Origin` exato. Não existe rota de comando arbitrário. O conteúdo de prompts e respostas não é gravado; o histórico vem do Codex. Veja [docs/m0b-fatia3.md](docs/m0b-fatia3.md), o [threat model M0b.1b](docs/m0b1b-threat-model.md) e o [ADR-0002](docs/adr-0002-m0b1b-local-http-security.md).
 
 Conta/diretórios locais devem ser confiáveis; não exponha por proxy/túnel. A autenticação HTTP local não isola outro processo malicioso do mesmo UID. Exporter e alertas contínuos não estão configurados. Nenhuma alteração de VM, push ou deploy faz parte deste marco.

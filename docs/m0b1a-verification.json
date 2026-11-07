@@ -67,7 +67,7 @@
     "thread_list": "NOT_VERIFIED",
     "close": "PASS",
     "root_cause": "transport required jsonrpc 2.0 on Codex 0.163.0 tagless JSONL; adapter then expected initialize fields not present in the real response",
-    "rerun_after_fix": "NOT_VERIFIED"
+    "rerun_after_fix": "PASS (operator attestation 2026-11-07: initialize, thread/list, close passed on Arch 2026-10-26 with 0.164.0; raw output not attached)"
   },
   "observed_arch_version_gate_failure": {
     "source": "operator-provided report",
@@ -76,7 +76,7 @@
     "initialize_fields": ["userAgent", "codexHome", "platformFamily", "platformOs"],
     "smoke_result": "FAIL: provider_version_unsupported",
     "root_cause": "runtime gate allowlisted only 0.163.0",
-    "rerun_after_fix": "NOT_VERIFIED"
+    "rerun_after_fix": "PASS (operator attestation 2026-11-07: initialize, thread/list, close passed on Arch 2026-10-26 with 0.164.0; raw output not attached)"
   },
   "fixture_provenance": {
     "real_failure_reproduced": "fixtures/m0b/crash-empty-rollout.json models the operator-observed disconnect with empty rollout and requires unknown",

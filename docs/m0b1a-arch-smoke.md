@@ -1,6 +1,8 @@
 # M0b.1a — smoke read-only no Arch
 
-**Estado em 2026-10-26:** houve dois FAILs observados no Arch, com correções verificadas localmente; o rerun real permanece `NOT_VERIFIED`. Primeiro, 0.163.0 falhou em `initialize` com `rpc_protocol_error` após 532 ms. Depois, o ambiente real reportou Codex CLI/App Server 0.164.0 com os mesmos quatro campos de initialize e falhou com `provider_version_unsupported`. Nenhuma validação local é apresentada como PASS do host.
+**Atualização 2026-11-07:** o operador informou que o rerun pós-correção **passou no Arch em 2026-10-26** com Codex App Server 0.164.0 (`initialize`, `thread/list`, `close` = PASS). Registrado como atestado manual do operador; a saída bruta não foi anexada.
+
+**Estado em 2026-10-26 (histórico):** houve dois FAILs observados no Arch, com correções verificadas localmente; o rerun real permanece `NOT_VERIFIED`. Primeiro, 0.163.0 falhou em `initialize` com `rpc_protocol_error` após 532 ms. Depois, o ambiente real reportou Codex CLI/App Server 0.164.0 com os mesmos quatro campos de initialize e falhou com `provider_version_unsupported`. Nenhuma validação local é apresentada como PASS do host.
 
 ## Evidência do FAIL e causa raiz
 

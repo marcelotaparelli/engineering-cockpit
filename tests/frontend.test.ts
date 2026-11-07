@@ -3,101 +3,203 @@ import { Window } from "happy-dom";
 
 const html = await Bun.file(new URL("../public/index.html", import.meta.url)).text();
 const javascript = await Bun.file(new URL("../public/app.js", import.meta.url)).text();
-const snapshot = { source: "mock", host_verification: "not_verified", observed_at: "2026-10-25T00:00:00.000Z", projects: ["demo"], vms: [{ vm_name: "codex-demo", provider: "codex", project: "demo", state: "running", orphaned: false }] };
-type Reply = { status: number; body: unknown } | Error;
-async function withUi(replies: Reply[], run: (ui: Window, calls: string[], settle: () => Promise<void>) => Promise<void>) {
+
+const vm = { vm_name: "codex-demo", project: "demo", provider: "codex", vm_state: "running", orphaned: false, runnable: true, state: "idle",
+  next_step: "Abrir sessão e enviar prompt", session_id: "ses-1", run_id: null, last_activity: null, sessions: 1 };
+const dashboard = (overrides: Record<string, unknown> = {}) => ({ source: "mock", host_verification: "not_verified", observed_at: new Date().toISOString(),
+  discovery_error: null, projects: ["demo"], vms: [vm], cursor: 7, attention: [],
+  sessions: [{ session_id: "ses-1", project: "demo", vm_name: "codex-demo", thread_id: "thread-0001", last_activity: new Date().toISOString(), latest_run: null, state: "idle" }],
+  counts: { working: 0, awaiting_approval: 0, completed: 0, failed: 0, unknown: 0, interrupted: 0 }, ...overrides });
+const sessionData = (runs: unknown[] = [], approvals: unknown[] = []) => ({ session: { session_id: "ses-1" }, runs, approvals });
+
+type Call = { method: string; path: string; headers: Record<string, string>; body: string | null };
+type Reply = { status: number; body: unknown } | Error | "stream";
+type Router = (call: Call) => Reply | undefined;
+
+async function withUi(router: Router, run: (ui: Window, calls: Call[], push: (block: string) => void) => Promise<void>, storage: Record<string, string> = { cockpit_session_proof: "synthetic" }) {
   const ui = new Window({ url: "http://127.0.0.1:12345/", settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true } });
-  const calls: string[] = [];
-  ui.fetch = (async (input: unknown) => {
-    if (String(input) === "/api/auth/session") return new ui.Response(JSON.stringify({ csrf: "synthetic" }), { status: 200, headers: { "Content-Type": "application/json" } });
-    calls.push(String(input));
-    const reply = replies.shift();
-    if (!reply) throw new Error("unexpected_fetch");
+  const calls: Call[] = [];
+  const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+  ui.fetch = (async (input: unknown, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) => {
+    const call = { method: init.method ?? "GET", path: String(input), headers: init.headers ?? {}, body: init.body ?? null };
+    if (call.path === "/api/auth/session") return new ui.Response(JSON.stringify({ csrf: "csrf-synthetic" }), { status: 200, headers: { "Content-Type": "application/json" } });
+    calls.push(call);
+    const reply = router(call);
+    if (reply === undefined) throw new Error(`unexpected_fetch ${call.method} ${call.path}`);
     if (reply instanceof Error) throw reply;
+    if (reply === "stream") {
+      const body = new ReadableStream<Uint8Array>({ start(controller) { streams.push(controller); } });
+      return { ok: true, status: 200, body } as unknown as Response;
+    }
     return new ui.Response(JSON.stringify(reply.body), { status: reply.status, headers: { "Content-Type": "application/json" } });
   }) as typeof ui.fetch;
   ui.document.write(html);
-  ui.sessionStorage.setItem("cockpit_session_proof", "synthetic");
-  const settle = async () => {
-    for (let attempt = 0; attempt < 100; attempt++) {
-      if (calls.length > 0 && !ui.document.getElementById("refresh")!.hasAttribute("disabled")) return;
-      await Bun.sleep(1);
-    }
-    throw new Error("frontend_did_not_settle");
-  };
-  try { ui.eval(javascript); await settle(); await run(ui, calls, settle); }
+  for (const [key, value] of Object.entries(storage)) ui.sessionStorage.setItem(key, value);
+  const push = (block: string) => { for (const controller of streams) controller.enqueue(new TextEncoder().encode(block)); };
+  try { ui.eval(javascript); await settle(); await run(ui, calls, push); }
   finally { await ui.happyDOM.close(); }
 }
-test("frontend executes discovery and selection locally without issuing a command", async () => {
-  await withUi([{ status: 200, body: snapshot }], async (ui, calls) => {
+const click = (node: unknown) => { (node as { click(): void }).click(); };
+async function settle(ms = 40) { await Bun.sleep(ms); }
+const defaultRouter = (extra: Router = () => undefined): Router => call => {
+  const custom = extra(call);
+  if (custom !== undefined) return custom;
+  if (call.path === "/api/dashboard") return { status: 200, body: dashboard() };
+  if (call.path === "/api/events") return "stream";
+  if (call.path === "/api/vms/codex-demo/threads") return { status: 200, body: { vm_name: "codex-demo", threads: [{ id: "thread-0001", status: "idle", updatedAt: null, sessionId: "ses-1" }, { id: "thread-9999-external", status: "idle", updatedAt: null, sessionId: null }] } };
+  if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData() };
+  if (call.path === "/api/sessions/ses-1/history") return { status: 200, body: { items: [{ id: "i1", runId: "t1", kind: "user_message", text: "olá", status: null, command: null, exitCode: null, files: [] }, { id: "i2", runId: "t1", kind: "agent_message", text: "resposta anterior", status: null, command: null, exitCode: null, files: [] }], runs: [], next_cursor: null } };
+  return undefined;
+};
+
+test("without a session proof the login form is shown and nothing is fetched", async () => {
+  await withUi(() => undefined, async (ui, calls) => {
+    expect(ui.document.getElementById("login")!.hasAttribute("hidden")).toBe(false);
+    expect(ui.document.getElementById("app")!.hasAttribute("hidden")).toBe(true);
+    expect(calls).toEqual([]);
+  }, {});
+});
+
+test("dashboard shows agents, simulation label, and opens the live stream at the dashboard cursor", async () => {
+  await withUi(defaultRouter(), async (ui, calls) => {
     expect(ui.document.getElementById("source")!.textContent).toContain("SIMULAÇÃO");
-    expect(ui.document.getElementById("projects")!.textContent).toContain("demo");
-    const button = ui.document.querySelector(".vm")!;
-    expect(button.textContent).toContain("running");
-    button.dispatchEvent(new ui.MouseEvent("click", { bubbles: true }));
-    expect(button.getAttribute("aria-pressed")).toBe("true");
-    expect(ui.document.getElementById("selection")!.textContent).toContain("codex-demo (somente leitura)");
-    expect(calls).toEqual(["/api/vms"]);
+    expect(ui.document.getElementById("agents")!.textContent).toContain("codex-demo");
+    expect(ui.document.getElementById("agents")!.textContent).toContain("Ocioso");
+    expect(ui.document.getElementById("attention")!.textContent).toContain("Nada pendente");
+    const stream = calls.find(call => call.path === "/api/events")!;
+    expect(stream.headers["Last-Event-ID"]).toBe("7");
+    expect(stream.headers["X-Session-Proof"]).toBe("synthetic");
+    expect(ui.document.getElementById("live")!.textContent).toBe("ao vivo");
   });
 });
-test("frontend clears inventory and selection after a failed refresh, then recovers", async () => {
-  await withUi([{ status: 200, body: snapshot }, { status: 503, body: { error: { code: "msb_timeout" } } }, { status: 200, body: snapshot }], async (ui, calls, settle) => {
-    const refresh = ui.document.getElementById("refresh")!;
-    ui.document.querySelector(".vm")!.dispatchEvent(new ui.MouseEvent("click"));
-    refresh.dispatchEvent(new ui.MouseEvent("click")); await settle();
-    expect(ui.document.getElementById("vms")!.children.length).toBe(0);
-    expect(ui.document.getElementById("projects")!.children.length).toBe(0);
-    expect(ui.document.getElementById("selection")!.textContent).toBe("Nenhuma VM selecionada.");
-    expect(ui.document.getElementById("error")!.textContent).toContain("msb_timeout");
-    expect(ui.document.getElementById("error")!.hasAttribute("hidden")).toBe(false);
-    expect(ui.document.getElementById("status")!.textContent).toBe("Discovery indisponível");
-    refresh.dispatchEvent(new ui.MouseEvent("click")); await settle();
-    expect(ui.document.querySelectorAll(".vm").length).toBe(1);
-    expect(ui.document.getElementById("error")!.hasAttribute("hidden")).toBe(true);
-    expect(calls).toEqual(["/api/vms", "/api/vms", "/api/vms"]);
+
+test("select VM → history → send prompt once with CSRF and idempotency key → live delta renders", async () => {
+  let posted: Call | null = null;
+  const router = defaultRouter(call => {
+    if (call.method === "POST" && call.path === "/api/sessions/ses-1/runs") {
+      posted = call;
+      return { status: 202, body: { run_id: "run-1", session_id: "ses-1", status: "prepared", provider_bound: false, reason_code: null, metrics: { inputTokens: null }, replayed: false } };
+    }
+    return undefined;
+  });
+  await withUi(router, async (ui, calls, push) => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    expect(ui.document.getElementById("conversation")!.textContent).toContain("resposta anterior");
+    const select = ui.document.getElementById("session-select") as unknown as HTMLSelectElement;
+    expect([...select.options].map(option => option.textContent).join("|")).toContain("Retomar thread Codex thread-9");
+    (ui.document.getElementById("prompt") as unknown as HTMLTextAreaElement).value = "implemente o login";
+    ui.document.getElementById("composer")!.dispatchEvent(new ui.Event("submit", { cancelable: true }));
+    await settle();
+    expect(posted).not.toBeNull();
+    expect(posted!.headers["X-CSRF-Token"]).toBe("csrf-synthetic");
+    expect(posted!.headers["Idempotency-Key"]).toMatch(/^[a-f0-9]{32}$/);
+    expect(JSON.parse(posted!.body!)).toEqual({ prompt: "implemente o login" });
+    expect(calls.filter(call => call.method === "POST")).toHaveLength(1);
+    expect(ui.sessionStorage.getItem("cockpit_pending_send")).toBeNull();
+    push(`event: live\ndata: ${JSON.stringify({ kind: "delta", session_id: "ses-1", run_id: "run-1", itemId: "a1", delta: "Trabalhando " })}\n\n`);
+    push(`event: live\ndata: ${JSON.stringify({ kind: "delta", session_id: "ses-1", run_id: "run-1", itemId: "a1", delta: "<b>nisso</b>" })}\n\n`);
+    await settle();
+    const live = ui.document.querySelector(".msg.live")!;
+    expect(live.textContent).toBe("Trabalhando <b>nisso</b>");
+    expect(ui.document.querySelectorAll("b").length).toBe(0);
   });
 });
-test("frontend handles empty and host-labeled observations without claiming host verification", async () => {
-  await withUi([{ status: 200, body: { ...snapshot, source: "host", projects: [], vms: [] } }], async ui => {
-    expect(ui.document.getElementById("projects")!.textContent).toContain("Nenhum projeto autorizado");
-    expect(ui.document.getElementById("vms")!.textContent).toContain("Nenhuma VM observada");
-    expect(ui.document.getElementById("source")!.textContent).toContain("source: host");
-    expect(ui.document.getElementById("source")!.textContent).toContain("not_verified");
+
+test("an unconfirmed send survives refresh and is confirmed with the SAME key (no duplicate)", async () => {
+  const keys: string[] = [];
+  let fail = true;
+  const router = defaultRouter(call => {
+    if (call.method === "POST" && call.path === "/api/sessions/ses-1/runs") {
+      keys.push(call.headers["Idempotency-Key"]!);
+      if (fail) return new Error("offline");
+      return { status: 200, body: { run_id: "run-1", session_id: "ses-1", status: "running", provider_bound: true, reason_code: null, metrics: {}, replayed: true } };
+    }
+    return undefined;
   });
-});
-test("frontend shows orphan VM and does not add a fictional project", async () => {
-  const orphan = { vm_name: "codex-charybdis-nano", provider: "codex", project: "charybdis-nano", state: "running", orphaned: true };
-  await withUi([{ status: 200, body: { ...snapshot, source: "host", vms: [...snapshot.vms, orphan] } }], async ui => {
-    expect(ui.document.querySelectorAll(".vm").length).toBe(2);
-    expect(ui.document.getElementById("vms")!.textContent).toContain("codex-charybdis-nano");
-    expect(ui.document.getElementById("vms")!.textContent).toContain("ÓRFÃ: diretório de projeto ausente");
-    expect(ui.document.getElementById("projects")!.textContent).not.toContain("charybdis-nano");
+  let storage: Record<string, string> = {};
+  await withUi(router, async ui => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    (ui.document.getElementById("prompt") as unknown as HTMLTextAreaElement).value = "tarefa importante";
+    ui.document.getElementById("composer")!.dispatchEvent(new ui.Event("submit", { cancelable: true }));
+    await settle();
+    expect(ui.document.getElementById("pending")!.hasAttribute("hidden")).toBe(false);
+    storage = { cockpit_session_proof: "synthetic", cockpit_pending_send: ui.sessionStorage.getItem("cockpit_pending_send")!, cockpit_view: ui.sessionStorage.getItem("cockpit_view")! };
   });
+  fail = false;
+  // "Refresh": a new page with the same tab storage restores the view and offers confirmation; nothing is auto-resent.
+  await withUi(router, async ui => {
+    await settle();
+    expect(keys).toHaveLength(1);
+    expect(ui.document.getElementById("pending")!.hasAttribute("hidden")).toBe(false);
+    click(ui.document.getElementById("pending-confirm"));
+    await settle();
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]!);
+    expect(ui.document.getElementById("pending")!.hasAttribute("hidden")).toBe(true);
+  }, storage);
 });
-test("frontend renders untrusted markup as text and network failures as explicit errors", async () => {
+
+test("attention inbox decides an approval with its exact expected version; content is text only", async () => {
   const markup = '<img src=x onerror="globalThis.compromised=true">';
-  await withUi([{ status: 200, body: { ...snapshot, projects: [markup], vms: [{ ...snapshot.vms[0], vm_name: markup }] } }, new Error("offline")], async (ui, calls, settle) => {
+  const approval = { kind: "approval", approval_id: "apr-1", run_id: "run-1", session_id: "ses-1", project: "demo", vm_name: "codex-demo", version: 3,
+    action_type: "command", created_at: new Date().toISOString(), summary: { actionType: "command", command: `rm -rf build ${markup}`, cwd: "/workspace", reason: "limpar", files: [], itemId: null } };
+  let decision: Call | null = null;
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: dashboard({ attention: decision ? [] : [approval], counts: { working: 0, awaiting_approval: 1, completed: 0, failed: 0, unknown: 0, interrupted: 0 } }) };
+    if (call.method === "POST" && call.path === "/api/approvals/apr-1/decision") { decision = call; return { status: 200, body: { status: "approved", version: 4 } }; }
+    return undefined;
+  });
+  await withUi(router, async ui => {
+    expect(ui.document.getElementById("attention-count")!.textContent).toBe("1");
+    expect(ui.document.getElementById("attention")!.textContent).toContain(markup);
     expect(ui.document.querySelectorAll("img").length).toBe(0);
-    expect(ui.document.getElementById("projects")!.textContent).toContain(markup);
-    expect(ui.document.querySelector(".vm")!.textContent).toContain(markup);
-    ui.document.getElementById("refresh")!.dispatchEvent(new ui.MouseEvent("click")); await settle();
-    expect(ui.document.getElementById("error")!.textContent).toContain("offline");
-    expect(ui.document.querySelectorAll(".vm").length).toBe(0);
-    expect(calls).toEqual(["/api/vms", "/api/vms"]);
+    click([...ui.document.querySelectorAll("#attention button")].find(node => node.textContent === "Aprovar"));
+    await settle();
+    expect(JSON.parse(decision!.body!)).toEqual({ decision: "approve", expected_version: 3 });
+    expect(decision!.headers["X-CSRF-Token"]).toBe("csrf-synthetic");
+    expect(ui.document.getElementById("attention")!.textContent).toContain("Nada pendente");
   });
 });
+
+test("unknown run shows reconcile, never a resend; interrupt targets the active run", async () => {
+  const unknownRun = { run_id: "run-u", session_id: "ses-1", status: "unknown", provider_bound: true, reason_code: "transport_lost", metrics: { inputTokens: null, durationMs: null } };
+  const router = defaultRouter(call => {
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([unknownRun]) };
+    return undefined;
+  });
+  await withUi(router, async (ui, calls) => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    expect(ui.document.getElementById("run-status")!.textContent).toBe("Não confirmado");
+    expect(ui.document.getElementById("run-detail")!.textContent).toContain("Nada foi reenviado");
+    expect(ui.document.getElementById("run-detail")!.textContent).toContain("tokens: não medido");
+    expect(ui.document.getElementById("reconcile")!.hasAttribute("hidden")).toBe(false);
+    expect(ui.document.getElementById("interrupt")!.hasAttribute("hidden")).toBe(true);
+    expect(calls.filter(call => call.method === "POST")).toEqual([]);
+  });
+});
+
 test.each([401, 403])("failed logout %i does not claim the browser session was revoked", async status => {
-  await withUi([{ status: 200, body: snapshot }, { status, body: { error: { code: status === 401 ? "authentication_required" : "csrf_denied" } } }], async (ui, calls) => {
-    ui.document.getElementById("logout")!.dispatchEvent(new ui.MouseEvent("click"));
-    for (let attempt = 0; attempt < 100 && ui.document.getElementById("error")!.hasAttribute("hidden"); attempt++) await Bun.sleep(1);
-    expect(calls).toEqual(["/api/vms", "/api/auth/logout"]);
+  const router = defaultRouter(call => call.path === "/api/auth/logout" ? { status, body: { error: { code: status === 401 ? "authentication_required" : "csrf_denied" } } } : undefined);
+  await withUi(router, async ui => {
+    click(ui.document.getElementById("logout"));
+    await settle();
     if (status === 401) {
       expect(ui.document.getElementById("error")!.textContent).toContain("Saída não confirmada");
-      expect(ui.document.getElementById("vms")!.children.length).toBe(0);
+      expect(ui.document.getElementById("agents")!.children.length).toBe(0);
       expect(ui.document.getElementById("login")!.hasAttribute("hidden")).toBe(false);
     } else {
       expect(ui.document.getElementById("error")!.textContent).toContain("Não foi possível confirmar a saída");
       expect(ui.document.getElementById("logout")!.hasAttribute("hidden")).toBe(false);
     }
+  });
+});
+
+test("discovery failure keeps known sessions visible and says so", async () => {
+  const router = defaultRouter(call => call.path === "/api/dashboard" ? { status: 200, body: dashboard({ discovery_error: "msb_timeout", observed_at: null }) } : undefined);
+  await withUi(router, async ui => {
+    expect(ui.document.getElementById("status")!.textContent).toContain("msb_timeout");
   });
 });
