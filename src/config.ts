@@ -10,11 +10,15 @@ export function config(env: Record<string, string | undefined> = process.env): C
   if (mode === "host" && !env.COCKPIT_PROJECTS_BASE?.startsWith("/")) throw new SafeError("host_projects_base_required");
   const localCredential = env.COCKPIT_LOCAL_TOKEN ?? "";
   const allowedProjects = (env.COCKPIT_ALLOWED_PROJECTS ?? "").split(",");
+  // Optional isolated state directory (tests/visual checks). Absolute, no traversal; symlinks are refused by the stores.
+  const dataDir = env.COCKPIT_DATA_DIR;
+  if (dataDir !== undefined && (!dataDir.startsWith("/") || dataDir.split("/").includes(".."))) throw new SafeError("invalid_data_dir");
+  const data = (name: string) => dataDir ? `${dataDir.replace(/\/+$/, "")}/${name}` : fileURLToPath(new URL(`../data/${name}`, import.meta.url));
   return {
     source: mode,
     projectsBase: mode === "mock" ? fileURLToPath(new URL("../fixtures/projects", import.meta.url)) : env.COCKPIT_PROJECTS_BASE!,
-    databasePath: fileURLToPath(new URL(`../data/cockpit-${mode}.sqlite`, import.meta.url)),
-    runtimeDatabasePath: fileURLToPath(new URL(`../data/runtime-${mode}/runtime.sqlite`, import.meta.url)),
+    databasePath: data(`cockpit-${mode}.sqlite`),
+    runtimeDatabasePath: data(`runtime-${mode}/runtime.sqlite`),
     port: Number(port),
     localCredential,
     allowedProjects,

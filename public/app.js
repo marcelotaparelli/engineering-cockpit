@@ -81,13 +81,23 @@ function showLogin() {
   stopStream();
   state.csrf = null; state.proof = null; state.dashboard = null;
   try { sessionStorage.removeItem('cockpit_session_proof'); } catch {}
-  $('login').hidden = false; $('logout').hidden = true; $('app').hidden = true; $('refresh').disabled = true;
+  $('login').hidden = false; $('logout').hidden = true; $('app').hidden = true; $('refresh').hidden = true; $('live').hidden = true;
   $('agents').replaceChildren(); $('attention').replaceChildren(); $('conversation').replaceChildren();
-  $('source').textContent = 'Acesso local protegido';
-  $('live').textContent = 'offline'; $('live').className = 'badge';
+  $('source').textContent = 'Acesso local protegido'; $('source').className = 'badge';
+  setLive('offline', 'bad');
   $('status').textContent = 'Autenticação local necessária';
 }
-function showApp() { $('login').hidden = true; $('logout').hidden = false; $('app').hidden = false; }
+function showApp() {
+  $('login').hidden = true; $('logout').hidden = false; $('app').hidden = false; $('refresh').hidden = false; $('live').hidden = false;
+  if (!state.dashboard) { $('agents').replaceChildren(el('li', 'Carregando agentes…', 'empty-list')); setLive('conectando…', 'warn'); }
+}
+function setLive(text, tone) { $('live').textContent = text; $('live').className = `badge conn ${tone}`; }
+function setPane(pane) {
+  $('app').dataset.pane = pane;
+  for (const tab of document.querySelectorAll('.tabs button')) tab.setAttribute('aria-current', String(tab.dataset.pane === pane));
+}
+for (const tab of document.querySelectorAll('.tabs button')) tab.addEventListener('click', () => setPane(tab.dataset.pane));
+setPane('session');
 
 async function init() {
   if (!state.proof) { showLogin(); return; }
@@ -146,44 +156,95 @@ async function loadDashboard() {
     const data = await get('/api/dashboard');
     state.dashboard = data;
     if (state.lastEventId === null && Number.isSafeInteger(data.cursor)) state.lastEventId = data.cursor;
-    $('source').textContent = data.source === 'mock' ? 'SIMULAÇÃO · dados e agente sintéticos' : 'host · msb observado · not_verified';
-    $('source').className = data.source === 'mock' ? 'badge warn' : 'badge';
+    $('source').textContent = data.source === 'mock' ? 'SIMULAÇÃO · agente sintético' : 'Host · Microsandbox';
+    $('source').className = data.source === 'mock' ? 'badge sim' : 'badge';
     renderAttention(data.attention);
     renderAgents(data);
+    renderDiscovery(data);
     $('status').textContent = data.discovery_error ? `Discovery indisponível (${data.discovery_error}); exibindo apenas sessões conhecidas.` : `VMs observadas ${ago(data.observed_at)}`;
     clearError();
   } catch (error) {
     if (error.status === 401) return;
-    $('agents').replaceChildren();
+    if (!state.dashboard) $('agents').replaceChildren();
     showError(`Falha ao atualizar: ${error.code}`);
   } finally { $('refresh').disabled = false; }
 }
 
-function renderAgents(data) {
-  const c = data.counts;
-  $('counts').textContent = `${c.working} trabalhando · ${c.awaiting_approval} aguardando você · ${c.completed} concluídos · ${c.failed + c.unknown} com problema`;
-  const list = $('agents');
-  list.replaceChildren();
-  if (!data.vms.length) list.append(el('li', 'Nenhuma VM autorizada observada.', 'muted'));
-  for (const vm of data.vms) {
-    const item = el('li');
-    const node = button('', () => selectVm(vm.vm_name), 'agent');
-    node.setAttribute('aria-pressed', String(vm.vm_name === state.vm));
-    const top = el('div', null, 'row');
-    top.append(el('strong', vm.vm_name), el('span', STATE_LABEL[vm.state] || vm.state, `chip ${vm.state}`));
-    const meta = el('div', `${vm.project || '—'} · VM ${vm.vm_state}${vm.orphaned ? ' · ÓRFÃ: diretório de projeto ausente' : ''} · ${ago(vm.last_activity)}`, 'muted');
-    const next = el('div', `Próximo passo: ${vm.next_step}`, 'muted');
-    node.append(top, meta, next);
-    node.disabled = !vm.runnable && !vm.session_id;
-    item.append(node);
-    list.append(item);
+const DISCOVERY_ERROR = {
+  msb_timeout: 'o comando msb não respondeu a tempo.', msb_spawn_failed: 'o comando msb não foi encontrado no PATH do Cockpit.',
+  project_discovery_failed: 'COCKPIT_PROJECTS_BASE não pôde ser lido.', invalid_vm_json: 'saída do msb não é JSON válido.',
+};
+function renderDiscovery(data) {
+  const box = $('discovery');
+  const d = data.discovery || {};
+  const lines = [];
+  let tone = '';
+  if (data.discovery_error) {
+    tone = 'bad';
+    lines.push(`Não foi possível listar as VMs (${data.discovery_error})${DISCOVERY_ERROR[data.discovery_error] ? ': ' + DISCOVERY_ERROR[data.discovery_error] : '.'}`);
+    lines.push('Sessões já conhecidas continuam acessíveis. Diagnóstico local: ./scripts/cockpit discovery-report');
+  } else if (!data.vms.length) {
+    tone = 'warn';
+    lines.push('Nenhuma VM de agente nos projetos autorizados.');
+    if (d.outside_grants) lines.push(`${d.outside_grants} VM(s) de agente fora de COCKPIT_ALLOWED_PROJECTS.`);
+    if (d.ignored_invalid_project) lines.push(`${d.ignored_invalid_project} VM(s) com nome de projeto fora do padrão (minúsculas, dígitos, - e _).`);
+    if (d.ignored_not_agent) lines.push(`${d.ignored_not_agent} sandbox(es) que não são agentes (ignoradas).`);
+    lines.push('Detalhes por VM: ./scripts/cockpit discovery-report');
+  } else if (d.ignored_invalid_project) {
+    tone = 'warn';
+    lines.push(`${d.ignored_invalid_project} VM(s) parecem agentes mas têm nome de projeto fora do padrão e foram ignoradas. Veja ./scripts/cockpit discovery-report`);
   }
+  box.hidden = !lines.length;
+  box.className = `notice ${tone}`;
+  box.replaceChildren(...lines.map(line => el('span', line)));
 }
 
+function renderAgents(data) {
+  const c = data.counts;
+  const parts = [[c.working, 'executando'], [c.awaiting_approval, 'aguardando você'], [c.failed + c.unknown, 'com problema'], [c.completed, c.completed === 1 ? 'concluído' : 'concluídos']].filter(([n]) => n > 0);
+  $('counts').textContent = parts.length ? parts.map(([n, label]) => `${n} ${label}`).join(' · ') : `${data.vms.length} agente(s), nenhum em execução`;
+  const list = $('agents');
+  const filter = $('filter').value.trim().toLowerCase();
+  const vms = data.vms.filter(vm => !filter || vm.vm_name.toLowerCase().includes(filter) || String(vm.project || '').toLowerCase().includes(filter));
+  list.replaceChildren();
+  if (!data.vms.length) { list.append(el('li', data.discovery_error ? 'Sem VMs observadas.' : 'Nenhum agente para mostrar.', 'empty-list')); return; }
+  if (!vms.length) { list.append(el('li', 'Nenhum agente corresponde ao filtro.', 'empty-list')); return; }
+  const groups = new Map();
+  for (const vm of vms) { const key = vm.project || '—'; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(vm); }
+  for (const [project, members] of [...groups].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const group = el('li', null, 'project');
+    const head = el('div', null, 'project-name');
+    const busy = members.filter(vm => vm.state === 'working' || vm.state === 'awaiting_approval').length;
+    head.append(el('span', project), el('span', busy ? `${busy} ativo` : ''));
+    const ul = el('ul', null, 'agents');
+    for (const vm of members) {
+      const item = el('li');
+      const node = button('', () => selectVm(vm.vm_name), 'agent');
+      node.dataset.vm = vm.vm_name;
+      node.setAttribute('aria-pressed', String(vm.vm_name === state.vm));
+      const top = el('div', null, 'row');
+      top.append(el('span', null, `dot s-${vm.state}`), el('strong', vm.vm_name, 'name'), el('span', STATE_LABEL[vm.state] || vm.state, `chip s-${vm.state}`));
+      const where = vm.orphaned ? 'ÓRFÃ: diretório do projeto ausente' : vm.vm_state === 'running' ? 'VM ligada' : vm.vm_state === 'stopped' ? 'VM parada' : 'VM não observada';
+      node.append(top, el('div', `${where} · ${ago(vm.last_activity)}`, 'meta'));
+      if (vm.state !== 'offline') node.append(el('div', vm.next_step, 'meta'));
+      node.title = `${vm.vm_name} — próximo passo: ${vm.next_step}`;
+      node.disabled = !vm.runnable && !vm.session_id;
+      item.append(node);
+      ul.append(item);
+    }
+    group.append(head, ul);
+    list.append(group);
+  }
+}
+$('filter').addEventListener('input', () => { if (state.dashboard) renderAgents(state.dashboard); });
+
 function approvalCard(item, onDone) {
-  const li = el('li');
+  const li = el('li', null, 'card');
   const summary = item.summary;
-  li.append(el('strong', `${item.vm_name || ''} · ${item.action_type === 'file_change' || item.actionType === 'file_change' ? 'Alteração de arquivos' : 'Comando'}`));
+  const head = el('div', null, 'head');
+  head.append(el('strong', item.action_type === 'file_change' || item.actionType === 'file_change' ? 'Aprovar alteração de arquivos' : 'Aprovar comando'), el('span', ago(item.created_at || item.createdAt), 'where'));
+  li.append(head);
+  if (item.vm_name) li.append(el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
   if (summary && summary.command) li.append(el('pre', summary.command));
   if (summary && summary.files && summary.files.length) li.append(el('pre', summary.files.join('\n')));
   if (summary && summary.reason) li.append(el('div', summary.reason, 'muted'));
@@ -199,7 +260,7 @@ function approvalCard(item, onDone) {
     await onDone();
   };
   actions.append(button('Aprovar', decide('approve'), 'primary'), button('Rejeitar', decide('reject'), 'danger'));
-  if (item.session_id && item.vm_name) actions.append(button('Abrir', () => selectVm(item.vm_name, item.session_id)));
+  if (item.session_id && item.vm_name && item.session_id !== state.sessionId) actions.append(button('Abrir sessão', () => selectVm(item.vm_name, item.session_id)));
   li.append(actions);
   return li;
 }
@@ -207,16 +268,17 @@ function approvalCard(item, onDone) {
 function renderAttention(items) {
   const list = $('attention');
   list.replaceChildren();
-  $('attention-count').textContent = String(items.length);
-  $('attention-count').className = items.length ? 'count hot' : 'count';
-  if (!items.length) { list.append(el('li', 'Nada pendente.', 'muted plain')); return; }
+  for (const id of ['attention-count', 'tab-count']) { $(id).textContent = String(items.length); $(id).className = items.length ? 'count hot' : 'count'; }
+  if (!items.length) { list.append(el('li', 'Nada pendente. Quando um agente pedir aprovação ou travar, aparece aqui.', 'empty-list')); return; }
   for (const item of items) {
     if (item.kind === 'approval') { list.append(approvalCard(item, refreshAll)); continue; }
-    const li = el('li', null, 'bad');
-    li.append(el('strong', `${item.vm_name} · ${item.kind === 'unknown_run' ? 'Execução não confirmada' : 'Execução falhou'}`));
-    li.append(el('div', REASON[item.reason_code] || item.reason_code || '', 'muted'));
+    const li = el('li', null, 'card bad');
+    const head = el('div', null, 'head');
+    head.append(el('strong', item.kind === 'unknown_run' ? 'Execução não confirmada' : 'Execução falhou'), el('span', ago(item.created_at), 'where'));
+    li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
+    li.append(el('div', REASON[item.reason_code] || item.reason_code || '', 'muted small'));
     const actions = el('div', null, 'actions');
-    actions.append(button('Abrir', () => selectVm(item.vm_name, item.session_id)));
+    actions.append(button(item.kind === 'unknown_run' ? 'Abrir e reconciliar' : 'Abrir sessão', () => selectVm(item.vm_name, item.session_id)));
     li.append(actions);
     list.append(li);
   }
@@ -225,17 +287,18 @@ function renderAttention(items) {
 // ---------------------------------------------------------------- session workspace
 async function selectVm(vmName, sessionId) {
   state.vm = vmName;
-  for (const node of document.querySelectorAll('.agent')) node.setAttribute('aria-pressed', String(node.querySelector('strong') && node.querySelector('strong').textContent === vmName));
+  for (const node of document.querySelectorAll('.agent')) node.setAttribute('aria-pressed', String(node.dataset.vm === vmName));
+  setPane('session');
   const vm = state.dashboard && state.dashboard.vms.find(item => item.vm_name === vmName);
   $('empty').hidden = true; $('session-view').hidden = false;
   $('vm-title').textContent = vmName;
-  $('vm-meta').textContent = vm ? `${vm.project} · VM ${vm.vm_state} · ${STATE_LABEL[vm.state] || vm.state}` : '';
+  $('vm-meta').textContent = vm ? `Projeto ${vm.project} · ${vm.provider} · VM ${vm.vm_state === 'running' ? 'ligada' : vm.vm_state === 'stopped' ? 'parada' : 'não observada'}${vm.orphaned ? ' · órfã' : ''}` : 'VM não observada agora';
   $('new-session').disabled = !(vm && vm.runnable);
   const known = state.dashboard ? state.dashboard.sessions.filter(item => item.vm_name === vmName) : [];
   const select = $('session-select');
   select.replaceChildren();
   for (const item of known) {
-    const option = el('option', `Sessão ${item.thread_id.slice(0, 8)} · ${STATE_LABEL[item.state] || item.state} · ${ago(item.last_activity)}`);
+    const option = el('option', `Sessão ${item.thread_id.slice(0, 8)} · atividade ${ago(item.last_activity)}`);
     option.value = `s:${item.session_id}`;
     select.append(option);
   }
@@ -344,7 +407,7 @@ function renderRun() {
   $('run-bar').hidden = !run;
   if (!run) return;
   $('run-status').textContent = RUN_LABEL[run.status] || run.status;
-  $('run-status').className = `chip ${run.status}`;
+  $('run-status').className = `chip s-${run.status}`;
   const parts = [];
   if (run.reason_code) parts.push(REASON[run.reason_code] || run.reason_code);
   const metrics = run.metrics || {};
@@ -472,7 +535,7 @@ async function connectStream() {
     const response = await fetch('/api/events', { credentials: 'same-origin', cache: 'no-store', headers, signal: controller.signal });
     if (response.status === 401) { showLogin(); return; }
     if (!response.ok || !response.body) throw new Error('stream_failed');
-    $('live').textContent = 'ao vivo'; $('live').className = 'badge ok';
+    setLive('ao vivo', 'ok');
     state.retry = 0;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -503,7 +566,7 @@ async function connectStream() {
   }
   if (state.stream !== controller || !state.proof || !$('live')) return; // page gone or logged out
   // Reconnect with backoff; the cursor guarantees no durable event is lost meanwhile.
-  $('live').textContent = 'reconectando…'; $('live').className = 'badge warn';
+  setLive('reconectando…', 'warn');
   state.retry = Math.min(state.retry + 1, 5);
   setTimeout(() => { if (state.stream === controller) { scheduleRefresh(); connectStream(); } }, 500 * 2 ** state.retry);
 }

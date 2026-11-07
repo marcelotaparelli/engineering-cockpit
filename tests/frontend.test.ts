@@ -203,3 +203,41 @@ test("discovery failure keeps known sessions visible and says so", async () => {
     expect(ui.document.getElementById("status")!.textContent).toContain("msb_timeout");
   });
 });
+
+test("hidden UI can never be resurrected by author CSS (login stayed visible after auth on Arch)", async () => {
+  const css = await Bun.file(new URL("../public/style.css", import.meta.url)).text();
+  expect(css).toMatch(/\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}/);
+  await withUi(defaultRouter(), async ui => {
+    expect(ui.document.getElementById("login")!.hasAttribute("hidden")).toBe(true);
+    expect(ui.document.getElementById("app")!.hasAttribute("hidden")).toBe(false);
+  });
+});
+
+test("no visible agent: the panel explains why with counts only and points to the local report", async () => {
+  const router = defaultRouter(call => call.path === "/api/dashboard" ? { status: 200, body: dashboard({ vms: [], sessions: [],
+    discovery: { ok: true, observed_vms: 2, outside_grants: 2, ignored_not_agent: 1, ignored_invalid_project: 1 } }) } : undefined);
+  await withUi(router, async ui => {
+    const box = ui.document.getElementById("discovery")!;
+    expect(box.hasAttribute("hidden")).toBe(false);
+    expect(box.textContent).toContain("2 VM(s) de agente fora de COCKPIT_ALLOWED_PROJECTS");
+    expect(box.textContent).toContain("1 sandbox(es) que não são agentes");
+    expect(box.textContent).toContain("discovery-report");
+  });
+});
+
+test("agents are grouped by project and filterable without losing the selection", async () => {
+  const other = { ...vm, vm_name: "claude-lab", project: "lab", provider: "claude", runnable: false, state: "offline", session_id: null };
+  const router = defaultRouter(call => call.path === "/api/dashboard" ? { status: 200, body: dashboard({ vms: [vm, other], projects: ["demo", "lab"] }) } : undefined);
+  await withUi(router, async ui => {
+    const groups = [...ui.document.querySelectorAll("#agents .project-name")].map(node => node.textContent);
+    expect(groups.map(text => text!.slice(0, 4))).toEqual(["demo", "lab"]);
+    click(ui.document.querySelector('.agent[data-vm="codex-demo"]'));
+    await settle();
+    const filter = ui.document.getElementById("filter") as unknown as HTMLInputElement;
+    filter.value = "lab";
+    (filter as unknown as { dispatchEvent(event: unknown): void }).dispatchEvent(new ui.Event("input"));
+    await settle(5);
+    expect([...ui.document.querySelectorAll(".agent")].map(node => (node as unknown as { dataset: Record<string, string> }).dataset.vm)).toEqual(["claude-lab"]);
+    expect(ui.document.getElementById("vm-title")!.textContent).toBe("codex-demo");
+  });
+});

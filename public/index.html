@@ -3,69 +3,94 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Engineering Cockpit</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="eyebrow">ENGINEERING COCKPIT</span><strong>Central de agentes</strong></div>
-  <span id="source" class="badge" role="status">Carregando origem…</span>
-  <span id="live" class="badge" role="status" aria-live="polite">offline</span>
+  <div class="brand"><span class="logo" aria-hidden="true">◆</span><strong>Engineering Cockpit</strong></div>
+  <span id="source" class="badge" role="status">Carregando…</span>
+  <span id="live" class="badge conn" role="status" aria-live="polite" hidden>offline</span>
   <span class="spacer"></span>
-  <button id="refresh" type="button">Atualizar</button>
-  <button id="logout" type="button" hidden>Sair</button>
+  <button id="refresh" type="button" class="ghost" hidden title="Atualizar agora">Atualizar</button>
+  <button id="logout" type="button" class="ghost" hidden>Sair</button>
 </header>
-<main>
-  <form id="login" class="card" hidden>
-    <h1>Acesso local</h1>
-    <label for="credential">Credencial local</label>
-    <input id="credential" type="password" autocomplete="off" required>
-    <button type="submit">Entrar</button>
-    <p id="login-error" role="alert" hidden></p>
-  </form>
-  <p id="error" role="alert" hidden></p>
-  <div id="app" class="layout" hidden>
-    <aside class="sidebar">
-      <section aria-labelledby="attention-title">
-        <h2 id="attention-title">Precisa de você <span id="attention-count" class="count">0</span></h2>
-        <ul id="attention" class="attention"></ul>
-      </section>
-      <section aria-labelledby="agents-title">
-        <h2 id="agents-title">Agentes</h2>
-        <p id="counts" class="muted"></p>
-        <ul id="agents" class="agents"></ul>
-        <p id="status" class="muted" role="status" aria-live="polite"></p>
-      </section>
-    </aside>
-    <section id="workspace" class="workspace" aria-labelledby="workspace-title">
-      <div id="empty" class="empty"><h2 id="workspace-title">Selecione um agente</h2><p>Escolha uma VM Codex à esquerda para abrir ou retomar uma sessão.</p></div>
-      <div id="session-view" hidden>
-        <div class="session-head">
-          <div><h2 id="vm-title"></h2><p id="vm-meta" class="muted"></p></div>
-          <div class="session-controls">
-            <label for="session-select" class="sr-only">Sessão</label>
-            <select id="session-select"></select>
-            <button id="new-session" type="button">Nova sessão</button>
-          </div>
+
+<form id="login" class="login" hidden>
+  <h1>Acesso local</h1>
+  <p class="muted">Digite a credencial definida em <code>COCKPIT_LOCAL_TOKEN</code> ao iniciar o Cockpit.</p>
+  <label for="credential">Credencial local</label>
+  <input id="credential" type="password" autocomplete="off" required>
+  <button type="submit" class="primary">Entrar</button>
+  <p id="login-error" class="alert" role="alert" hidden></p>
+</form>
+
+<div id="error" class="alert banner" role="alert" hidden></div>
+
+<div id="app" class="app" data-pane="session" hidden>
+  <nav class="tabs" aria-label="Áreas">
+    <button type="button" data-pane="agents">Agentes</button>
+    <button type="button" data-pane="session">Sessão</button>
+    <button type="button" data-pane="inbox">Precisa de você <span id="tab-count" class="count">0</span></button>
+  </nav>
+
+  <aside class="pane pane-agents" aria-labelledby="agents-title">
+    <div class="pane-head">
+      <h2 id="agents-title">Agentes</h2>
+      <p id="counts" class="muted small"></p>
+    </div>
+    <div id="discovery" class="notice" hidden></div>
+    <label for="filter" class="sr-only">Filtrar agentes</label>
+    <input id="filter" type="search" placeholder="Filtrar projeto ou VM…" autocomplete="off">
+    <ul id="agents" class="projects"></ul>
+    <p id="status" class="muted small foot" role="status" aria-live="polite"></p>
+  </aside>
+
+  <section id="workspace" class="pane pane-session" aria-labelledby="workspace-title">
+    <div id="empty" class="placeholder">
+      <h2 id="workspace-title">Selecione um agente</h2>
+      <p class="muted">Escolha uma VM em <strong>Agentes</strong> para abrir ou retomar uma sessão. O que depende de você aparece em <strong>Precisa de você</strong>.</p>
+    </div>
+    <div id="session-view" class="session" hidden>
+      <div class="session-head">
+        <div class="title">
+          <h2 id="vm-title"></h2>
+          <p id="vm-meta" class="muted small"></p>
         </div>
-        <div id="run-bar" class="run-bar" hidden>
-          <span id="run-status" class="chip"></span>
-          <span id="run-detail" class="muted"></span>
-          <span class="spacer"></span>
-          <button id="reconcile" type="button" hidden>Reconciliar</button>
-          <button id="interrupt" type="button" class="danger" hidden>Interromper</button>
+        <div class="session-controls">
+          <label for="session-select" class="sr-only">Sessão</label>
+          <select id="session-select"></select>
+          <button id="new-session" type="button">Nova sessão</button>
         </div>
-        <ul id="session-approvals" class="attention"></ul>
-        <ol id="conversation" class="conversation" aria-live="polite"></ol>
-        <div id="pending" class="pending" role="alert" hidden>
-          <span>Envio anterior não confirmado. Confirmar reutiliza a mesma chave — não duplica a execução.</span>
-          <button id="pending-confirm" type="button">Confirmar envio</button>
-          <button id="pending-discard" type="button">Descartar</button>
+      </div>
+      <div id="run-bar" class="run-bar" hidden>
+        <span id="run-status" class="chip"></span>
+        <span id="run-detail" class="muted small"></span>
+        <span class="spacer"></span>
+        <button id="reconcile" type="button" hidden>Reconciliar</button>
+        <button id="interrupt" type="button" class="danger" hidden>Interromper</button>
+      </div>
+      <ul id="session-approvals" class="inbox inline"></ul>
+      <ol id="conversation" class="conversation" aria-live="polite"></ol>
+      <div class="dock">
+        <div id="pending" class="notice warn" role="alert" hidden>
+          <span>Envio anterior não confirmado. Confirmar reutiliza a mesma chave: não duplica a execução.</span>
+          <span class="actions"><button id="pending-confirm" type="button" class="primary">Confirmar envio</button><button id="pending-discard" type="button">Descartar</button></span>
         </div>
         <form id="composer" class="composer">
           <label for="prompt" class="sr-only">Prompt</label>
-          <textarea id="prompt" rows="3" placeholder="Descreva a tarefa para o agente… (Ctrl+Enter envia)" maxlength="65536"></textarea>
-          <button id="send" type="submit">Enviar</button>
+          <textarea id="prompt" rows="3" placeholder="Descreva a tarefa para o agente…" maxlength="65536"></textarea>
+          <div class="composer-side">
+            <button id="send" type="submit" class="primary">Enviar</button>
+            <span class="muted small kbd">Ctrl+Enter</span>
+          </div>
         </form>
-        <p id="composer-note" class="muted" role="status"></p>
+        <p id="composer-note" class="muted small" role="status"></p>
       </div>
-    </section>
-  </div>
-  <footer>Somente local (127.0.0.1). Prompts e respostas não são gravados pelo Cockpit; o histórico vem do próprio Codex. Integração no host: not_verified.</footer>
-</main>
+    </div>
+  </section>
+
+  <aside class="pane pane-inbox" aria-labelledby="attention-title">
+    <div class="pane-head">
+      <h2 id="attention-title">Precisa de você <span id="attention-count" class="count">0</span></h2>
+      <p class="muted small">Aprovações e bloqueios de todos os projetos.</p>
+    </div>
+    <ul id="attention" class="inbox"></ul>
+  </aside>
+</div>
 </body></html>
