@@ -1,0 +1,9 @@
+{
+  "id": "SANITIZED_REQUEST_ID",
+  "result": {
+    "userAgent": "engineering-cockpit/0.164.0 (engineering-cockpit; m0b.1a)",
+    "codexHome": "/sanitized/codex-home",
+    "platformFamily": "unix",
+    "platformOs": "linux"
+  }
+}

@@ -1,0 +1,4 @@
+NAME STATUS IMAGE
+codex-demo running synthetic
+claude-demo stopped synthetic
+opencode-lab stopped synthetic

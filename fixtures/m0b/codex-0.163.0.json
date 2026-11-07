@@ -1,0 +1,6 @@
+{
+  "initialize": {"userAgent":"engineering-cockpit/0.163.0 (engineering-cockpit; m0b.1a)","codexHome":"/sanitized/codex-home","platformFamily":"unix","platformOs":"linux"},
+  "session": {"id":"session-provider-1","status":{"type":"idle"},"updatedAt":1792886400},
+  "run": {"id":"run-provider-1"},
+  "historyItem": {"id":"item-1","type":"message","role":"assistant","text":"fixture response"}
+}

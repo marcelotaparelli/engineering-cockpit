@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Engineering Cockpit · Discovery</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><main>
+  <header><p class="eyebrow">ENGINEERING COCKPIT / M0a</p><h1>Discovery de VMs</h1><p>Inspeção local e seleção somente leitura.</p></header>
+  <aside id="source" role="status">Carregando origem…</aside>
+  <p class="notice">Terminais e agentes externos podem escrever nos projetos. O Cockpit não coordena esses escritores neste marco.</p>
+  <form id="login" hidden><label for="credential">Credencial local</label> <input id="credential" type="password" autocomplete="off" required> <button type="submit">Entrar</button><p id="login-error" role="alert" hidden></p></form>
+  <button id="logout" type="button" hidden>Sair</button>
+  <div class="toolbar"><button id="refresh" type="button">Atualizar</button><span id="status" role="status" aria-live="polite"></span></div>
+  <p id="error" role="alert" hidden></p>
+  <section aria-labelledby="projects-title"><h2 id="projects-title">Projetos</h2><ul id="projects"></ul></section>
+  <section aria-labelledby="vms-title"><h2 id="vms-title">Máquinas virtuais</h2><div id="vms"></div></section>
+  <p id="selection" aria-live="polite">Nenhuma VM selecionada.</p>
+  <footer>Sem execução de comandos, prompts ou controle de VMs. Integração no host: not_verified.</footer>
+</main></body></html>
