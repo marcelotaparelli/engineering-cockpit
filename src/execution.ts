@@ -5,7 +5,7 @@ import { SafeError, safeCode, type Snapshot } from "./model.ts";
 import type { EventHub } from "./event-hub.ts";
 import type {
   ApprovalSummary, ExecutionTarget, HistoryPage, ProtocolIdentity, ProviderAdapter, ProviderApprovalRef,
-  ProviderConnection, ProviderEvent, ProviderSessionSummary, RunStatus,
+  ProviderConnection, ProviderErrorClass, ProviderEvent, ProviderSessionSummary, RunStatus,
 } from "./provider.ts";
 import type { ApprovalRecord, RunRecord, RuntimeStore, SessionRecord } from "./runtime-store.ts";
 
@@ -46,11 +46,17 @@ interface Live {
   closed: boolean;
   files: Map<string, string[]>;
 }
-interface ActiveRun { runId: string; session: SessionRecord; live: Live; providerRunId: string | null; buffer: ProviderEvent[] }
+interface ActiveRun { runId: string; session: SessionRecord; live: Live; providerRunId: string | null; buffer: ProviderEvent[]; errorClass?: ProviderErrorClass }
+
+const ERROR_REASON: Readonly<Record<ProviderErrorClass, string>> = Object.freeze({
+  usage_limit: "provider_usage_limit", auth: "provider_auth_failed", transport: "provider_transport_error", context_window: "provider_context_window",
+  bad_request: "provider_bad_request", overloaded: "provider_overloaded", sandbox: "provider_sandbox_error", provider_internal: "provider_internal_error",
+});
 interface PendingApproval { approvalId: string; runId: string; live: Live; ref: ProviderApprovalRef; summary: ApprovalSummary & { files: string[] } }
 
 const MAX_PROMPT_CHARS = 64 * 1024;
 const UNCERTAIN: readonly RunStatus[] = ["dispatching", "running", "awaiting_approval"];
+function failureReason(errorClass: ProviderErrorClass | null | undefined): string { return errorClass ? ERROR_REASON[errorClass] : "provider_turn_failed"; }
 const TERMINAL: readonly RunStatus[] = ["completed", "failed", "interrupted"];
 
 /** Load or create a 32-byte secret file (0600, no symlinks). */
@@ -384,9 +390,10 @@ export class ExecutionService {
         this.#store.recordUsage(active.runId, event, this.#iso());
         return;
       case "run.error":
-        this.#hub.live({ ...base, kind: "error", data: { message: event.message, willRetry: event.willRetry } });
+        this.#hub.live({ ...base, kind: "error", data: { message: event.message, willRetry: event.willRetry, errorClass: event.errorClass ?? null } });
         if (!event.willRetry) {
-          this.#store.appendJournal({ eventId: `${active.runId}:err:${randomUUID()}`, runId: active.runId, type: "operation.notice", occurredAt: this.#iso(), payload: { reasonCode: "provider_turn_error" } });
+          if (event.errorClass) active.errorClass = event.errorClass;
+          this.#store.appendJournal({ eventId: `${active.runId}:err:${randomUUID()}`, runId: active.runId, type: "operation.notice", occurredAt: this.#iso(), payload: { reasonCode: event.errorClass ? ERROR_REASON[event.errorClass] : "provider_turn_error" } });
           this.#hub.journal();
         }
         return;
@@ -415,11 +422,11 @@ export class ExecutionService {
         this.#active.delete(this.#key(live.vmName, event.sessionId));
         for (const [id, pending] of this.#approvals) if (pending.runId === active.runId) this.#approvals.delete(id);
         this.#store.expireApprovals(active.runId, "run_ended", this.#iso());
-        const reasonCode = event.status === "unknown" ? "provider_status_unknown" : event.status === "failed" ? "provider_turn_failed" : undefined;
+        const reasonCode = event.status === "unknown" ? "provider_status_unknown" : event.status === "failed" ? failureReason(event.errorClass ?? active.errorClass) : undefined;
         const run = this.#store.getRun(active.runId);
         if (run?.status === "dispatching" && event.runId) this.#move(active.runId, "running", { providerRunId: event.runId });
         this.#move(active.runId, event.status, reasonCode ? { reasonCode } : {});
-        this.#hub.live({ ...base, kind: "status", data: { status: event.status, errorMessage: event.errorMessage ?? null } });
+        this.#hub.live({ ...base, kind: "status", data: { status: event.status, errorMessage: event.errorMessage ?? null, reasonCode: reasonCode ?? null } });
         this.#log({ event: "run.finished", run_id: active.runId, outcome: event.status });
         return;
       }

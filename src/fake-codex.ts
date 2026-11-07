@@ -176,6 +176,15 @@ export class FakeCodexTransport implements RpcTransport {
       this.#emit("item/completed", { ...base, item: command, completedAtMs: Date.now() });
     }
 
+    const structured = lower.includes("quota") ? "usageLimitExceeded" : lower.includes("unauthorized") ? "unauthorized" : null;
+    if (structured) {
+      await pause();
+      const error = { message: "Simulação: erro estruturado do provider (sk-SECRET-should-never-be-persisted)", codexErrorInfo: structured };
+      this.#emit("error", { ...base, error, willRetry: false });
+      turn.status = "failed";
+      this.#interrupts.delete(turn.id);
+      return this.#emit("turn/completed", { threadId: thread.id, turn: { id: turn.id, status: "failed", items: [], error } });
+    }
     if (lower.includes("falha") || lower.includes("fail")) {
       await pause();
       return finish("failed", "Simulação: o modelo retornou erro.");

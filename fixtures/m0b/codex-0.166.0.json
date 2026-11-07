@@ -1,0 +1,4 @@
+{
+  "initialize": {"userAgent":"engineering-cockpit/0.166.0 (Arch Linux; x86_64) unknown (engineering-cockpit; m0b.1a)","codexHome":"/sanitized/codex-home","platformFamily":"unix","platformOs":"linux"},
+  "listResponse": {"backwardsCursor":null,"data":[{"id":"session-provider-166","status":{"type":"idle"},"updatedAt":1792886400,"cliVersion":"0.166.0","preview":"","extra":{}}],"nextCursor":null,"readStates":[]}
+}

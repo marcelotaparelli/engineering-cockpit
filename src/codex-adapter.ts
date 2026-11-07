@@ -1,7 +1,7 @@
 import { SafeError, validProject, vmIdentity } from "./model.ts";
 import type {
   ActivityItem, ApprovalSummary, ExecutionTarget, HistoryItem, HistoryPage, HistoryRun, ProtocolIdentity, ProviderAdapter, ProviderApprovalRef,
-  ProviderCapabilities, ProviderConnection, ProviderEvent, ProviderRunRef, ProviderSessionRef,
+  ProviderCapabilities, ProviderConnection, ProviderErrorClass, ProviderEvent, ProviderRunRef, ProviderSessionRef,
   ProviderSessionSummary, ReconciliationResult, RpcInboundMessage, RpcTransport, StartRunInput,
   StartSessionInput,
 } from "./provider.ts";
@@ -17,12 +17,27 @@ const DEFAULT_CAPABILITIES: ProviderCapabilities = Object.freeze({
   usage: "session_cumulative",
 });
 
-const SUPPORTED_CODEX_APP_SERVER_VERSIONS = new Set(["0.163.0", "0.164.0"]);
+// Each version is pinned only after its initialize/thread/list shape was observed (see docs/e0-homologacao.md for 0.166.0).
+export const SUPPORTED_CODEX_APP_SERVER_VERSIONS: ReadonlySet<string> = new Set(["0.163.0", "0.164.0", "0.166.0"]);
 const CODEX_APP_SERVER_PROTOCOL = "codex-app-server-jsonl-v1";
-const INITIALIZE_FIELDS = Object.freeze(["codexHome", "platformFamily", "platformOs", "userAgent"] as const);
+export const INITIALIZE_FIELDS = Object.freeze(["codexHome", "platformFamily", "platformOs", "userAgent"] as const);
 // The originator/version is a complete whitespace-delimited product token.
 // Punctuation and Unicode adjacent to it are not accepted as delimiters.
-const USER_AGENT_TOKEN_PATTERN = /(?:^|\s)engineering-cockpit\/(\d+\.\d+\.\d+)(?=\s|$)/g;
+export const USER_AGENT_TOKEN_PATTERN = /(?:^|\s)engineering-cockpit\/(\d+\.\d+\.\d+)(?=\s|$)/g;
+
+// Codex `codexErrorInfo` variants (app-server schema; not yet observed live on 0.166.0). Unknown variants stay unclassified.
+const ERROR_CLASS: Readonly<Record<string, ProviderErrorClass>> = Object.freeze({
+  usageLimitExceeded: "usage_limit", unauthorized: "auth",
+  httpConnectionFailed: "transport", responseStreamConnectionFailed: "transport", responseStreamDisconnected: "transport", responseTooManyFailedAttempts: "transport",
+  contextWindowExceeded: "context_window", badRequest: "bad_request", serverOverloaded: "overloaded", sandboxError: "sandbox", internalServerError: "provider_internal",
+});
+/** `codexErrorInfo` is either a bare variant name or an object keyed by it. */
+export function classifyCodexError(error: unknown): ProviderErrorClass | null {
+  if (!(typeof error === "object" && error !== null && !Array.isArray(error))) return null;
+  const info = (error as Record<string, unknown>).codexErrorInfo;
+  const key = typeof info === "string" ? info : typeof info === "object" && info !== null && !Array.isArray(info) && Object.keys(info).length === 1 ? Object.keys(info)[0]! : null;
+  return key !== null && Object.hasOwn(ERROR_CLASS, key) ? ERROR_CLASS[key]! : null;
+}
 
 function object(value: unknown): value is ObjectValue { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function initializeString(value: unknown, maxLength: number): string {
@@ -305,7 +320,7 @@ class CodexConnection implements ProviderConnection {
       if (message.method === "turn/started") return { ...base, type: "run.started", status: "running" };
       const status = turnStatus(turn.status);
       const error = object(turn.error) ? boundedText(turn.error.message, 2048) : null;
-      return { ...base, type: "run.status_changed", status: status === "running" ? "unknown" : status, errorMessage: error };
+      return { ...base, type: "run.status_changed", status: status === "running" ? "unknown" : status, errorMessage: error, errorClass: classifyCodexError(turn.error) };
     }
     if (message.method === "item/agentMessage/delta") {
       const delta = boundedText(params.delta, 64 * 1024);
@@ -321,7 +336,7 @@ class CodexConnection implements ProviderConnection {
     if (message.method === "error") {
       const error = object(params.error) ? params.error : {};
       return { type: "run.error", occurredAt: now(), sessionId: string(params.threadId), runId: string(params.turnId),
-        code: "provider_turn_error", message: boundedText(error.message, 2048), willRetry: params.willRetry === true };
+        code: "provider_turn_error", message: boundedText(error.message, 2048), willRetry: params.willRetry === true, errorClass: classifyCodexError(error) };
     }
     if (message.method === "serverRequest/resolved") {
       const requestId = params.requestId;

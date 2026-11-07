@@ -241,3 +241,77 @@ test("agents are grouped by project and filterable without losing the selection"
     expect(ui.document.getElementById("vm-title")!.textContent).toBe("codex-demo");
   });
 });
+
+test("failed-run notification opens the correct session and shows the classified cause", async () => {
+  const failed = { run_id: "run-2", status: "failed", reason_code: "provider_usage_limit", created_at: new Date().toISOString(), ended_at: new Date().toISOString() };
+  const two = dashboard({
+    attention: [{ kind: "failed_run", run_id: "run-2", session_id: "ses-2", project: "demo", vm_name: "codex-demo", reason_code: "provider_usage_limit", created_at: failed.created_at }],
+    sessions: [
+      { session_id: "ses-1", project: "demo", vm_name: "codex-demo", thread_id: "thread-0001", last_activity: failed.created_at, latest_run: null, state: "idle" },
+      { session_id: "ses-2", project: "demo", vm_name: "codex-demo", thread_id: "thread-0002", last_activity: failed.created_at, latest_run: failed, state: "failed" },
+    ],
+  });
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: two };
+    if (call.path === "/api/sessions/ses-2") return { status: 200, body: { session: { session_id: "ses-2" }, runs: [{ ...failed, provider_bound: true, metrics: {} }], approvals: [] } };
+    if (call.path === "/api/sessions/ses-2/history") return { status: 200, body: { items: [], runs: [], next_cursor: null } };
+    return undefined;
+  });
+  for (const storage of [{ cockpit_session_proof: "synthetic" }, { cockpit_session_proof: "synthetic", cockpit_view: JSON.stringify({ vm: "codex-demo", sessionId: "ses-1" }) }]) {
+    await withUi(router, async (ui, calls) => {
+      const open = [...ui.document.querySelectorAll("#attention button")].find(node => node.textContent === "Abrir sessão");
+      expect(open).toBeTruthy();
+      click(open);
+      await settle(120);
+      expect(calls.some(call => call.path === "/api/sessions/ses-2")).toBe(true);
+      expect((ui.document.getElementById("session-select") as unknown as { value: string }).value).toBe("s:ses-2");
+      expect(ui.document.getElementById("run-detail")!.textContent).toContain("quota");
+    }, storage);
+  }
+});
+
+const reasoningItem = { id: "r1", runId: "t1", kind: "reasoning", text: null, status: null, command: null, exitCode: null, files: [] };
+const runWith = (status: string) => ({ run_id: "run-i", session_id: "ses-1", status, provider_bound: true, reason_code: null, metrics: { inputTokens: null, durationMs: null } });
+
+test("interrupted run: empty reasoning is not 'Raciocinando…', history is kept, and the end is stated (also after refresh)", async () => {
+  const router = defaultRouter(call => {
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([runWith("interrupted")]) };
+    if (call.path === "/api/sessions/ses-1/history") return { status: 200, body: { items: [{ id: "i2", runId: "t1", kind: "agent_message", text: "resposta anterior", status: null, command: null, exitCode: null, files: [] }, reasoningItem], runs: [], next_cursor: null } };
+    return undefined;
+  });
+  await withUi(router, async ui => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    const text = ui.document.getElementById("conversation")!.textContent!;
+    expect(text).not.toContain("Raciocinando");
+    expect(text).toContain("resposta anterior");
+    expect(text).toContain("Execução interrompida");
+    expect(ui.document.getElementById("run-status")!.textContent).toBe("Interrompido");
+    expect(ui.document.querySelectorAll(".run-end").length).toBe(1);
+  });
+});
+
+test("running run still shows 'Raciocinando…'; concurrent live events after the interrupt cannot resurrect it", async () => {
+  let status = "running";
+  const router = defaultRouter(call => {
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([runWith(status)]) };
+    return undefined;
+  });
+  await withUi(router, async (ui, _calls, push) => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    const live = (phase: string) => push(`event: live\ndata: ${JSON.stringify({ kind: "item", phase, session_id: "ses-1", run_id: "run-i", item: reasoningItem })}\n\n`);
+    live("started");
+    await settle();
+    expect(ui.document.getElementById("conversation")!.textContent).toContain("Raciocinando");
+    status = "interrupted";
+    push(`event: journal\ndata: ${JSON.stringify({ session_id: "ses-1", cursor: 9, payload: { to: "interrupted" } })}\n\n`);
+    await new Promise(resolve => setTimeout(resolve, 700));
+    live("started"); // late event arriving after the terminal state
+    await settle();
+    const text = ui.document.getElementById("conversation")!.textContent!;
+    expect(text).not.toContain("Raciocinando");
+    expect(text).toContain("Execução interrompida");
+    expect(ui.document.querySelectorAll(".run-end").length).toBe(1);
+  });
+});

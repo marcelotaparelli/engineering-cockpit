@@ -83,16 +83,19 @@ interface ProviderEventBase {
   sessionId: string;
 }
 
+/** Closed, allowlisted classification of a provider failure. Derived from structured codes only, never from message text. */
+export type ProviderErrorClass = "usage_limit" | "auth" | "transport" | "context_window" | "bad_request" | "overloaded" | "sandbox" | "provider_internal";
+
 export type ProviderEvent =
   | (ProviderEventBase & { type: "session.connected" | "session.resumed"; runId: null })
   | (ProviderEventBase & { type: "run.started"; runId: string; status: "running" })
-  | (ProviderEventBase & { type: "run.status_changed"; runId: string; status: RunStatus; errorMessage?: string | null })
+  | (ProviderEventBase & { type: "run.status_changed"; runId: string; status: RunStatus; errorMessage?: string | null; errorClass?: ProviderErrorClass | null })
   | (ProviderEventBase & { type: "run.output_delta"; runId: string; itemId: string; delta: string })
   | (ProviderEventBase & { type: "run.item"; runId: string; phase: "started" | "completed"; item: ActivityItem })
   | (ProviderEventBase & { type: "approval.requested"; runId: string; approval: ProviderApprovalRef; summary: ApprovalSummary })
   | (ProviderEventBase & { type: "approval.resolved"; runId: null; requestId: RpcId })
   | (ProviderEventBase & { type: "usage.updated"; runId: string | null; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number })
-  | (ProviderEventBase & { type: "run.error"; runId: string; code: string; message: string | null; willRetry: boolean })
+  | (ProviderEventBase & { type: "run.error"; runId: string; code: string; message: string | null; willRetry: boolean; errorClass?: ProviderErrorClass | null })
   | (ProviderEventBase & { type: "request.unsupported"; runId: string | null; method: string });
 
 export type RpcId = string | number;

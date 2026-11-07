@@ -36,7 +36,9 @@ case "$COMMAND" in
   host-check) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/host-check.ts ;;
   discovery-report) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/discovery-report.ts ;;
   m0b1a-smoke) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/m0b1a-smoke.ts ;;
+  protocol-diagnose) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/protocol-diagnose.ts ;;
+  e0-recovery-test) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/e0-recovery.ts ;;
   frontend-test) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file test tests/frontend.test.ts ;;
   artifact) exec "$RUNTIME" --no-env-file scripts/artifact.ts "$@" ;;
-  *) echo 'Usage: ./scripts/cockpit [bootstrap|start|verify|host-check|discovery-report|m0b1a-smoke|frontend-test|artifact]' >&2; exit 2 ;;
+  *) echo 'Usage: ./scripts/cockpit [bootstrap|start|verify|host-check|discovery-report|m0b1a-smoke|protocol-diagnose|e0-recovery-test|frontend-test|artifact]' >&2; exit 2 ;;
 esac

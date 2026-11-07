@@ -240,6 +240,18 @@ describe("MVP vertical flow over HTTP", () => {
     expect(final.reason_code).toBe("provider_turn_failed");
   });
 
+  test("structured provider errors keep a specific safe reason code and never persist the raw message", async () => {
+    const auth = await login();
+    for (const [prompt, code] of [["estourou a quota", "provider_usage_limit"], ["unauthorized agora", "provider_auth_failed"]] as const) {
+      const sessionId = await openSession(auth);
+      const run = await (await startRun(auth, sessionId, prompt)).json() as { run_id: string };
+      const final = await until(runStatus(auth, run.run_id), value => value.status === "failed");
+      expect(final.reason_code).toBe(code);
+    }
+    const dump = JSON.stringify(await (await get(auth, "api/dashboard")).json());
+    expect(dump).not.toContain("SECRET");
+  });
+
   test("transport loss mid-turn becomes unknown, is never resent, and reconcile resolves it", async () => {
     const auth = await login();
     const sessionId = await openSession(auth);

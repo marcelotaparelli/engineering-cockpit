@@ -8,7 +8,16 @@ const REASON = {
   dispatch_unconfirmed: 'O envio pode ter chegado ao Codex, mas não foi confirmado. Nada foi reenviado.',
   process_restarted: 'O Cockpit reiniciou durante a execução. Nada foi reenviado.',
   not_dispatched_before_restart: 'O Cockpit reiniciou antes do envio; o prompt não chegou ao agente.',
-  provider_turn_failed: 'O agente encerrou a tarefa com erro.',
+  provider_turn_failed: 'O agente encerrou a tarefa com erro (o Codex não informou a causa).',
+  provider_turn_error: 'O Codex reportou um erro durante a tarefa (causa não classificada).',
+  provider_usage_limit: 'Limite de uso ou quota do Codex esgotado. Aguarde a renovação ou troque de plano.',
+  provider_auth_failed: 'Falha de autenticação no Codex da VM. Refaça o login dentro da VM.',
+  provider_transport_error: 'Falha de conexão entre o Codex e o serviço do modelo. Tente novamente depois.',
+  provider_context_window: 'A conversa excedeu a janela de contexto do modelo.',
+  provider_bad_request: 'O modelo recusou a requisição (requisição inválida).',
+  provider_overloaded: 'O serviço do modelo está sobrecarregado. Tente novamente depois.',
+  provider_sandbox_error: 'Erro no sandbox de execução do Codex.',
+  provider_internal_error: 'Erro interno do serviço do modelo.',
   approval_delivery_unconfirmed: 'A decisão de aprovação não teve entrega confirmada.',
   reconciled: 'Estado confirmado pelo histórico do Codex.',
   target_unavailable: 'VM indisponível (parada, ausente ou órfã).',
@@ -285,8 +294,11 @@ function renderAttention(items) {
 }
 
 // ---------------------------------------------------------------- session workspace
+let selectToken = 0;
 async function selectVm(vmName, sessionId) {
+  const token = ++selectToken;
   state.vm = vmName;
+  if (sessionId) { state.sessionId = sessionId; saveView(); }
   for (const node of document.querySelectorAll('.agent')) node.setAttribute('aria-pressed', String(node.dataset.vm === vmName));
   setPane('session');
   const vm = state.dashboard && state.dashboard.vms.find(item => item.vm_name === vmName);
@@ -311,6 +323,7 @@ async function selectVm(vmName, sessionId) {
         select.append(option);
       }
     } catch (error) { if (error.status !== 401) $('composer-note').textContent = `Threads do Codex indisponíveis: ${error.code}`; }
+    if (token !== selectToken) return; // a newer selection superseded this one while threads loaded
   }
   if (!select.options.length) {
     const option = el('option', 'Nenhuma sessão — crie uma nova');
@@ -320,6 +333,7 @@ async function selectVm(vmName, sessionId) {
   const preferred = sessionId || (vm && vm.session_id) || (known[0] && known[0].session_id);
   if (preferred && [...select.options].some(option => option.value === `s:${preferred}`)) select.value = `s:${preferred}`;
   await openSelected();
+  $('run-bar').scrollIntoView && $('run-bar').scrollIntoView({ block: 'nearest' });
 }
 
 async function openSelected() {
@@ -384,6 +398,7 @@ async function loadHistory() {
     if (error.status === 401) return;
     conversation.replaceChildren(el('li', `Histórico indisponível (${error.code}). A execução continua sendo acompanhada ao vivo.`, 'msg note'));
   }
+  syncRunEnd();
   conversation.scrollTop = conversation.scrollHeight;
 }
 
@@ -398,14 +413,31 @@ function renderItem(item) {
   }
   if (item.kind === 'file_change') return el('li', `Arquivos (${item.status || 'pendente'}): ${(item.files || []).join(', ')}`, `msg action ${item.status || ''}`);
   if (item.kind === 'plan') return el('li', `Plano: ${item.text || ''}`, 'msg note');
-  if (item.kind === 'reasoning') return el('li', item.text ? `Raciocínio: ${item.text}` : 'Raciocinando…', 'msg note');
+  if (item.kind === 'reasoning') {
+    if (item.text) return el('li', `Raciocínio: ${item.text}`, 'msg note');
+    // Empty reasoning is only a transient "thinking" placeholder while a run is active; never after it ended.
+    const live = !state.run || ACTIVE.has(state.run.status);
+    return live ? el('li', 'Raciocinando…', 'msg note thinking') : el('li', 'Raciocínio (sem resumo)', 'msg note');
+  }
   return el('li', item.kind, 'msg note');
+}
+
+const END_NOTE = { interrupted: 'Execução interrompida — o agente parou antes de concluir esta resposta.', failed: 'Execução falhou.', unknown: 'Resultado não confirmado.' };
+// Settles transient indicators once the run is no longer active; idempotent, never touches real history items.
+function syncRunEnd() {
+  const conversation = $('conversation');
+  const run = state.run;
+  const ended = run && !ACTIVE.has(run.status);
+  if (ended) for (const node of conversation.querySelectorAll('.thinking')) { node.textContent = 'Raciocínio (sem resumo)'; node.classList.remove('thinking'); }
+  for (const node of conversation.querySelectorAll('.run-end')) node.remove();
+  if (ended && run.status === 'interrupted') conversation.append(el('li', END_NOTE.interrupted, 'msg note run-end'));
 }
 
 function renderRun() {
   const run = state.run;
   $('run-bar').hidden = !run;
   if (!run) return;
+  syncRunEnd();
   $('run-status').textContent = RUN_LABEL[run.status] || run.status;
   $('run-status').className = `chip s-${run.status}`;
   const parts = [];
@@ -521,6 +553,7 @@ function onLive(event) {
   } else if (event.kind === 'approval') {
     scheduleRefresh();
   }
+  syncRunEnd(); // a late live event must not resurrect a "thinking" indicator after the run ended
   conversation.scrollTop = conversation.scrollHeight;
 }
 
