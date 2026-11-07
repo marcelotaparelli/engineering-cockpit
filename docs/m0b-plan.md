@@ -1,6 +1,6 @@
 # M0b — controle de uma sessão Codex real na micro-VM
 
-**Estado:** M0b.1a e M0b.1b concluídos; Fatia 3 (API/SSE/UI de execução) implementada e verificada localmente em 2026-11-07, ver [m0b-fatia3.md](m0b-fatia3.md); aceite no Arch pendente.  
+**Estado:** M0b.1a e M0b.1b concluídos; Fatia 3 (API/SSE/UI de execução) implementada e verificada localmente em 2026-11-07, ver [m0b-fatia3.md](m0b-fatia3.md); Fatia 4 (discovery no Arch + UX de 3 áreas) em [m0b-fatia4-ux.md](m0b-fatia4-ux.md); aceite no Arch pendente.  
 **Decisão:** [ADR-0001](adr-0001-m0b-codex-app-server.md).  
 **Stack:** Bun 1.4.4, TypeScript strict, SQLite nativo, HTTP + SSE local.
 

@@ -82,3 +82,9 @@ test("operator discovery report explains every record without unsafe terminal ou
   ]);
   expect(safeName("codex-a\u001b[31m\n")).toBe("codex-a\\u{1b}[31m\\u{a}");
 });
+
+test("COCKPIT_DATA_DIR must be absolute and without traversal", async () => {
+  const { config } = await import("../src/config.ts");
+  expect(config({ COCKPIT_DATA_DIR: "/tmp/x" }).runtimeDatabasePath).toBe("/tmp/x/runtime-mock/runtime.sqlite");
+  for (const bad of ["relative", "/tmp/../etc"]) expect(() => config({ COCKPIT_DATA_DIR: bad })).toThrow("invalid_data_dir");
+});

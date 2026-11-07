@@ -2,7 +2,7 @@
 
 Painel local (127.0.0.1) para operar agentes Codex em micro-VMs Microsandbox: selecionar VM, abrir ou retomar sessão, enviar prompt, acompanhar em streaming, interromper, decidir aprovações e ver numa única tela o que está trabalhando, o que terminou e o que depende de você. Bun 1.4.4, TypeScript strict, SQLite. O padrão é **mock**, com agente simulado e identificado como "SIMULAÇÃO".
 
-**Estado:** fluxo de execução (M0b Fatia 3) e painel de atenção implementados e verificados localmente; **aceite no Arch pendente**. Veja [docs/m0b-fatia3.md](docs/m0b-fatia3.md) para o que funciona, as garantias e o roteiro de aceite.
+**Estado:** fluxo de execução (M0b Fatia 3), correção do discovery no Arch e workspace de 3 áreas (Fatia 4) implementados e verificados localmente; **aceite no Arch pendente**. Veja [docs/m0b-fatia4-ux.md](docs/m0b-fatia4-ux.md) (roteiro mínimo de validação) e [docs/m0b-fatia3.md](docs/m0b-fatia3.md) (garantias de execução).
 
 ## Experimentar em modo mock
 
