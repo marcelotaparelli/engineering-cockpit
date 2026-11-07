@@ -1,0 +1,53 @@
+{
+  "project": "engineering-cockpit",
+  "milestone": "M0b.0",
+  "status": "VALIDATED_WITH_LIMITATION",
+  "recorded_at": "2026-10-25",
+  "environment": "authorized real Arch host",
+  "source": "operator attestation in the 2026-10-25 task request",
+  "checks": [
+    {
+      "check": "msb_stream_full_duplex",
+      "status": "PASS",
+      "observed_version": null
+    },
+    {
+      "check": "codex_app_server",
+      "status": "PASS",
+      "observed_version": "0.163.0"
+    },
+    {
+      "check": "threads_turns_resume_history",
+      "status": "PASS"
+    },
+    {
+      "check": "interrupt_and_approval_denial",
+      "status": "PASS"
+    },
+    {
+      "check": "disconnect_reconciliation",
+      "status": "INCONCLUSIVE",
+      "observation": "empty rollout",
+      "required_state": "unknown",
+      "safety_rule": "do not replay prompts or approvals and do not infer a terminal outcome"
+    }
+  ],
+  "not_recorded": [
+    "raw or sanitized command transcript",
+    "exact MSB version and argv",
+    "timestamps",
+    "generated schema fingerprint",
+    "thread and turn identifiers",
+    "orphan-process count"
+  ],
+  "version_binding": {
+    "commit_sha": null,
+    "limitation": "git is unavailable in this workspace; this manual evidence is not bound to an authenticated commit"
+  },
+  "scope_guards": {
+    "mutable_http_authorized": false,
+    "real_msb_commands_in_this_delivery": 0,
+    "vm_mutations": 0,
+    "push_or_deploy": false
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "project": "engineering-cockpit",
+  "increment": "M0b.1b",
+  "artifact": "docs/artifact.sha256",
+  "topics": [
+    {
+      "topic": "HTTP authn -> session -> CSRF -> project/VM/run authz",
+      "status": "explained",
+      "evidence": "docs/m0b1b-ownership-card.md",
+      "human_practice": "unreviewed"
+    },
+    {
+      "topic": "VM identity revalidation before future prompt dispatch",
+      "status": "deferred",
+      "trigger": "before any prompt, approval, interrupt or SSE endpoint"
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "project": "engineering-cockpit",
+  "milestone": "M0a.1",
+  "timestamp": "2026-10-25T15:15:58.004Z",
+  "source": "host",
+  "bun": "1.4.4",
+  "os_id": "debian",
+  "artifact_manifest_sha256": "d59c5c8fcbc3f03aeeb116a0219fb83de47b35c66eca7a33660e0c34d02a84ef",
+  "checks": [
+    {
+      "id": "runtime",
+      "status": "PASS",
+      "reason": null
+    },
+    {
+      "id": "host_preflight",
+      "status": "NOT_VERIFIED",
+      "reason": "arch_host_required"
+    },
+    {
+      "id": "msb_list",
+      "status": "NOT_VERIFIED",
+      "reason": "not_exercised"
+    },
+    {
+      "id": "parser",
+      "status": "NOT_VERIFIED",
+      "reason": "not_exercised"
+    },
+    {
+      "id": "discovery",
+      "status": "NOT_VERIFIED",
+      "reason": "not_exercised"
+    },
+    {
+      "id": "sqlite_reopen",
+      "status": "NOT_VERIFIED",
+      "reason": "not_exercised"
+    },
+    {
+      "id": "http_and_security",
+      "status": "NOT_VERIFIED",
+      "reason": "not_exercised"
+    },
+    {
+      "id": "real_vm_presence",
+      "status": "NOT_VERIFIED",
+      "reason": "not_exercised"
+    },
+    {
+      "id": "browser_visual",
+      "status": "NOT_VERIFIED",
+      "reason": "not_exercised"
+    },
+    {
+      "id": "msb_version",
+      "status": "NOT_VERIFIED",
+      "reason": "not_exercised"
+    }
+  ],
+  "counts": null,
+  "overall": "NOT_VERIFIED"
+}

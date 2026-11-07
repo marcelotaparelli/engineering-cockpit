@@ -1,0 +1,112 @@
+{
+  "project": "engineering-cockpit",
+  "milestone": "M0b.1a",
+  "status": "LOCAL_FIX_0_164_VERIFIED_ARCH_RERUN_REQUIRED",
+  "recorded_at": "2026-10-26",
+  "version_binding": {
+    "base_commit_sha": "d13e76eb469824b6d0505f88c1118b794cd33243",
+    "commit_sha": null,
+    "version_state": "uncommitted",
+    "artifact_manifest": "docs/artifact.sha256",
+    "artifact_manifest_sha256": "2f013117d1a2c9ba1762a55b4b40ad674395a2b20405e61b5ff494697ccded74",
+    "limitation": "git executable is unavailable; the final working tree is identified by the artifact manifest, not an authenticated commit"
+  },
+  "automated_evidence": [
+    {
+      "environment": "Debian workspace; Bun 1.4.4 glibc runtime staged temporarily in /tmp",
+      "check": "typescript_strict",
+      "command": "bun --no-env-file ./node_modules/typescript/bin/tsc --noEmit",
+      "exit_code": 0
+    },
+    {
+      "environment": "local sanitized/shape-derived fixtures; real adapter and transport classes; no native MSB",
+      "check": "m0b1a_handshake_regression",
+      "command": "bun --no-env-file test tests/m0b-provider.test.ts tests/m0b-transport.test.ts tests/m0b1a-smoke.test.ts",
+      "exit_code": 0,
+      "tests_passed": 29,
+      "tests_failed": 0,
+      "assertions": 226
+    },
+    {
+      "environment": "local workspace with ephemeral loopback listeners authorized for legacy tests",
+      "check": "full_regression_before_0_164_gate",
+      "command": "bun --no-env-file test",
+      "exit_code": 0,
+      "tests_passed": 126,
+      "tests_failed": 0,
+      "assertions": 605
+    },
+    {
+      "environment": "Debian workspace; native smoke gate only",
+      "check": "host_consent_denied_before_msb",
+      "command": "./scripts/cockpit m0b1a-smoke",
+      "exit_code": 2,
+      "result": "NOT_VERIFIED: host_confirmation_required"
+    },
+    {
+      "environment": "Debian workspace with explicit variables; native smoke gate only",
+      "check": "non_arch_denied_before_msb",
+      "command": "COCKPIT_MODE=host COCKPIT_HOST_CONFIRMED=yes COCKPIT_M0B1A_SMOKE_CONFIRMED=yes COCKPIT_SMOKE_VM=codex-demo ./scripts/cockpit m0b1a-smoke",
+      "exit_code": 2,
+      "result": "NOT_VERIFIED: arch_host_required"
+    },
+    {
+      "environment": "independent read-only review",
+      "check": "handshake_fix_test_and_security_review",
+      "exit_code": 0,
+      "result": "PASS in local 0.163/0.164 contract scope; token boundary finding was fixed and focused suite rerun"
+    }
+  ],
+  "observed_arch_failure": {
+    "source": "operator-provided sanitized smoke report",
+    "runtime": "PASS",
+    "host_consent": "PASS",
+    "target_running": "PASS",
+    "initialize": "FAIL: rpc_protocol_error",
+    "initialize_duration_ms": 532,
+    "thread_list": "NOT_VERIFIED",
+    "close": "PASS",
+    "root_cause": "transport required jsonrpc 2.0 on Codex 0.163.0 tagless JSONL; adapter then expected initialize fields not present in the real response",
+    "rerun_after_fix": "NOT_VERIFIED"
+  },
+  "observed_arch_version_gate_failure": {
+    "source": "operator-provided report",
+    "codex_cli_version": "0.164.0",
+    "app_server_version": "0.164.0",
+    "initialize_fields": ["userAgent", "codexHome", "platformFamily", "platformOs"],
+    "smoke_result": "FAIL: provider_version_unsupported",
+    "root_cause": "runtime gate allowlisted only 0.163.0",
+    "rerun_after_fix": "NOT_VERIFIED"
+  },
+  "fixture_provenance": {
+    "real_failure_reproduced": "fixtures/m0b/crash-empty-rollout.json models the operator-observed disconnect with empty rollout and requires unknown",
+    "initialize_failure_regression": "fixtures/m0b/codex-0.163.0-initialize-response.json preserves the observed response shape and user-agent grammar with all identifying values sanitized; it is not a raw capture",
+    "initialize_0_164_regression": "fixtures/m0b/codex-0.164.0-initialize-response.json uses the operator-reported version with identifying values sanitized; not a raw capture",
+    "thread_list_contract": "Codex CLI 0.164.0 generated schema confirms status-object and Unix-second fields; contract is exercised through the real adapter/transport classes",
+    "synthetic_failure_classes": [
+      "malformed and oversized JSONL",
+      "invalid UTF-8 and partial EOF",
+      "late or unknown RPC response",
+      "stderr canary and limit",
+      "stalled write/child cleanup",
+      "notification flood",
+      "idempotency conflict and restart recovery"
+    ]
+  },
+  "scope_guards": {
+    "mutable_http_endpoints_added": 0,
+    "authentication_csrf_authorization_required_before_http_control": true,
+    "real_msb_commands": 0,
+    "vm_mutations": 0,
+    "push_or_deploy": false
+  },
+  "not_verified": [
+    "post-0.164-fix live MSB/App Server smoke on the authorized Arch host",
+    "atomic no-autostart guarantee between msb list and msb exec",
+    "absence of remote orphan processes after cleanup",
+    "approval persistence across restart",
+    "exported metrics, traces, alerts and numeric SLO",
+    "authenticated CI and final commit SHA"
+  ],
+  "agent_tokens_cache_cost": "not_measured"
+}

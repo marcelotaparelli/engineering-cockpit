@@ -1,0 +1,40 @@
+{
+  "project_id": "engineering-cockpit",
+  "task_id": "M0b.1a",
+  "base_commit_sha": "d13e76eb469824b6d0505f88c1118b794cd33243",
+  "commit_sha": null,
+  "version_state": "uncommitted",
+  "artifact_manifest": "docs/artifact.sha256",
+  "mode": "passive",
+  "areas": [
+    {
+      "area": "provider_contract_and_transport",
+      "risk": "high",
+      "review_state": "explained",
+      "evidence_refs": ["src/provider.ts:70", "src/codex-adapter.ts:47", "src/msb-transport.ts:37", "tests/m0b-provider.test.ts:27", "tests/m0b-transport.test.ts:47"],
+      "open_questions": ["O Engineering Owner consegue explicar por que resposta tardia fecha a conexão e não pode resolver uma request de outra geração?"]
+    },
+    {
+      "area": "runtime_idempotency_journal_unknown",
+      "risk": "high",
+      "review_state": "explained",
+      "evidence_refs": ["src/runtime-store.ts:190", "src/runtime-store.ts:213", "src/runtime-store.ts:288", "src/run-coordinator.ts:8", "tests/m0b-runtime.test.ts:25"],
+      "open_questions": ["Como o futuro orquestrador garantirá no mesmo fluxo lógico que dispatching foi persistido antes do write?"]
+    },
+    {
+      "area": "discovery_runtime_boundary_and_http_gate",
+      "risk": "high",
+      "review_state": "unreviewed",
+      "evidence_refs": ["src/runtime-store.ts:9", "src/server.ts:27", "src/server.ts:60", "docs/m0b1a.md"],
+      "open_questions": ["Como revalidar discoveryVersion/instância e aplicar authn, CSRF e authz antes de expor qualquer mutação?"]
+    }
+  ],
+  "exercise": {
+    "command": "bun --no-env-file test tests/m0b-runtime.test.ts -t \"prepared survives restart\"",
+    "human_attempt_observed": false,
+    "review_state": "unreviewed"
+  },
+  "next_revisit_trigger": "wiring com discovery/API, mudança de Codex/MSB, approval persistente ou smoke real no Arch",
+  "owner_confirmed_at": null,
+  "agent_tokens_cache_cost": "not_measured"
+}

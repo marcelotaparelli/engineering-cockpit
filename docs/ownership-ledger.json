@@ -1,0 +1,45 @@
+{
+  "project_id": "engineering-cockpit",
+  "task_id": "M0a",
+  "commit_sha": null,
+  "base_commit_sha": "d13e76eb469824b6d0505f88c1118b794cd33243",
+  "version_state": "uncommitted",
+  "artifact_manifest": "docs/artifact.sha256",
+  "area": "GET inventory -> project validation -> discovery -> SQLite snapshot -> readonly UI",
+  "risk": "standard",
+  "mode": "passive",
+  "evidence_refs": [
+    "docs/technical-ownership-card.md",
+    "docs/m0a.md:15",
+    "src/server.ts:54",
+    "src/discovery.ts:19",
+    "src/discovery.ts:24",
+    "src/projects.ts:6",
+    "src/parser.ts:8",
+    "src/model.ts:20",
+    "src/store.ts:47",
+    "src/adapter.ts:12",
+    "public/app.js:24",
+    "public/app.js:42",
+    "tests/discovery.test.ts:89",
+    "tests/server.test.ts:29",
+    "tests/adversarial.test.ts:40"
+  ],
+  "evidence_scope": "Leitura direta do código e dos testes; mentor não executou testes nem observou exercício humano. Resultados de execução e identidade final ficam na evidência consolidada pelo Tech Lead.",
+  "review_state": "stale",
+  "previous_review_state": "explained",
+  "stale_reason": "M0a.1 alterou bootstrap/runtime, paths de configuração e introduziu gate Arch antes do adapter nativo e relatório por etapa; referências e limites do cartão M0a pertencem à versão anterior.",
+  "superseded_by": "docs/m0a1-ownership-ledger.json",
+  "host_verification": "not_verified",
+  "open_questions": [
+    "O Engineering Owner consegue explicar por que o snapshot anterior continua persistido após falha de parse, mas não pode aparecer como resposta atual na API/UI?",
+    "Qual formato e versão do msb instalado serão comprovados pela futura amostra autorizada do host?"
+  ],
+  "exercise": {
+    "command": "bun test tests/discovery.test.ts -t \"discovery authorizes existing projects\"",
+    "expected_evidence": "Execução do teste e explicação humana apoiada em src/discovery.ts:26, src/store.ts:47, src/server.ts:69 e public/app.js:42.",
+    "human_attempt_observed": false
+  },
+  "next_revisit_trigger": "Amostra real autorizada/versionada do msb ou mudança em parser, persistência, autorização ou execução de VMs; revalidar linhas e identidade do artefato quando o contrato mudar.",
+  "owner_confirmed_at": null
+}

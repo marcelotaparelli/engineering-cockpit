@@ -1,0 +1,61 @@
+{
+  "project": "engineering-cockpit",
+  "milestone": "M0a.2",
+  "status": "COMPLETED",
+  "recorded_at": "2026-10-25",
+  "version_binding": {
+    "commit_sha": null,
+    "artifact_manifest": "docs/artifact.sha256",
+    "limitation": "git is unavailable in this workspace; the evidence is not bound to an authenticated commit"
+  },
+  "automated_evidence": [
+    {
+      "environment": "Debian workspace with synthetic MSB fixture",
+      "check": "synthetic_six_vm_flow",
+      "result": "6 valid VMs, 5 real projects and 1 orphan; parser, discovery, SQLite reopen and HTTP passed"
+    },
+    {
+      "environment": "Debian workspace with synthetic MSB fixture",
+      "check": "sqlite_migration",
+      "result": "Exact application schema v1 migrated transactionally to v2; orphan persisted without a fictional project"
+    },
+    {
+      "environment": "Debian workspace with Happy DOM",
+      "check": "frontend",
+      "result": "Orphan displayed explicitly and the absent project was not added to the project list"
+    },
+    {
+      "environment": "Debian workspace",
+      "check": "typecheck_and_tests",
+      "command": "./scripts/cockpit verify",
+      "result": "typecheck clean; 93 pass, 0 fail, 388 assertions",
+      "provenance": "result recorded by the prior M0a.2 execution; not rerun in this planning turn because Bun is unavailable"
+    },
+    {
+      "environment": "independent local review",
+      "check": "independent_review",
+      "result": "No blocking finding; directed typecheck and 45 tests passed; two LOW findings were addressed",
+      "provenance": "result recorded by the prior M0a.2 review"
+    }
+  ],
+  "manual_verification": [
+    {
+      "environment": "authorized real Arch host",
+      "check": "m0a2_real_host_validation",
+      "status": "PASS",
+      "source": "operator attestation in the 2026-10-25 task request",
+      "result": "M0a.2 was reported complete and validated on the real Arch host",
+      "limitations": [
+        "the raw or sanitized host-check report was not supplied to this workspace",
+        "the exact commands, observed counts, browser steps and timestamps cannot be independently reconstructed here",
+        "this manual attestation does not convert synthetic tests into real-host automated evidence"
+      ]
+    }
+  ],
+  "scope_guards": {
+    "real_msb_commands_in_this_planning_turn": 0,
+    "vm_mutations": 0,
+    "m0b_implemented": false,
+    "push_or_deploy": false
+  }
+}

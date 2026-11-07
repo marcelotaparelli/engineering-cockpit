@@ -1,0 +1,35 @@
+{
+  "project": "engineering-cockpit",
+  "milestone": "M0a.1",
+  "recorded_at": "2026-10-25T15:15:58Z",
+  "environment": "workspace Debian; local and synthetic checks only",
+  "version_state": "uncommitted",
+  "base_commit_only": "d13e76eb469824b6d0505f88c1118b794cd33243",
+  "artifact_manifest": "docs/artifact.sha256",
+  "artifact_manifest_sha256": "d59c5c8fcbc3f03aeeb116a0219fb83de47b35c66eca7a33660e0c34d02a84ef",
+  "provenance": "Agent-observed local command results, not authenticated CI approval",
+  "PASS": [
+    { "check": "persistent_runtime_bootstrap", "command": "./scripts/cockpit bootstrap", "exit_code": 0, "bun": "1.4.4", "runtime": "tools/runtime/node_modules" },
+    { "check": "offline_bootstrap_replay", "command": "npm_config_offline=true ./scripts/cockpit bootstrap", "exit_code": 0 },
+    { "check": "strict_typecheck_and_tests", "command": "./scripts/cockpit verify", "exit_code": 0, "tests_passed": 79, "tests_failed": 0, "expect_calls": 356, "files": 9, "duration_ms_single_observation": 749 },
+    { "check": "real_launcher_isolated_mock_startup", "test": "tests/startup.test.ts", "restarts": 2, "scope": "project copy in .cache, no global Bun, external cwd, dotenv disabled, SQLite reopened" },
+    { "check": "frontend_dom_behavior", "test": "tests/frontend.test.ts", "tests_passed": 4, "expect_calls": 25, "scope": "happy-dom; not a graphical browser" },
+    { "check": "guest_and_non_arch_native_spawn_denial", "tests": ["tests/host.test.ts", "tests/m0a1-security.test.ts"], "scope": "synthetic gates; no native msb process" }
+  ],
+  "NOT_VERIFIED": [
+    { "check": "arch_host_integration", "reason": "No Arch terminal or real operator CLI output available; current environment Debian", "report": "docs/m0a1-host-check.json" },
+    { "check": "installed_msb_format_and_version", "reason": "Parser fixtures remain synthetic" },
+    { "check": "real_vm_inventory_and_status", "reason": "No real VM queried" },
+    { "check": "graphical_browser_on_host", "reason": "DOM behavior tests do not verify browser layout or host rendering" },
+    { "check": "external_telemetry_slo_alerts", "reason": "Not configured" }
+  ],
+  "resolved_failures": [
+    "Known Firecracker guest not recognized: fixed; absent/empty DMI now refused, regression passed",
+    "HTTP consumed-body cancel: fixed with bodyUsed check, regression passed",
+    "Launcher fake assertion after no-env-file argument change: updated to verify both arguments; final suite passed"
+  ],
+  "real_vm_mutations": 0,
+  "m0b_started": false,
+  "push_or_deploy": false,
+  "agent_tokens_cache_cost": "not_measured"
+}

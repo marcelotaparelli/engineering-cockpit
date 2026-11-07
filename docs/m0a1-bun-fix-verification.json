@@ -1,0 +1,27 @@
+{
+  "project": "engineering-cockpit",
+  "milestone": "M0a.1 Bun-only bootstrap correction",
+  "recorded_at": "2026-10-25",
+  "environment": "Debian workspace; Bun 1.4.4; no real MSB invocation",
+  "pin": "1.4.4",
+  "resolution": "Preserve strict project pin and install that exact version on the Arch host which reported 1.4.2.",
+  "PASS": [
+    { "check": "bootstrap", "command": "./scripts/cockpit bootstrap", "result": "Bun install --frozen-lockfile --ignore-scripts; exit 0" },
+    { "check": "offline_install", "command": "bun install --offline --frozen-lockfile --ignore-scripts", "result": "exit 0; 13 direct/transitive install records checked" },
+    { "check": "typecheck_and_tests", "command": "./scripts/cockpit verify", "result": "typecheck clean; 79 pass, 0 fail, 359 assertions, 9 test files" },
+    { "check": "version_guard", "test": "tests/m0a1-security.test.ts", "result": "Bun 1.4.2 and 0.0.0 synthetic runtimes refused; exact Bun 1.4.4 accepted" },
+    { "check": "frontend", "command": "./scripts/cockpit frontend-test", "result": "4 pass, 25 assertions" },
+    { "check": "artifact_manifest", "command": "./scripts/cockpit artifact --check", "result": "PASS" },
+    { "check": "launcher_filesystem_mode", "result": "scripts/cockpit mode 0755" }
+  ],
+  "NOT_VERIFIED": [
+    { "check": "git_index_executable_mode", "reason": "Git executable is unavailable and the read-only index does not expose scripts/cockpit; filesystem execute bit is set, but index mode was not inspectable." },
+    { "check": "arch_host_integration", "reason": "No commands have been run on the authorized Arch host; must install Bun 1.4.4 and run host-check there." },
+    { "check": "real_msb_output_and_vm_inventory", "reason": "No real MSB command was executed; compatibility and inventory remain unverified." },
+    { "check": "graphical_browser", "reason": "DOM tests passed; no visual browser check on Arch." }
+  ],
+  "real_msb_commands": 0,
+  "vm_mutations": 0,
+  "m0b_started": false,
+  "push_or_deploy": false
+}

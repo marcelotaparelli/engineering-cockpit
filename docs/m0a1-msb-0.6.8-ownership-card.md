@@ -1,0 +1,8 @@
+# Technical Ownership Card — MSB 0.6.8
+
+- **Escopo/estado:** M0a.1, adapter/parser do MSB. Execução de validação neste workspace é Debian, usando fixtures/fakes apenas. A compatibilidade real no Arch permanece `NOT_VERIFIED` até novo `host-check` no host.
+- **Decisão:** executar argv fixo `msb list --format json` sem shell; preservar stdin ignorado, timeout de 3 s, limite de 256 KiB por stream, término do filho e sanitização de erros. O parser aceita o array MSB 0.6.8 com exatamente `created_at`, `image`, `name`, `status`; só `Running` e `Stopped` são válidos em JSON. A tabela antiga permanece para fixtures mock.
+- **Fluxo/falha:** `src/adapter.ts` faz coleta limitada; `src/parser.ts` valida estrutura, timestamps, nomes e estados, recusando duplicatas; `src/discovery.ts` filtra projetos existentes antes de escrever SQLite; `src/host-check.ts` classifica erro de parse como `FAIL` antes de persistir e rotula fixtures como synthetic.
+- **Fixture:** `fixtures/msb/msb-0.6.8-six-records.json` tem seis entradas para validar o fluxo. Só o primeiro objeto veio no prompt; os outros cinco são exemplos sintéticos identificados em `fixtures/msb/msb-0.6.8-six-records.md`. Substituí-los por valores sanitizados observados antes de chamar essa fixture de captura real.
+- **Verificação:** `./scripts/cockpit verify` — typecheck passou e 90 testes passaram, sem falhas (376 assertions). Os testes não executaram o binário `msb` nem alteraram VMs.
+- **Exercício:** revisar `tests/host-check.test.ts` e explicar por que o sucesso sintético do parser/SQLite/HTTP não muda `NOT_VERIFIED` para a integração real do Arch.
