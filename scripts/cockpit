@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+cd "$ROOT"
+EXPECTED=$(cat .bun-version)
+RUNTIME=$(command -v bun || true)
+COMMAND=${1:-start}
+if [ "$#" -gt 0 ]; then shift; fi
+if [ "$COMMAND" = bootstrap ]; then
+  if [ "$#" -ne 0 ]; then echo 'bootstrap takes no arguments' >&2; exit 2; fi
+fi
+if [ -z "$RUNTIME" ] || [ ! -x "$RUNTIME" ]; then
+  echo "Bun unavailable. Install Bun $EXPECTED and retry." >&2
+  exit 1
+fi
+if [ "$("$RUNTIME" --version)" != "$EXPECTED" ]; then
+  echo "Bun version mismatch: require $EXPECTED. Run ./scripts/cockpit bootstrap." >&2
+  exit 1
+fi
+PATH="$(dirname -- "$RUNTIME"):$PATH"
+export PATH
+BUN_INSTALL_CACHE_DIR="$ROOT/.cache/bun"
+export BUN_INSTALL_CACHE_DIR
+BUN_TMPDIR="$ROOT/.cache/tmp"
+export BUN_TMPDIR
+mkdir -p "$BUN_TMPDIR"
+case "$COMMAND" in
+  bootstrap) exec "$RUNTIME" --no-env-file install --frozen-lockfile --ignore-scripts ;;
+  start) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file src/index.ts ;;
+  verify) [ "$#" -eq 0 ] || exit 2; "$RUNTIME" --no-env-file run typecheck; exec "$RUNTIME" --no-env-file test ;;
+  host-check) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/host-check.ts ;;
+  m0b1a-smoke) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/m0b1a-smoke.ts ;;
+  frontend-test) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file test tests/frontend.test.ts ;;
+  artifact) exec "$RUNTIME" --no-env-file scripts/artifact.ts "$@" ;;
+  *) echo 'Usage: ./scripts/cockpit [bootstrap|start|verify|host-check|m0b1a-smoke|frontend-test|artifact]' >&2; exit 2 ;;
+esac

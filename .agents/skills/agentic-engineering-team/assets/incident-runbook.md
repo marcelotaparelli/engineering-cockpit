@@ -1,0 +1,16 @@
+# Runbook — <serviço / incidente>
+
+**Owner/contato:** ...
+**SLIs afetados:** ...
+**Severidade e impacto:** ...
+**Dashboards e alertas:** ...
+
+1. **Detecção:** qual alerta dispara, quando e com qual critério? Evitar ruído.
+2. **Triagem:** localizar `trace_id`/`request_id`, comparar baseline e release/commit recente.
+3. **Escopo:** serviço, endpoint, tenants afetados (sem expor PII), dependências.
+4. **Mitigação:** feature flag, desabilitar integração ou rollback; autorização humana para ação em produção.
+5. **Segurança:** em suspeita de incidente, preservar eventos de auditoria e acionar responsável; não copiar segredos para tickets ou LLM.
+6. **Verificação:** SLI retorna ao normal, erros/latência descem, traces e logs mostram causalidade.
+7. **Pós-incidente:** timeline, root-cause confirmada/hipóteses, ações corretivas e testes de regressão.
+
+**Teste do runbook (data/evidência):** ...

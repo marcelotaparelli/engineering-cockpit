@@ -1,0 +1,24 @@
+{
+  "task_id": "EXAMPLE-DO-NOT-USE-AS-RELEASE-EVIDENCE",
+  "tier": "critical",
+  "challenge": {
+    "verdict": "revise",
+    "rationale": "Exemplo de decisão pendente: custo e alternativa ainda não verificados",
+    "evidence": []
+  },
+  "red_team": {
+    "verdict": "not_tested",
+    "mode": "static-local",
+    "roe_approved": false,
+    "roe_reference": "",
+    "evidence": [],
+    "findings": [
+      {"id": "EXAMPLE-1", "severity": "high", "status": "open", "evidence": "Nenhuma evidência real: placeholder"}
+    ]
+  },
+  "verification": {
+    "ci_status": "not_run",
+    "evidence": [],
+    "application_observability": "not_verified"
+  }
+}

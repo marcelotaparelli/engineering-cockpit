@@ -1,0 +1,14 @@
+# EXEMPLO OPT-IN: mescle APENAS no ~/.codex/config.toml, após revisar privacidade.
+# Requer OTel Collector LOCAL autorizado ouvindo 127.0.0.1:4318.
+# Este é um exemplo para logs + traces + métricas do próprio Codex, NÃO da aplicação.
+# Não habilite exportação de prompts ou acesso externo sem autorização.
+[otel]
+environment = "dev"
+log_user_prompt = false
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }
+trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }
+
+# Observação: versões/configurações Codex podem expor sinais distintos.
+# Verifique config.toml e a ingestão do Collector antes de usar dashboards.
+# Logs OTel de ferramentas podem conter dados sensíveis: revise/redija antes de exportar.

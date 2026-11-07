@@ -1,0 +1,10 @@
+# NÃO ATIVO: copie/mescle manualmente estas chaves em ~/.codex/config.toml
+# ou no config de projeto confiável; preserve configurações preexistentes.
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
+default_subagent_reasoning_effort = "medium"
+
+# As roles são descobertas de .codex/agents/*.toml.
+# Não fixe modelo aqui: verifique modelos disponíveis na sua conta com /model.
+# Permissions/sandbox do principal são herdados por subagentes.
