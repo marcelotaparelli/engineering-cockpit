@@ -7,13 +7,21 @@ import { assertNoSymlinks } from "./paths.ts";
 import type { ExecutionTarget, RunStatus } from "./provider.ts";
 
 const APPLICATION_ID = 0x4352544d;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const RUN_STATUSES: readonly RunStatus[] = ["prepared", "dispatching", "running", "awaiting_approval", "completed", "failed", "interrupted", "unknown"];
-const SCHEMA = [
+const SCHEMA_V1 = [
   "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, provider TEXT NOT NULL, project_id TEXT NOT NULL, vm_name TEXT NOT NULL, vm_instance_id TEXT, discovery_version TEXT NOT NULL, provider_session_id TEXT NOT NULL, created_at TEXT NOT NULL, last_observed_at TEXT NOT NULL, UNIQUE(provider, project_id, vm_name, provider_session_id))",
   "CREATE TABLE runs (run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id), operation TEXT NOT NULL, provider_run_id TEXT, idempotency_key_hash TEXT NOT NULL, request_digest TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('prepared','dispatching','running','awaiting_approval','completed','failed','interrupted','unknown')), lifecycle_version INTEGER NOT NULL CHECK(lifecycle_version >= 1), execution_count INTEGER NOT NULL CHECK(execution_count = 1), created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT, reason_code TEXT, UNIQUE(session_id, operation, idempotency_key_hash))",
   "CREATE TABLE journal (sequence INTEGER PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, run_id TEXT REFERENCES runs(run_id), type TEXT NOT NULL, occurred_at TEXT NOT NULL, payload_json TEXT NOT NULL)",
 ];
+// v2: approvals (no provider content), observed token metrics and session activity time.
+const SCHEMA_V2_ADDITIONS = [
+  "CREATE TABLE approvals (approval_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), action_type TEXT NOT NULL CHECK(action_type IN ('command','file_change')), action_digest TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')), version INTEGER NOT NULL CHECK(version >= 1), created_at TEXT NOT NULL, expires_at TEXT NOT NULL, resolved_at TEXT, reason_code TEXT)",
+  "CREATE TABLE run_metrics (run_id TEXT PRIMARY KEY REFERENCES runs(run_id), input_tokens INTEGER, output_tokens INTEGER, cached_input_tokens INTEGER, token_scope TEXT NOT NULL CHECK(token_scope IN ('not_measured','session_cumulative')), updated_at TEXT NOT NULL)",
+  "CREATE INDEX approvals_by_status ON approvals(status, run_id)",
+  "CREATE INDEX runs_by_session ON runs(session_id, created_at)",
+];
+const SCHEMA = [...SCHEMA_V1, ...SCHEMA_V2_ADDITIONS];
 
 export interface SessionRecord {
   sessionId: string;
@@ -46,11 +54,37 @@ export interface BeginRunInput {
   idempotencyKey: string;
   requestDigest: string;
   createdAt: string;
+  /** When set, refuse a new run while another Cockpit run of this project is active (one writer per project). */
+  exclusiveProject?: string;
 }
 
 export interface BeginRunResult { run: RunRecord; created: boolean }
 
-export type JournalType = "run.prepared" | "run.dispatching" | "run.started" | "run.status_changed" | "run.recovery_unknown" | "operation.notice";
+export type JournalType = "run.prepared" | "run.dispatching" | "run.started" | "run.status_changed" | "run.recovery_unknown" | "operation.notice"
+  | "approval.requested" | "approval.resolved" | "run.error";
+export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
+export interface ApprovalRecord {
+  approvalId: string;
+  runId: string;
+  actionType: "command" | "file_change";
+  actionDigest: string;
+  status: ApprovalStatus;
+  version: number;
+  createdAt: string;
+  expiresAt: string;
+  resolvedAt: string | null;
+  reasonCode: string | null;
+}
+export interface RunMetrics {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens: number | null;
+  tokenScope: "not_measured" | "session_cumulative";
+  durationMs: number | null;
+  durationSource: "host_clock" | "not_measured";
+}
+export interface ProjectJournalRecord extends JournalRecord { sessionId: string | null; projectId: string | null }
+export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ["prepared", "dispatching", "running", "awaiting_approval"];
 export interface JournalInput {
   eventId: string;
   runId: string | null;
@@ -67,6 +101,9 @@ const PAYLOAD_FIELDS: Readonly<Record<JournalType, readonly string[]>> = {
   "run.status_changed": ["from", "to", "reasonCode"],
   "run.recovery_unknown": ["from", "to", "reasonCode"],
   "operation.notice": ["reasonCode"],
+  "approval.requested": ["approvalId", "actionType", "status"],
+  "approval.resolved": ["approvalId", "status", "reasonCode"],
+  "run.error": ["reasonCode"],
 };
 
 function normalizedSql(value: string): string { return value.replace(/\s+/g, " ").trim(); }
@@ -129,6 +166,22 @@ function mapRun(row: RunRow): RunRecord {
   } catch { throw new SafeError("runtime_database_corrupt"); }
 }
 
+type ApprovalRow = {
+  approval_id: string; run_id: string; action_type: string; action_digest: string; status: string; version: number;
+  created_at: string; expires_at: string; resolved_at: string | null; reason_code: string | null;
+};
+function mapApproval(row: ApprovalRow): ApprovalRecord {
+  try {
+    requireId(row.approval_id); requireId(row.run_id); requireDigest(row.action_digest); requireTime(row.created_at); requireTime(row.expires_at);
+    if (row.resolved_at !== null) requireTime(row.resolved_at);
+    if ((row.action_type !== "command" && row.action_type !== "file_change") || !["pending", "approved", "denied", "expired"].includes(row.status) ||
+      !Number.isSafeInteger(row.version) || row.version < 1) throw new Error();
+    return { approvalId: row.approval_id, runId: row.run_id, actionType: row.action_type, actionDigest: row.action_digest,
+      status: row.status as ApprovalStatus, version: row.version, createdAt: row.created_at, expiresAt: row.expires_at,
+      resolvedAt: row.resolved_at, reasonCode: row.reason_code };
+  } catch { throw new SafeError("runtime_database_corrupt"); }
+}
+
 export class RuntimeStore {
   readonly db: Database;
 
@@ -158,12 +211,19 @@ export class RuntimeStore {
       } else {
         const identity = this.db.query("PRAGMA application_id").get() as { application_id: number };
         const version = this.db.query("PRAGMA user_version").get() as { user_version: number };
-        const actual = (this.db.query("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name").all() as { sql: string }[])
+        const actual = () => (this.db.query("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name").all() as { sql: string }[])
           .map(row => normalizedSql(row.sql)).sort();
-        const expected = SCHEMA.map(normalizedSql).sort();
-        if (identity.application_id !== APPLICATION_ID || version.user_version !== SCHEMA_VERSION || JSON.stringify(actual) !== JSON.stringify(expected)) {
-          throw new SafeError("foreign_runtime_database_denied");
+        const matches = (schema: readonly string[]) => JSON.stringify(actual()) === JSON.stringify(schema.map(normalizedSql).sort());
+        if (identity.application_id !== APPLICATION_ID) throw new SafeError("foreign_runtime_database_denied");
+        if (version.user_version === 1 && matches(SCHEMA_V1)) {
+          // Exact v1 schema only: additive, transactional migration.
+          this.db.transaction(() => {
+            for (const sql of SCHEMA_V2_ADDITIONS) this.db.exec(sql);
+            this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION};`);
+          })();
         }
+        const current = this.db.query("PRAGMA user_version").get() as { user_version: number };
+        if (current.user_version !== SCHEMA_VERSION || !matches(SCHEMA)) throw new SafeError("foreign_runtime_database_denied");
       }
       this.db.exec("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;");
       chmodSync(path, 0o600);
@@ -214,6 +274,7 @@ export class RuntimeStore {
         if (prior.request_digest !== input.requestDigest) throw new SafeError("idempotency_key_conflict");
         return { run: mapRun(prior), created: false };
       }
+      if (input.exclusiveProject !== undefined && this.activeRunForProject(input.exclusiveProject)) throw new SafeError("project_busy");
       this.db.prepare("INSERT INTO runs VALUES (?, ?, ?, NULL, ?, ?, 'prepared', 1, 1, ?, NULL, NULL, NULL)")
         .run(input.runId, input.sessionId, operation, hash, input.requestDigest, input.createdAt);
       this.#insertJournal({ eventId: `${input.runId}:1`, runId: input.runId, type: "run.prepared", occurredAt: input.createdAt, payload: { status: "prepared" } });
@@ -273,6 +334,154 @@ export class RuntimeStore {
     } catch { throw new SafeError("runtime_database_corrupt"); }
   }
 
+  findSession(target: ExecutionTarget, providerSessionId: string): SessionRecord | null {
+    requireId(providerSessionId);
+    const row = this.db.prepare("SELECT session_id FROM sessions WHERE provider=? AND project_id=? AND vm_name=? AND provider_session_id=?")
+      .get(target.provider, target.projectId, target.vmName, providerSessionId) as { session_id: string } | null;
+    return row ? this.getSession(row.session_id) : null;
+  }
+
+  listSessions(projects: readonly string[]): SessionRecord[] {
+    if (projects.length === 0) return [];
+    const marks = projects.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT session_id FROM sessions WHERE project_id IN (${marks}) ORDER BY last_observed_at DESC LIMIT 500`)
+      .all(...projects) as { session_id: string }[];
+    return rows.map(row => this.getSession(row.session_id)!).filter(Boolean);
+  }
+
+  touchSession(sessionId: string, at: string): void {
+    requireId(sessionId); requireTime(at);
+    this.db.prepare("UPDATE sessions SET last_observed_at=? WHERE session_id=? AND last_observed_at<?").run(at, sessionId, at);
+  }
+
+  listRuns(sessionId: string, limit = 50): RunRecord[] {
+    requireId(sessionId);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new SafeError("invalid_limit");
+    return (this.db.prepare("SELECT * FROM runs WHERE session_id=? ORDER BY created_at DESC, run_id DESC LIMIT ?").all(sessionId, limit) as RunRow[]).map(mapRun);
+  }
+
+  runsWithStatus(statuses: readonly RunStatus[]): RunRecord[] {
+    if (statuses.length === 0 || statuses.some(status => !RUN_STATUSES.includes(status))) throw new SafeError("invalid_run_status");
+    const marks = statuses.map(() => "?").join(",");
+    return (this.db.prepare(`SELECT * FROM runs WHERE status IN (${marks}) ORDER BY created_at`).all(...statuses) as RunRow[]).map(mapRun);
+  }
+
+  activeRunForProject(projectId: string): RunRecord | null {
+    if (!validProject(projectId)) throw new SafeError("invalid_runtime_target");
+    const marks = ACTIVE_RUN_STATUSES.map(() => "?").join(",");
+    const row = this.db.prepare(`SELECT r.* FROM runs r JOIN sessions s ON s.session_id=r.session_id WHERE s.project_id=? AND r.status IN (${marks}) ORDER BY r.created_at LIMIT 1`)
+      .get(projectId, ...ACTIVE_RUN_STATUSES) as RunRow | null;
+    return row ? mapRun(row) : null;
+  }
+
+  createApproval(record: Omit<ApprovalRecord, "status" | "version" | "resolvedAt" | "reasonCode">): ApprovalRecord {
+    requireId(record.approvalId); requireId(record.runId); requireDigest(record.actionDigest);
+    requireTime(record.createdAt); requireTime(record.expiresAt);
+    if (record.actionType !== "command" && record.actionType !== "file_change") throw new SafeError("invalid_approval");
+    return this.db.transaction(() => {
+      this.db.prepare("INSERT INTO approvals VALUES (?, ?, ?, ?, 'pending', 1, ?, ?, NULL, NULL)")
+        .run(record.approvalId, record.runId, record.actionType, record.actionDigest, record.createdAt, record.expiresAt);
+      this.#insertJournal({ eventId: `${record.approvalId}:1`, runId: record.runId, type: "approval.requested", occurredAt: record.createdAt,
+        payload: { approvalId: record.approvalId, actionType: record.actionType, status: "pending" } });
+      return this.getApproval(record.approvalId)!;
+    })();
+  }
+
+  getApproval(approvalId: string): ApprovalRecord | null {
+    requireId(approvalId);
+    const row = this.db.prepare("SELECT * FROM approvals WHERE approval_id=?").get(approvalId) as ApprovalRow | null;
+    return row ? mapApproval(row) : null;
+  }
+
+  pendingApprovals(): ApprovalRecord[] {
+    return (this.db.query("SELECT * FROM approvals WHERE status='pending' ORDER BY created_at").all() as ApprovalRow[]).map(mapApproval);
+  }
+
+  /** Compare-and-set of a human decision. Identical replay is a no-op; anything else conflicts. */
+  resolveApproval(approvalId: string, expectedVersion: number, status: "approved" | "denied", at: string): { approval: ApprovalRecord; changed: boolean } {
+    requireId(approvalId); requireTime(at);
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new SafeError("approval_conflict");
+    return this.db.transaction(() => {
+      const current = this.getApproval(approvalId);
+      if (!current) throw new SafeError("resource_not_found");
+      if (current.status === status && current.version === expectedVersion + 1) return { approval: current, changed: false };
+      if (current.status !== "pending" || current.version !== expectedVersion) throw new SafeError("approval_conflict");
+      if (Date.parse(current.expiresAt) <= Date.parse(at)) throw new SafeError("approval_expired");
+      this.db.prepare("UPDATE approvals SET status=?, version=version+1, resolved_at=?, reason_code='human_decision' WHERE approval_id=? AND version=?")
+        .run(status, at, approvalId, expectedVersion);
+      this.#insertJournal({ eventId: `${approvalId}:${expectedVersion + 1}`, runId: current.runId, type: "approval.resolved", occurredAt: at,
+        payload: { approvalId, status, reasonCode: "human_decision" } });
+      return { approval: this.getApproval(approvalId)!, changed: true };
+    })();
+  }
+
+  expireApprovals(runId: string, reasonCode: string, at: string): number {
+    requireId(runId); requireTime(at);
+    return this.db.transaction(() => this.#expirePendingApprovals("SELECT approval_id FROM approvals WHERE status='pending' AND run_id=? ORDER BY approval_id", [runId], reasonCode, at))();
+  }
+
+  expireApproval(approvalId: string, reasonCode: string, at: string): number {
+    requireId(approvalId); requireTime(at);
+    return this.db.transaction(() => this.#expirePendingApprovals("SELECT approval_id FROM approvals WHERE status='pending' AND approval_id=?", [approvalId], reasonCode, at))();
+  }
+
+  recordUsage(runId: string, usage: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }, at: string): void {
+    requireId(runId); requireTime(at);
+    const count = (value: number | undefined) => value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    this.db.prepare("INSERT INTO run_metrics VALUES (?, ?, ?, ?, 'session_cumulative', ?) ON CONFLICT(run_id) DO UPDATE SET input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, cached_input_tokens=excluded.cached_input_tokens, token_scope=excluded.token_scope, updated_at=excluded.updated_at")
+      .run(runId, count(usage.inputTokens), count(usage.outputTokens), count(usage.cachedInputTokens), at);
+  }
+
+  metrics(run: RunRecord): RunMetrics {
+    const row = this.db.prepare("SELECT input_tokens, output_tokens, cached_input_tokens, token_scope FROM run_metrics WHERE run_id=?").get(run.runId) as
+      { input_tokens: number | null; output_tokens: number | null; cached_input_tokens: number | null; token_scope: "not_measured" | "session_cumulative" } | null;
+    const started = run.startedAt ? Date.parse(run.startedAt) : NaN;
+    const ended = run.endedAt ? Date.parse(run.endedAt) : NaN;
+    const terminal = run.status === "completed" || run.status === "failed" || run.status === "interrupted";
+    const durationMs = terminal && Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : null;
+    return {
+      inputTokens: row?.input_tokens ?? null, outputTokens: row?.output_tokens ?? null, cachedInputTokens: row?.cached_input_tokens ?? null,
+      tokenScope: row?.token_scope ?? "not_measured", durationMs, durationSource: durationMs === null ? "not_measured" : "host_clock",
+    };
+  }
+
+  /** Journal tail restricted to runs of the given projects; run-less notices are never exposed. */
+  replayForProjects(projects: readonly string[], afterSequence = 0, limit = 200): ProjectJournalRecord[] {
+    if (!Number.isSafeInteger(afterSequence) || afterSequence < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+      throw new SafeError("invalid_journal_cursor");
+    }
+    if (projects.length === 0) return [];
+    const marks = projects.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT j.sequence, j.event_id, j.run_id, j.type, j.occurred_at, j.payload_json, s.session_id, s.project_id FROM journal j JOIN runs r ON r.run_id=j.run_id JOIN sessions s ON s.session_id=r.session_id WHERE j.sequence>? AND s.project_id IN (${marks}) ORDER BY j.sequence LIMIT ?`)
+      .all(afterSequence, ...projects, limit) as Array<{ sequence: number; event_id: string; run_id: string; type: JournalType; occurred_at: string; payload_json: string; session_id: string; project_id: string }>;
+    try {
+      return rows.map(row => {
+        if (!Object.hasOwn(PAYLOAD_FIELDS, row.type)) throw new Error();
+        const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+        if (canonicalPayload(row.type, payload) !== row.payload_json) throw new Error();
+        return { sequence: row.sequence, eventId: row.event_id, runId: row.run_id, type: row.type, occurredAt: row.occurred_at, payload,
+          sessionId: row.session_id, projectId: row.project_id };
+      });
+    } catch { throw new SafeError("runtime_database_corrupt"); }
+  }
+
+  lastSequence(): number {
+    return (this.db.query("SELECT COALESCE(MAX(sequence), 0) AS sequence FROM journal").get() as { sequence: number }).sequence;
+  }
+
+  #expirePendingApprovals(select: string, params: string[], reasonCode: string, at: string): number {
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(reasonCode)) throw new SafeError("invalid_reason_code");
+    const rows = this.db.prepare(select).all(...params) as { approval_id: string }[];
+    for (const { approval_id } of rows) {
+      const current = this.getApproval(approval_id)!;
+      this.db.prepare("UPDATE approvals SET status='expired', version=version+1, resolved_at=?, reason_code=? WHERE approval_id=? AND status='pending'")
+        .run(at, reasonCode, approval_id);
+      this.#insertJournal({ eventId: `${approval_id}:${current.version + 1}`, runId: current.runId, type: "approval.resolved", occurredAt: at,
+        payload: { approvalId: approval_id, status: "expired", reasonCode } });
+    }
+    return rows.length;
+  }
+
   close(): void { this.db.close(); }
 
   #requireRun(runId: string): RunRecord {
@@ -317,6 +526,8 @@ export class RuntimeStore {
           payload: { from: row.status, to: "unknown", reasonCode: "process_restarted" },
         });
       }
+      // Approval handles live in the provider connection; a restart can never revive them.
+      this.#expirePendingApprovals("SELECT approval_id FROM approvals WHERE status='pending' ORDER BY approval_id", [], "process_restarted", occurredAt);
     })();
   }
 }

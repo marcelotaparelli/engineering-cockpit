@@ -125,3 +125,45 @@ describe("separate runtime SQLite", () => {
     expect(() => new RuntimeStore(join(publicParent, "runtime.sqlite"), at(0))).toThrow("unsafe_runtime_directory");
   });
 });
+
+describe("runtime schema v2", () => {
+  test("an exact v1 database migrates additively; altered schemas stay refused", async () => {
+    const dir = join(base, "migrate");
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, "runtime.sqlite");
+    const store = new RuntimeStore(path);
+    store.createSession(session("ses-v1"));
+    store.beginRun({ runId: "run-v1", sessionId: "ses-v1", idempotencyKey: "key-v1", requestDigest: digest("v1"), createdAt: at(1) });
+    // Downgrade to the exact v1 layout produced by M0b.1b.
+    store.db.exec("DROP INDEX approvals_by_status; DROP INDEX runs_by_session; DROP TABLE approvals; DROP TABLE run_metrics; PRAGMA user_version=1;");
+    store.close();
+    const migrated = new RuntimeStore(path);
+    expect(migrated.getRun("run-v1")?.status).toBe("prepared");
+    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(2);
+    expect(migrated.pendingApprovals()).toEqual([]);
+    migrated.db.exec("CREATE TABLE intruder (x TEXT)");
+    migrated.close();
+    expect(() => new RuntimeStore(path)).toThrow("foreign_runtime_database_denied");
+  });
+
+  test("approvals: content-free journal, CAS, identical replay no-op, expiry", () => {
+    const dir = join(base, "approvals");
+    const store = new RuntimeStore(join(dir, "runtime.sqlite"));
+    store.createSession(session("ses-a"));
+    store.beginRun({ runId: "run-a1", sessionId: "ses-a", idempotencyKey: "key-a1", requestDigest: digest("a"), createdAt: at(1) });
+    store.createApproval({ approvalId: "apr-1", runId: "run-a1", actionType: "command", actionDigest: digest("rm -rf /"), createdAt: at(2), expiresAt: at(50) });
+    expect(() => store.resolveApproval("apr-1", 2, "approved", at(3))).toThrow("approval_conflict");
+    expect(store.resolveApproval("apr-1", 1, "approved", at(3)).changed).toBe(true);
+    expect(store.resolveApproval("apr-1", 1, "approved", at(4)).changed).toBe(false);
+    expect(() => store.resolveApproval("apr-1", 1, "denied", at(4))).toThrow("approval_conflict");
+    store.createApproval({ approvalId: "apr-2", runId: "run-a1", actionType: "file_change", actionDigest: digest("f"), createdAt: at(5), expiresAt: at(6) });
+    expect(() => store.resolveApproval("apr-2", 1, "approved", at(7))).toThrow("approval_expired");
+    expect(store.expireApprovals("run-a1", "run_ended", at(8))).toBe(1);
+    expect(store.getApproval("apr-2")?.status).toBe("expired");
+    expect(JSON.stringify(store.replay(0, 100))).not.toContain("rm -rf");
+    // One writer per project: a new key is refused while a run is active.
+    expect(() => store.beginRun({ runId: "run-a2", sessionId: "ses-a", idempotencyKey: "key-a2", requestDigest: digest("b"), createdAt: at(9), exclusiveProject: "demo" })).toThrow("project_busy");
+    expect(store.metrics(store.getRun("run-a1")!)).toMatchObject({ inputTokens: null, tokenScope: "not_measured", durationSource: "not_measured" });
+    store.close();
+  });
+});

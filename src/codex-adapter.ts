@@ -1,6 +1,6 @@
 import { SafeError, validProject, vmIdentity } from "./model.ts";
 import type {
-  ExecutionTarget, HistoryItem, HistoryPage, ProtocolIdentity, ProviderAdapter, ProviderApprovalRef,
+  ActivityItem, ApprovalSummary, ExecutionTarget, HistoryItem, HistoryPage, HistoryRun, ProtocolIdentity, ProviderAdapter, ProviderApprovalRef,
   ProviderCapabilities, ProviderConnection, ProviderEvent, ProviderRunRef, ProviderSessionRef,
   ProviderSessionSummary, ReconciliationResult, RpcInboundMessage, RpcTransport, StartRunInput,
   StartSessionInput,
@@ -45,6 +45,47 @@ function string(value: unknown): string {
 function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : string(value);
 }
+// Provider content (messages, commands, deltas) is bounded and only forwarded transiently.
+const MAX_TEXT = 256 * 1024;
+const MAX_COMMAND = 8 * 1024;
+const MAX_FILES = 50;
+function boundedText(value: unknown, max = MAX_TEXT): string | null {
+  if (typeof value !== "string") return null;
+  return value.length > max ? value.slice(0, max) + "…" : value;
+}
+function activityStatus(value: unknown): ActivityItem["status"] {
+  return value === "inProgress" ? "in_progress" : value === "completed" ? "completed" : value === "failed" ? "failed" : value === "declined" ? "declined" : null;
+}
+const APPROVAL_POLICY = "on-request";
+function activityItem(raw: unknown): ActivityItem | null {
+  if (!object(raw) || typeof raw.type !== "string" || typeof raw.id !== "string" || !raw.id || raw.id.length > 512) return null;
+  const base: ActivityItem = { id: raw.id, kind: "other", status: null, text: null, command: null, exitCode: null, files: [] };
+  switch (raw.type) {
+    case "userMessage": {
+      const parts = Array.isArray(raw.content) ? raw.content.filter(part => object(part) && part.type === "text" && typeof part.text === "string").map(part => (part as ObjectValue).text as string) : [];
+      return { ...base, kind: "user_message", text: boundedText(parts.join("\n")) };
+    }
+    case "agentMessage": return { ...base, kind: "agent_message", text: boundedText(raw.text) };
+    case "plan": return { ...base, kind: "plan", text: boundedText(raw.text) };
+    case "reasoning": {
+      const summary = Array.isArray(raw.summary) ? raw.summary.filter(part => typeof part === "string").join("\n") : "";
+      return { ...base, kind: "reasoning", text: boundedText(summary) || null };
+    }
+    case "commandExecution":
+      return { ...base, kind: "command", status: activityStatus(raw.status), command: boundedText(raw.command, MAX_COMMAND),
+        text: boundedText(raw.aggregatedOutput, 16 * 1024),
+        exitCode: typeof raw.exitCode === "number" && Number.isSafeInteger(raw.exitCode) ? raw.exitCode : null };
+    case "fileChange": {
+      const files = Array.isArray(raw.changes) ? raw.changes.flatMap(change => object(change) && typeof change.path === "string" ? [change.path.slice(0, 1024)] : []).slice(0, MAX_FILES) : [];
+      return { ...base, kind: "file_change", status: activityStatus(raw.status), files };
+    }
+    default: return base;
+  }
+}
+function turnStatus(value: unknown): HistoryRun["status"] {
+  return value === "inProgress" ? "running" : value === "completed" ? "completed" : value === "failed" ? "failed" : value === "interrupted" ? "interrupted" : "unknown";
+}
+const SUPPORTED_SERVER_REQUESTS =new Set(["item/commandExecution/requestApproval", "item/fileChange/requestApproval"]);
 function finiteCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
@@ -149,13 +190,13 @@ class CodexConnection implements ProviderConnection {
   async startSession(input: StartSessionInput): Promise<ProviderSessionRef> {
     this.#ready();
     if (input.mode !== "new") throw new SafeError("provider_input_invalid");
-    const thread = nested(await this.#request("thread/start", { cwd: "/workspace" }), "thread");
+    const thread = nested(await this.#request("thread/start", { cwd: "/workspace", approvalPolicy: APPROVAL_POLICY }), "thread");
     return { id: string(thread.id) };
   }
 
   async resumeSession(ref: ProviderSessionRef): Promise<ProviderSessionRef> {
     this.#ready(); this.#require("resume");
-    const thread = nested(await this.#request("thread/resume", { threadId: string(ref.id) }), "thread");
+    const thread = nested(await this.#request("thread/resume", { threadId: string(ref.id), approvalPolicy: APPROVAL_POLICY }), "thread");
     return { id: string(thread.id) };
   }
 
@@ -163,7 +204,7 @@ class CodexConnection implements ProviderConnection {
     this.#ready();
     if (!input.prompt || input.prompt.length > 1_000_000 || input.prompt.includes("\0")) throw new SafeError("provider_input_invalid");
     const threadId = string(input.session.id);
-    const turn = nested(await this.#request("turn/start", { threadId, input: [{ type: "text", text: input.prompt }] }), "turn");
+    const turn = nested(await this.#request("turn/start", { threadId, input: [{ type: "text", text: input.prompt, text_elements: [] }] }), "turn");
     return { sessionId: threadId, id: string(turn.id) };
   }
 
@@ -190,18 +231,18 @@ class CodexConnection implements ProviderConnection {
     const thread = resultObject(response.thread);
     if (!Array.isArray(thread.turns)) throw new SafeError("provider_response_invalid");
     const items: HistoryItem[] = [];
-    for (const rawTurn of thread.turns) {
+    const runs: HistoryRun[] = [];
+    for (const rawTurn of thread.turns.slice(-200)) {
       const turn = resultObject(rawTurn);
+      const runId = string(turn.id);
+      runs.push({ id: runId, status: turnStatus(turn.status) });
       if (!Array.isArray(turn.items)) continue;
       for (const rawItem of turn.items) {
-        const item = resultObject(rawItem);
-        const type = string(item.type);
-        if (type !== "message") continue;
-        const role = item.role === "user" || item.role === "assistant" || item.role === "system" ? item.role : null;
-        items.push({ id: string(item.id), kind: "message", role, text: nullableString(item.text) });
+        const item = activityItem(rawItem);
+        if (item && item.kind !== "other") items.push({ ...item, runId });
       }
     }
-    return { items, nextCursor: nullableString(response.nextCursor) };
+    return { items: items.slice(-1000), runs, nextCursor: nullableString(response.nextCursor) };
   }
 
   async reconcile(ref: ProviderRunRef): Promise<ReconciliationResult> {
@@ -211,11 +252,7 @@ class CodexConnection implements ProviderConnection {
     if (!Array.isArray(thread.turns)) throw new SafeError("provider_response_invalid");
     const match = thread.turns.find(value => object(value) && value.id === ref.id);
     if (!object(match)) return { status: "unknown", observedAt: now() };
-    const mapped: Readonly<Record<string, ReconciliationResult["status"]>> = {
-      inProgress: "running", completed: "completed", failed: "failed", interrupted: "interrupted",
-    };
-    const status = typeof match.status === "string" ? mapped[match.status] ?? "unknown" : "unknown";
-    return { status, observedAt: now() };
+    return { status: turnStatus(match.status), observedAt: now() };
   }
 
   async *events(): AsyncIterable<ProviderEvent> {
@@ -263,26 +300,62 @@ class CodexConnection implements ProviderConnection {
       const turn = resultObject(params.turn);
       const base = { occurredAt: now(), sessionId: string(params.threadId), runId: string(turn.id) };
       if (message.method === "turn/started") return { ...base, type: "run.started", status: "running" };
-      const terminal: Readonly<Record<string, "completed" | "failed" | "interrupted" | "unknown">> = {
-        completed: "completed", failed: "failed", interrupted: "interrupted",
-      };
-      const status = typeof turn.status === "string" ? terminal[turn.status] ?? "unknown" : "unknown";
-      return { ...base, type: "run.status_changed", status };
+      const status = turnStatus(turn.status);
+      const error = object(turn.error) ? boundedText(turn.error.message, 2048) : null;
+      return { ...base, type: "run.status_changed", status: status === "running" ? "unknown" : status, errorMessage: error };
     }
-    if ((message.method === "item/commandExecution/requestApproval" || message.method === "item/fileChange/requestApproval") && message.requestId !== undefined) {
+    if (message.method === "item/agentMessage/delta") {
+      const delta = boundedText(params.delta, 64 * 1024);
+      if (delta === null) return null;
+      return { type: "run.output_delta", occurredAt: now(), sessionId: string(params.threadId), runId: string(params.turnId), itemId: string(params.itemId), delta };
+    }
+    if (message.method === "item/started" || message.method === "item/completed") {
+      const item = activityItem(params.item);
+      if (!item || item.kind === "other") return null;
+      return { type: "run.item", occurredAt: now(), sessionId: string(params.threadId), runId: string(params.turnId),
+        phase: message.method === "item/started" ? "started" : "completed", item };
+    }
+    if (message.method === "error") {
+      const error = object(params.error) ? params.error : {};
+      return { type: "run.error", occurredAt: now(), sessionId: string(params.threadId), runId: string(params.turnId),
+        code: "provider_turn_error", message: boundedText(error.message, 2048), willRetry: params.willRetry === true };
+    }
+    if (message.method === "serverRequest/resolved") {
+      const requestId = params.requestId;
+      if (typeof requestId !== "string" && typeof requestId !== "number") return null;
+      this.#pendingApprovals.delete(this.#approvalKey(requestId));
+      return { type: "approval.resolved", occurredAt: now(), sessionId: string(params.threadId), runId: null, requestId };
+    }
+    if (SUPPORTED_SERVER_REQUESTS.has(message.method) && message.requestId !== undefined) {
       const sessionId = string(params.threadId); const runId = string(params.turnId);
       const key = this.#approvalKey(message.requestId);
       if (this.#pendingApprovals.has(key)) throw new SafeError("provider_response_invalid");
       this.#pendingApprovals.set(key, { sessionId, runId });
-      return { type: "approval.requested", occurredAt: now(), sessionId, runId, approval: { sessionId, runId, requestId: message.requestId } };
+      const summary: ApprovalSummary = {
+        actionType: message.method === "item/fileChange/requestApproval" ? "file_change" : "command",
+        itemId: typeof params.itemId === "string" ? params.itemId.slice(0, 512) : null,
+        command: boundedText(params.command, MAX_COMMAND),
+        cwd: boundedText(params.cwd, 1024),
+        reason: boundedText(params.reason, 2048),
+      };
+      return { type: "approval.requested", occurredAt: now(), sessionId, runId, approval: { sessionId, runId, requestId: message.requestId }, summary };
+    }
+    if (message.requestId !== undefined) {
+      // Server requests we cannot answer safely (user input, permissions, tool calls) block the turn until interrupted.
+      const runId = typeof params.turnId === "string" && params.turnId ? params.turnId.slice(0, 512) : null;
+      const sessionId = typeof params.threadId === "string" && params.threadId ? params.threadId.slice(0, 512) : "";
+      return { type: "request.unsupported", occurredAt: now(), sessionId, runId, method: message.method.slice(0, 128) };
     }
     if (message.method === "thread/tokenUsage/updated") {
       const usage = resultObject(params.tokenUsage);
-      const inputTokens = finiteCount(usage.inputTokens);
-      const outputTokens = finiteCount(usage.outputTokens);
+      const total = object(usage.total) ? usage.total : {};
+      const inputTokens = finiteCount(total.inputTokens);
+      const outputTokens = finiteCount(total.outputTokens);
+      const cachedInputTokens = finiteCount(total.cachedInputTokens);
       return {
         type: "usage.updated", occurredAt: now(), sessionId: string(params.threadId), runId: nullableString(params.turnId),
         ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }),
+        ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
       };
     }
     return null;

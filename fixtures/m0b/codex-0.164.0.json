@@ -2,5 +2,5 @@
   "initialize": {"userAgent":"engineering-cockpit/0.164.0 (engineering-cockpit; m0b.1a)","codexHome":"/sanitized/codex-home","platformFamily":"unix","platformOs":"linux"},
   "session": {"id":"session-provider-164","status":{"type":"active","activeFlags":["waitingOnApproval"]},"updatedAt":1792886400},
   "run": {"id":"run-provider-164"},
-  "historyItem": {"id":"item-164","type":"message","role":"assistant","text":"fixture response"}
+  "historyItem": {"id":"item-164","type":"agentMessage","text":"fixture response","phase":null}
 }

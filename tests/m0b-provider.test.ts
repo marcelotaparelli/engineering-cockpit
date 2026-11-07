@@ -64,7 +64,8 @@ describe("typed provider contract and supported Codex mapping", () => {
     expect(await connection.startRun({ session: { id: fixture.session.id }, prompt: "synthetic prompt" })).toEqual({ sessionId: fixture.session.id, id: fixture.run.id });
     await connection.interrupt({ sessionId: fixture.session.id, id: fixture.run.id });
     const history = await connection.history({ id: fixture.session.id });
-    expect(history.items).toEqual([{ id: "item-1", kind: "message", role: "assistant", text: "fixture response" }]);
+    expect(history.items).toEqual([{ id: "item-1", runId: fixture.run.id, kind: "agent_message", status: null, text: "fixture response", command: null, exitCode: null, files: [] }]);
+    expect(history.runs).toEqual([{ id: fixture.run.id, status: "completed" }]);
     expect(await connection.reconcile({ sessionId: fixture.session.id, id: fixture.run.id })).toMatchObject({ status: "completed" });
     rpc.inbound.push(
       { method: "item/commandExecution/requestApproval", params: { threadId: fixture.session.id, turnId: fixture.run.id }, requestId: 73 },
@@ -74,7 +75,8 @@ describe("typed provider contract and supported Codex mapping", () => {
     await connection.decideApproval({ sessionId: fixture.session.id, runId: fixture.run.id, requestId: 73 }, "reject");
     await connection.decideApproval({ sessionId: fixture.session.id, runId: fixture.run.id, requestId: 74 }, "approve");
     expect(rpc.responses).toEqual([{ id: 73, result: { decision: "decline" } }, { id: 74, result: { decision: "accept" } }]);
-    expect(rpc.requests.find(call => call.method === "thread/start")?.params).toEqual({ cwd: "/workspace" });
+    expect(rpc.requests.find(call => call.method === "thread/start")?.params).toEqual({ cwd: "/workspace", approvalPolicy: "on-request" });
+    expect(rpc.requests.find(call => call.method === "turn/start")?.params).toEqual({ threadId: fixture.session.id, input: [{ type: "text", text: "synthetic prompt", text_elements: [] }] });
     expect(JSON.stringify(rpc.requests)).toContain("synthetic prompt");
     await connection.close(); await connection.close(); expect(rpc.closed).toBe(1);
   });
@@ -87,7 +89,7 @@ describe("typed provider contract and supported Codex mapping", () => {
       { method: "turn/completed", params: { threadId: "session-provider-1", turn: { id: "run-failed", status: "failed" } } },
       { method: "turn/completed", params: { threadId: "session-provider-1", turn: { id: "run-inconclusive" } } },
       { method: "item/commandExecution/requestApproval", params: { threadId: "session-provider-1", turnId: "run-provider-1", command: "not-exposed" }, requestId: "approval-1" },
-      { method: "thread/tokenUsage/updated", params: { threadId: "session-provider-1", turnId: "run-provider-1", tokenUsage: { inputTokens: 2, outputTokens: 3, secret: "not-exposed" } } },
+      { method: "thread/tokenUsage/updated", params: { threadId: "session-provider-1", turnId: "run-provider-1", tokenUsage: { total: { inputTokens: 2, outputTokens: 3, cachedInputTokens: 1, secret: "not-exposed" }, last: { inputTokens: 1 } } } },
     );
     const connection = await new CodexAppServerAdapter(() => rpc).connect(target); await connection.initialize();
     const events: ProviderEvent[] = [];
@@ -102,8 +104,10 @@ describe("typed provider contract and supported Codex mapping", () => {
     await connection.decideApproval({ sessionId: "session-provider-1", runId: "run-provider-1", requestId: "approval-1" }, "reject");
     await expect(connection.decideApproval({ sessionId: "session-provider-1", runId: "run-provider-1", requestId: "approval-1" }, "reject"))
       .rejects.toThrow("provider_approval_invalid");
-    expect(events[4]).toMatchObject({ inputTokens: 2, outputTokens: 3 });
-    expect(JSON.stringify(events)).not.toContain("command"); expect(JSON.stringify(events)).not.toContain("secret");
+    expect(events[4]).toMatchObject({ inputTokens: 2, outputTokens: 3, cachedInputTokens: 1 });
+    // The command is surfaced transiently so the operator can decide; it is never journaled (see runtime tests).
+    expect(approval?.summary).toEqual({ actionType: "command", itemId: null, command: "not-exposed", cwd: null, reason: null });
+    expect(JSON.stringify(events)).not.toContain("secret");
   });
 
   test("unsupported capabilities and raw transport failures produce stable safe errors", async () => {
@@ -253,7 +257,7 @@ describe("typed provider contract and supported Codex mapping", () => {
       async resumeSession(ref) { return ref; },
       async startRun(input) { return { sessionId: input.session.id, id: "synthetic-run" }; },
       async interrupt() {}, async decideApproval() {},
-      async history() { return { items: [], nextCursor: null }; },
+      async history() { return { items: [], runs: [], nextCursor: null }; },
       async reconcile() { return { status: "unknown", observedAt: "2026-10-25T00:00:00Z" }; },
       async *events() { for (const event of events) yield event; }, async close() {},
     };

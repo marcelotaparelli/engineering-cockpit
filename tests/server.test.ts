@@ -130,10 +130,16 @@ test("discovery failure yields 503 without stale inventory", async () => {
   } finally { fail = false; }
 });
 
-test("no execution routes exist", async () => {
+test("execution routes require CSRF; arbitrary command routes do not exist", async () => {
   const { cookie, body } = await login();
-  for (const path of ["api/sessions", "api/runs", "api/runs/run-private-project/interrupt", "api/approvals/id/decision", "api/exec"]) {
+  for (const path of ["api/runs", "api/exec", "api/vms/codex-private-project/exec"]) {
     const response = await fetch(base + path, { method: "POST", headers: { ...auth(cookie, body.proof), Origin: origin } });
     expect(response.status).toBe(405);
   }
+  for (const path of ["api/sessions", "api/sessions/session-private-project/runs", "api/runs/run-private-project/interrupt", "api/approvals/id/decision"]) {
+    const response = await fetch(base + path, { method: "POST", body: "{}", headers: { ...auth(cookie, body.proof), Origin: origin, "Content-Type": "application/json" } });
+    expect(response.status).toBe(403);
+    expect((await response.json()).error.code).toBe("csrf_denied");
+  }
+  expect(runtime.getRun("run-private-project")?.status).toBe("unknown");
 });

@@ -105,6 +105,16 @@ export class LocalSecurity {
     if (!run || !session || !principal.grants.has(session.target.projectId)) throw new SafeError("resource_not_found");
     return { run, session };
   }
+  authorizeSession(store: Pick<RuntimeStore, "getSession">, principal: LocalPrincipal, sessionId: string): SessionRecord {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(sessionId)) throw new SafeError("resource_not_found");
+    const session = store.getSession(sessionId);
+    if (!session || !principal.grants.has(session.target.projectId)) throw new SafeError("resource_not_found");
+    return session;
+  }
+  /** Long-lived streams re-check this so logout or expiry ends them. */
+  isActive(principal: LocalPrincipal): boolean {
+    return this.#sessions.get(principal.session.id) === principal.session && principal.session.expiresAt > this.#now();
+  }
   #prune(now: number): void {
     for (const [id, session] of this.#sessions) if (session.expiresAt <= now) this.#sessions.delete(id);
   }

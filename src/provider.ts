@@ -49,13 +49,29 @@ export interface ProviderSessionSummary {
 export interface StartSessionInput { mode: "new" }
 export interface StartRunInput { session: ProviderSessionRef; prompt: string }
 
-export interface HistoryItem {
+export type ActivityKind = "user_message" | "agent_message" | "command" | "file_change" | "reasoning" | "plan" | "other";
+export type ActivityStatus = "in_progress" | "completed" | "failed" | "declined" | null;
+/** Provider-neutral view of one unit of agent work. Content is transient: never journaled. */
+export interface ActivityItem {
   id: string;
-  kind: "message" | "action" | "status";
-  role: "user" | "assistant" | "system" | null;
+  kind: ActivityKind;
+  status: ActivityStatus;
   text: string | null;
+  command: string | null;
+  exitCode: number | null;
+  files: string[];
 }
-export interface HistoryPage { items: HistoryItem[]; nextCursor: string | null }
+export interface HistoryItem extends ActivityItem { runId: string | null }
+export interface HistoryRun { id: string; status: Exclude<RunStatus, "prepared" | "dispatching" | "awaiting_approval"> }
+export interface HistoryPage { items: HistoryItem[]; runs: HistoryRun[]; nextCursor: string | null }
+
+export interface ApprovalSummary {
+  actionType: "command" | "file_change";
+  itemId: string | null;
+  command: string | null;
+  cwd: string | null;
+  reason: string | null;
+}
 
 export interface ReconciliationResult {
   status: Exclude<RunStatus, "prepared" | "dispatching" | "awaiting_approval">;
@@ -70,10 +86,14 @@ interface ProviderEventBase {
 export type ProviderEvent =
   | (ProviderEventBase & { type: "session.connected" | "session.resumed"; runId: null })
   | (ProviderEventBase & { type: "run.started"; runId: string; status: "running" })
-  | (ProviderEventBase & { type: "run.status_changed"; runId: string; status: RunStatus })
-  | (ProviderEventBase & { type: "approval.requested"; runId: string; approval: ProviderApprovalRef })
-  | (ProviderEventBase & { type: "usage.updated"; runId: string | null; inputTokens?: number; outputTokens?: number })
-  | (ProviderEventBase & { type: "run.error"; runId: string; code: string });
+  | (ProviderEventBase & { type: "run.status_changed"; runId: string; status: RunStatus; errorMessage?: string | null })
+  | (ProviderEventBase & { type: "run.output_delta"; runId: string; itemId: string; delta: string })
+  | (ProviderEventBase & { type: "run.item"; runId: string; phase: "started" | "completed"; item: ActivityItem })
+  | (ProviderEventBase & { type: "approval.requested"; runId: string; approval: ProviderApprovalRef; summary: ApprovalSummary })
+  | (ProviderEventBase & { type: "approval.resolved"; runId: null; requestId: RpcId })
+  | (ProviderEventBase & { type: "usage.updated"; runId: string | null; inputTokens?: number; outputTokens?: number; cachedInputTokens?: number })
+  | (ProviderEventBase & { type: "run.error"; runId: string; code: string; message: string | null; willRetry: boolean })
+  | (ProviderEventBase & { type: "request.unsupported"; runId: string | null; method: string });
 
 export type RpcId = string | number;
 export interface RpcInboundMessage {
