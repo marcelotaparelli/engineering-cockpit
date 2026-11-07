@@ -282,6 +282,12 @@ export class RuntimeStore {
     })();
   }
 
+  findRunByKey(sessionId: string, idempotencyKey: string, operation: "start_run" = "start_run"): RunRecord | null {
+    requireId(sessionId);
+    const row = this.db.prepare("SELECT * FROM runs WHERE session_id=? AND operation=? AND idempotency_key_hash=?").get(sessionId, operation, keyHash(idempotencyKey)) as RunRow | null;
+    return row ? mapRun(row) : null;
+  }
+
   getRun(runId: string): RunRecord | null {
     requireId(runId);
     const row = this.db.prepare("SELECT * FROM runs WHERE run_id=?").get(runId) as RunRow | null;

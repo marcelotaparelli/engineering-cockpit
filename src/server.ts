@@ -152,6 +152,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
         let flushQueued = false;
         const send = (text: string) => {
           if (closed) return;
+          if (!options.security.isActive(principal)) { close(); return; }
           // Slow consumer: drop the stream rather than buffer without bound. The client resumes by cursor.
           if (controller.desiredSize !== null && controller.desiredSize < -2000) { close(); return; }
           try { controller.enqueue(encoder.encode(text)); } catch { close(); }

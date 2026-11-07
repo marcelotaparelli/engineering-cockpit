@@ -344,3 +344,35 @@ describe("restart recovery", () => {
     reopened.close();
   });
 });
+
+describe("review regressions", () => {
+  test("retry with a known key while the VM is down returns the original run (no nudge to re-send)", async () => {
+    const auth = await login();
+    const sessionId = await openSession(auth);
+    const key = "retry-key-0123456789";
+    const first = await (await startRun(auth, sessionId, "tarefa", key)).json() as { run_id: string };
+    await until(runStatus(auth, first.run_id), value => value.status === "completed");
+    vmState = "stopped";
+    try {
+      const retry = await startRun(auth, sessionId, "tarefa", key);
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ run_id: first.run_id, replayed: true });
+    } finally { vmState = "running"; }
+  });
+
+  test("reconcile cannot revive an unknown run while another run is active in the project", async () => {
+    const auth = await login();
+    const sessionId = await openSession(auth);
+    const a = await (await startRun(auth, sessionId, "lento lento: A")).json() as { run_id: string };
+    await until(runStatus(auth, a.run_id), value => value.status === "running" && value.provider_bound);
+    transports.at(-1)!.crash();
+    await until(runStatus(auth, a.run_id), value => value.status === "unknown");
+    const b = await (await startRun(auth, sessionId, "lento lento: B")).json() as { run_id: string };
+    await until(runStatus(auth, b.run_id), value => value.status === "running" && value.provider_bound);
+    const reconcile = await post(auth, `api/runs/${a.run_id}/reconcile`, {});
+    expect(reconcile.status).toBe(409);
+    expect((await runStatus(auth, a.run_id)()).status).toBe("unknown");
+    expect((await post(auth, `api/runs/${b.run_id}/interrupt`, {})).status).toBe(202);
+    await until(runStatus(auth, b.run_id), value => value.status === "interrupted", 5000);
+  });
+});

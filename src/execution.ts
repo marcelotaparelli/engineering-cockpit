@@ -1,4 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { closeSync, lstatSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { assertNoSymlinks } from "./paths.ts";
 import { SafeError, safeCode, type Snapshot } from "./model.ts";
 import type { EventHub } from "./event-hub.ts";
 import type {
@@ -22,6 +24,8 @@ export interface ExecutionOptions {
   refresh: () => Promise<Snapshot>;
   now?: () => Date;
   approvalTtlMs?: number;
+  /** Per-install secret for HMAC digests of prompts/actions (kept outside the database). */
+  digestKey?: Uint8Array;
   log?: (entry: ExecutionLog) => void;
 }
 
@@ -42,14 +46,22 @@ interface Live {
   closed: boolean;
   files: Map<string, string[]>;
 }
-interface ActiveRun { runId: string; session: SessionRecord; live: Live; providerRunId: string | null }
+interface ActiveRun { runId: string; session: SessionRecord; live: Live; providerRunId: string | null; buffer: ProviderEvent[] }
 interface PendingApproval { approvalId: string; runId: string; live: Live; ref: ProviderApprovalRef; summary: ApprovalSummary & { files: string[] } }
 
 const MAX_PROMPT_CHARS = 64 * 1024;
 const UNCERTAIN: readonly RunStatus[] = ["dispatching", "running", "awaiting_approval"];
 const TERMINAL: readonly RunStatus[] = ["completed", "failed", "interrupted"];
 
-function sha256(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
+/** Load or create a 32-byte secret file (0600, no symlinks). */
+export function loadDigestKey(path: string): Uint8Array {
+  assertNoSymlinks(path);
+  try { closeSync(openSync(path, "wx", 0o600)); writeFileSync(path, randomBytes(32), { mode: 0o600 }); }
+  catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
+  const info = lstatSync(path);
+  if (!info.isFile() || info.nlink !== 1 || (info.mode & 0o077) !== 0 || info.size !== 32) throw new SafeError("unsafe_digest_key");
+  return readFileSync(path);
+}
 
 /**
  * Owns provider connections (one per VM) and turns browser intents into exactly-once provider operations.
@@ -63,6 +75,7 @@ export class ExecutionService {
   readonly #refresh: () => Promise<Snapshot>;
   readonly #now: () => Date;
   readonly #approvalTtlMs: number;
+  readonly #digestKey: Uint8Array;
   readonly #log: (entry: ExecutionLog) => void;
   readonly #connections = new Map<string, Promise<Live>>();
   readonly #lives = new Map<string, Live>();
@@ -77,6 +90,7 @@ export class ExecutionService {
     this.#refresh = options.refresh;
     this.#now = options.now ?? (() => new Date());
     this.#approvalTtlMs = options.approvalTtlMs ?? 12 * 60 * 60_000;
+    this.#digestKey = options.digestKey ?? randomBytes(32);
     this.#log = options.log ?? (entry => console.log(JSON.stringify(entry)));
     // A prepared run whose prompt was lost with the previous process was never sent: fail it explicitly.
     for (const run of this.#store.runsWithStatus(["prepared"])) {
@@ -124,10 +138,17 @@ export class ExecutionService {
     if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_PROMPT_CHARS || prompt.includes("\0")) {
       throw new SafeError("invalid_prompt");
     }
+    const requestDigest = this.#digest(`${session.sessionId}\0${prompt}`);
+    // A retry with a known key returns the original run even if the VM is down now: never push the user to re-send.
+    const prior = this.#store.findRunByKey(session.sessionId, idempotencyKey);
+    if (prior) {
+      if (prior.requestDigest !== requestDigest) throw new SafeError("idempotency_key_conflict");
+      return { run: prior, created: false };
+    }
     const target = await this.revalidate(session.target.vmName, session.target.projectId);
     const result = this.#store.beginRun({
       runId: `run-${randomUUID()}`, sessionId: session.sessionId, idempotencyKey,
-      requestDigest: sha256(`${session.sessionId}\0${prompt}`), createdAt: this.#iso(), exclusiveProject: session.target.projectId,
+      requestDigest, createdAt: this.#iso(), exclusiveProject: session.target.projectId,
     });
     if (result.created) {
       this.#hub.journal();
@@ -155,11 +176,15 @@ export class ExecutionService {
     const result = await live.connection.reconcile({ sessionId: session.providerSessionId, id: run.providerRunId });
     this.#log({ event: "run.reconciled", run_id: run.runId, outcome: result.status });
     if (result.status === "running") {
+      const key = this.#key(target.vmName, session.providerSessionId);
+      const other = this.#store.activeRunForProject(session.target.projectId);
+      if (this.#active.has(key) || (other && other.runId !== run.runId)) throw new SafeError("project_busy");
       if (!live.loaded.has(session.providerSessionId)) {
         await live.connection.resumeSession({ id: session.providerSessionId });
         live.loaded.add(session.providerSessionId);
       }
-      this.#active.set(this.#key(target.vmName, session.providerSessionId), { runId: run.runId, session, live, providerRunId: run.providerRunId });
+      if (this.#active.has(key) || this.#store.activeRunForProject(session.target.projectId)) throw new SafeError("project_busy");
+      this.#active.set(key, { runId: run.runId, session, live, providerRunId: run.providerRunId, buffer: [] });
       return this.#move(run.runId, "running", { reasonCode: "reconciled" }) ?? run;
     }
     if (result.status === "unknown") return run;
@@ -184,8 +209,18 @@ export class ExecutionService {
       this.#hub.journal();
       throw new SafeError("approval_expired");
     }
-    const { approval: resolved, changed } = this.#store.resolveApproval(approval.approvalId, expectedVersion,
-      decision === "approve" ? "approved" : "denied", this.#iso());
+    let outcome: { approval: ApprovalRecord; changed: boolean };
+    try {
+      outcome = this.#store.resolveApproval(approval.approvalId, expectedVersion, decision === "approve" ? "approved" : "denied", this.#iso());
+    } catch (error) {
+      if (error instanceof SafeError && error.code === "approval_expired") {
+        this.#store.expireApproval(approval.approvalId, "ttl_elapsed", this.#iso());
+        this.#approvals.delete(approval.approvalId);
+        this.#hub.journal();
+      }
+      throw error;
+    }
+    const { approval: resolved, changed } = outcome;
     if (!changed || !pending) return resolved;
     this.#approvals.delete(approval.approvalId);
     this.#hub.journal();
@@ -225,13 +260,18 @@ export class ExecutionService {
         live.loaded.add(session.providerSessionId);
       }
       if (this.#active.has(key)) throw new SafeError("session_busy");
-      this.#active.set(key, { runId: prepared.runId, session, live, providerRunId: null });
+      this.#active.set(key, { runId: prepared.runId, session, live, providerRunId: null, buffer: [] });
       sent = true; // from here on the provider may have received the prompt
       const ref = await live.connection.startRun({ session: { id: session.providerSessionId }, prompt });
       const active = this.#active.get(key);
-      if (active?.runId === prepared.runId) active.providerRunId ??= ref.id;
       const current = this.#store.getRun(prepared.runId);
       if (current?.status === "dispatching") this.#move(prepared.runId, "running", { providerRunId: ref.id });
+      if (active?.runId === prepared.runId) {
+        // Bind to the exact turn, then replay only the buffered events of that turn.
+        active.providerRunId = ref.id;
+        const buffered = active.buffer.splice(0);
+        for (const event of buffered) if (event.runId === ref.id) this.#onEvent(live, event);
+      }
       this.#log({ event: "run.dispatched", run_id: prepared.runId, outcome: "accepted", duration_ms: Math.round(performance.now() - started) });
     } catch (error) {
       const code = safeCode(error);
@@ -317,6 +357,11 @@ export class ExecutionService {
     }
     const active = this.#active.get(this.#key(live.vmName, event.sessionId));
     if (!active || active.live !== live) return; // activity not started by the Cockpit is not attributed
+    if (event.runId && !active.providerRunId) {
+      // Turn id not known yet (turn/start in flight): never attribute another turn's events to this run.
+      if (active.buffer.length < 2000) active.buffer.push(event);
+      return;
+    }
     if (event.runId && active.providerRunId && event.runId !== active.providerRunId) return;
     const session = active.session;
     const base = { projectId: session.target.projectId, sessionId: session.sessionId, runId: active.runId };
@@ -356,7 +401,7 @@ export class ExecutionService {
         const files = event.summary.itemId ? live.files.get(event.summary.itemId) ?? [] : [];
         const summary = { ...event.summary, files };
         this.#store.createApproval({ approvalId, runId: active.runId, actionType: summary.actionType,
-          actionDigest: sha256(JSON.stringify([active.runId, String(event.approval.requestId), summary])),
+          actionDigest: this.#digest(JSON.stringify([active.runId, String(event.approval.requestId), summary])),
           createdAt: at.toISOString(), expiresAt: new Date(at.getTime() + this.#approvalTtlMs).toISOString() });
         this.#approvals.set(approvalId, { approvalId, runId: active.runId, live, ref: event.approval, summary });
         const run = this.#store.getRun(active.runId);
@@ -392,6 +437,7 @@ export class ExecutionService {
     } catch { return null; }
   }
 
+  #digest(value: string): string { return createHmac("sha256", this.#digestKey).update(value, "utf8").digest("hex"); }
   #key(vmName: string, providerSessionId: string): string { return `${vmName}\0${providerSessionId}`; }
   #iso(): string { return this.#now().toISOString(); }
 }

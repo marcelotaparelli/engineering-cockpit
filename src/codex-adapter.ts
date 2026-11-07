@@ -140,6 +140,7 @@ export class CodexAppServerAdapter implements ProviderAdapter {
 }
 
 class CodexConnection implements ProviderConnection {
+  droppedEvents = 0;
   #initialized = false;
   #closed = false;
   readonly #pendingApprovals = new Map<string, { sessionId: string; runId: string }>();
@@ -259,7 +260,9 @@ class CodexConnection implements ProviderConnection {
     this.#ready();
     try {
       for await (const message of this.transport.messages()) {
-        const event = this.#mapEvent(message);
+        let event: ProviderEvent | null = null;
+        // One malformed or duplicate provider frame must not take down every run on the VM: skip it.
+        try { event = this.#mapEvent(message); } catch (error) { if (!(error instanceof SafeError)) throw error; this.droppedEvents++; }
         if (event) yield event;
       }
     } catch (error) { if (error instanceof SafeError) throw error; throw new SafeError("provider_events_failed"); }
