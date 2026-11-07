@@ -1,6 +1,6 @@
 # E2 — spike do Claude Code (CLI stream-json sobre `msb exec --stream`)
 
-**Estado (2026-11-07):** spike implementado e testado só com um Claude **falso** (Debian). **Nada foi executado no Arch, nenhuma VM Claude foi tocada, nenhum prompt real foi enviado, nenhuma quota foi consumida.** O adaptador definitivo é o E3 e não foi iniciado.
+**Estado (2026-11-07):** spike implementado e testado só com um Claude **falso** (Debian). **Nada foi executado no Arch, nenhuma VM Claude foi tocada, nenhum prompt real foi enviado, nenhuma quota foi consumida.** O adaptador definitivo (E3) está em `docs/e3-claude-code.md`; o relatório real deste spike ainda não está no repositório.
 
 ## Decisão de arquitetura
 `msb exec --stream <vm> -- claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-mode default --permission-prompts host [--session-id <uuid> | --resume <uuid>]`. Um processo longo por sessão, vários turnos pela mesma stdin, encerrado fechando a stdin. Reutiliza `MsbChild`/`minimalChildEnv`/`JsonlObjectParser` do transporte Codex. **Sem Agent SDK, daemon ou bridge.** Nunca `--dangerously-skip-permissions`/`bypassPermissions`: toda ferramenta passa por decisão humana.

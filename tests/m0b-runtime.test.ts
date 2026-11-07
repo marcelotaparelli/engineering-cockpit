@@ -139,11 +139,42 @@ describe("runtime schema v2", () => {
     store.close();
     const migrated = new RuntimeStore(path);
     expect(migrated.getRun("run-v1")?.status).toBe("prepared");
-    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(2);
+    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(3); // v1 → v2 → v3 in one open
     expect(migrated.pendingApprovals()).toEqual([]);
     migrated.db.exec("CREATE TABLE intruder (x TEXT)");
     migrated.close();
     expect(() => new RuntimeStore(path)).toThrow("foreign_runtime_database_denied");
+  });
+
+  test("an exact v2 database migrates to v3 preserving approvals and metrics; tool/question approvals and per-run tokens fit", async () => {
+    const dir = join(base, "migrate-v3");
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, "runtime.sqlite");
+    const store = new RuntimeStore(path);
+    store.createSession(session("ses-v2"));
+    store.beginRun({ runId: "run-v2", sessionId: "ses-v2", idempotencyKey: "key-v2", requestDigest: digest("v2"), createdAt: at(1) });
+    // Rebuild the exact v2 layout (narrow CHECKs) with one approval and one metrics row in it.
+    store.db.exec(`DROP INDEX approvals_by_status; DROP TABLE approvals; DROP TABLE run_metrics;
+      CREATE TABLE approvals (approval_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), action_type TEXT NOT NULL CHECK(action_type IN ('command','file_change')), action_digest TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')), version INTEGER NOT NULL CHECK(version >= 1), created_at TEXT NOT NULL, expires_at TEXT NOT NULL, resolved_at TEXT, reason_code TEXT);
+      CREATE TABLE run_metrics (run_id TEXT PRIMARY KEY REFERENCES runs(run_id), input_tokens INTEGER, output_tokens INTEGER, cached_input_tokens INTEGER, token_scope TEXT NOT NULL CHECK(token_scope IN ('not_measured','session_cumulative')), updated_at TEXT NOT NULL);
+      CREATE INDEX approvals_by_status ON approvals(status, run_id);
+      INSERT INTO approvals VALUES ('apr-old', 'run-v2', 'command', '${digest("x")}', 'pending', 1, '${at(2)}', '${at(59)}', NULL, NULL);
+      INSERT INTO run_metrics VALUES ('run-v2', 7, 8, NULL, 'session_cumulative', '${at(3)}');
+      PRAGMA user_version=2;`);
+    store.close();
+    const migrated = new RuntimeStore(path);
+    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(3);
+    // Restart recovery expires the pending approval (handles never survive), but the row and its history are kept.
+    expect(migrated.getApproval("apr-old")).toMatchObject({ actionType: "command", status: "expired", reasonCode: "process_restarted" });
+    expect(migrated.metrics(migrated.getRun("run-v2")!)).toMatchObject({ inputTokens: 7, outputTokens: 8, tokenScope: "session_cumulative" });
+    migrated.createApproval({ approvalId: "apr-q", runId: "run-v2", actionType: "question", actionDigest: digest("q"), createdAt: at(4), expiresAt: at(59) });
+    migrated.createApproval({ approvalId: "apr-t", runId: "run-v2", actionType: "tool", actionDigest: digest("t"), createdAt: at(4), expiresAt: at(59) });
+    expect(migrated.resolveApproval("apr-q", 1, "approved", at(5), "human_answer").approval).toMatchObject({ status: "approved", reasonCode: "human_answer" });
+    expect(() => migrated.resolveApproval("apr-t", 1, "approved", at(5), "auto" as never)).toThrow("invalid_reason_code");
+    migrated.recordUsage("run-v2", { inputTokens: 1, outputTokens: 2 }, at(6), "run");
+    expect(migrated.metrics(migrated.getRun("run-v2")!).tokenScope).toBe("run");
+    migrated.close();
+    expect(new RuntimeStore(path).getApproval("apr-t")?.status).toBe("expired"); // reopens cleanly as exact v3
   });
 
   test("approvals: content-free journal, CAS, identical replay no-op, expiry", () => {

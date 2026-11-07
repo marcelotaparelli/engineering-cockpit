@@ -1,6 +1,6 @@
 import { SafeError, validProject, vmIdentity } from "./model.ts";
 import type {
-  ActivityItem, ApprovalSummary, ExecutionTarget, HistoryItem, HistoryPage, HistoryRun, ProtocolIdentity, ProviderAdapter, ProviderApprovalRef,
+  ActivityItem, ApprovalDecision, ApprovalSummary, ExecutionTarget, HistoryItem, HistoryPage, HistoryRun, ProtocolIdentity, ProviderAdapter, ProviderApprovalRef,
   ProviderCapabilities, ProviderConnection, ProviderErrorClass, ProviderEvent, ProviderRunRef, ProviderSessionRef,
   ProviderSessionSummary, ReconciliationResult, RpcInboundMessage, RpcTransport, StartRunInput,
   StartSessionInput,
@@ -13,8 +13,11 @@ const DEFAULT_CAPABILITIES: ProviderCapabilities = Object.freeze({
   resume: true,
   interrupt: true,
   approvals: true,
+  questions: false,
+  sessionListing: "provider",
   history: "paged",
   usage: "session_cumulative",
+  reconcile: "provider",
 });
 
 // Each version is pinned only after its initialize/thread/list shape was observed (see docs/e0-homologacao.md for 0.166.0).
@@ -143,6 +146,7 @@ export class CodexAppServerAdapter implements ProviderAdapter {
     this.#capabilities = Object.freeze({ ...capabilities });
   }
 
+  get capabilities(): ProviderCapabilities { return { ...this.#capabilities }; }
   async probe(): Promise<ProviderCapabilities> { return { ...this.#capabilities }; }
 
   async connect(target: ExecutionTarget): Promise<ProviderConnection> {
@@ -229,8 +233,10 @@ class CodexConnection implements ProviderConnection {
     await this.#request("turn/interrupt", { threadId: string(ref.sessionId), turnId: string(ref.id) });
   }
 
-  async decideApproval(ref: ProviderApprovalRef, decision: "approve" | "reject"): Promise<void> {
+  async decideApproval(ref: ProviderApprovalRef, input: ApprovalDecision): Promise<void> {
     this.#ready(); this.#require("approvals");
+    const decision = input.decision;
+    if ((decision !== "approve" && decision !== "reject") || input.answers !== undefined) throw new SafeError("provider_input_invalid");
     const sessionId = string(ref.sessionId); const runId = string(ref.runId);
     const key = this.#approvalKey(ref.requestId);
     const pending = this.#pendingApprovals.get(key);

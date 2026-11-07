@@ -17,6 +17,8 @@ const NEXT_STEP: Readonly<Record<AgentState, string>> = {
   offline: "VM parada ou ausente: iniciar pelo launcher",
 };
 
+function vmProvider(vmName: string): string | null { return /^(codex|claude|opencode)-/.exec(vmName)?.[1] ?? null; }
+
 function agentState(run: RunRecord | null, blocked: boolean): AgentState {
   if (!run) return "idle";
   switch (run.status) {
@@ -59,12 +61,14 @@ export function buildDashboard(input: {
     const forVm = sessionViews.filter(view => view.vm_name === name).sort((a, b) => b.last_activity.localeCompare(a.last_activity));
     const active = forVm.find(view => view.state === "working" || view.state === "blocked" || view.state === "awaiting_approval");
     const focus = active ?? forVm[0] ?? null;
-    const runnable = vm !== null && vm.provider === "codex" && vm.state === "running" && !vm.orphaned;
+    // Without an ExecutionService (display-only server) the historical Codex-only rule applies.
+    const supported = vm !== null && (input.execution ? input.execution.supports(vm.provider, vm.vm_name) : vm.provider === "codex");
+    const runnable = vm !== null && supported && vm.state === "running" && !vm.orphaned;
     let state: AgentState = focus?.state ?? "idle";
     if (!runnable && state === "idle") state = "offline";
     return {
-      vm_name: name, project: vm?.project ?? focus?.project ?? null, provider: vm?.provider ?? "codex", vm_state: vm?.state ?? "unknown",
-      orphaned: vm?.orphaned ?? false, runnable, state, next_step: NEXT_STEP[state], session_id: focus?.session_id ?? null,
+      vm_name: name, project: vm?.project ?? focus?.project ?? null, provider: vm?.provider ?? vmProvider(name), vm_state: vm?.state ?? "unknown",
+      orphaned: vm?.orphaned ?? false, runnable, capabilities: vm ? input.execution?.capabilities(vm.provider) ?? null : null, state, next_step: NEXT_STEP[state], session_id: focus?.session_id ?? null,
       run_id: focus?.latest_run?.run_id ?? null, last_activity: focus?.last_activity ?? null, sessions: forVm.length,
     };
   });
@@ -73,7 +77,7 @@ export function buildDashboard(input: {
     .filter((view): view is NonNullable<typeof view> => view !== null && principal.grants.has(view.projectId));
   const attention = [
     ...approvals.map(view => ({ kind: "approval", approval_id: view.approvalId, run_id: view.runId, session_id: view.sessionId, project: view.projectId,
-      vm_name: view.vmName, version: view.version, action_type: view.actionType, created_at: view.createdAt, summary: view.summary })),
+      vm_name: view.vmName, provider: vmProvider(view.vmName), version: view.version, action_type: view.actionType, created_at: view.createdAt, summary: view.summary })),
     ...sessionViews.filter(view => view.state === "blocked").flatMap(view => (input.execution?.blockedRequests(view.latest_run!.run_id) ?? []).map(request => ({
       kind: "blocked", run_id: view.latest_run!.run_id, session_id: view.session_id, project: view.project, vm_name: view.vm_name,
       reason_code: "provider_request_unsupported", method: request.method, occurrences: request.occurrences,

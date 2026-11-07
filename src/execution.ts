@@ -1,10 +1,10 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { closeSync, lstatSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { assertNoSymlinks } from "./paths.ts";
-import { SafeError, safeCode, type Snapshot } from "./model.ts";
+import { SafeError, safeCode, type Provider, type Snapshot } from "./model.ts";
 import type { EventHub } from "./event-hub.ts";
 import type {
-  ApprovalSummary, ExecutionTarget, HistoryPage, ProtocolIdentity, ProviderAdapter, ProviderApprovalRef,
+  ApprovalSummary, ExecutionTarget, HistoryPage, ProtocolIdentity, ProviderAdapter, ProviderApprovalRef, ProviderCapabilities,
   ProviderConnection, ProviderErrorClass, ProviderEvent, ProviderSessionSummary, RunStatus,
 } from "./provider.ts";
 import type { ApprovalRecord, RunRecord, RuntimeStore, SessionRecord } from "./runtime-store.ts";
@@ -19,7 +19,9 @@ export interface ExecutionLog {
 
 export interface ExecutionOptions {
   store: RuntimeStore;
-  adapter: ProviderAdapter;
+  /** One adapter per provider. `adapter` is the single-provider shorthand. */
+  adapter?: ProviderAdapter;
+  adapters?: readonly ProviderAdapter[];
   hub: EventHub;
   refresh: () => Promise<Snapshot>;
   now?: () => Date;
@@ -40,6 +42,7 @@ export interface ThreadView { id: string; status: ProviderSessionSummary["status
 
 interface Live {
   vmName: string;
+  adapter: ProviderAdapter;
   connection: ProviderConnection;
   identity: ProtocolIdentity;
   loaded: Set<string>;
@@ -56,6 +59,8 @@ export interface BlockedRequest { method: string; since: string; occurrences: nu
 interface PendingApproval { approvalId: string; runId: string; live: Live; ref: ProviderApprovalRef; summary: ApprovalSummary & { files: string[] } }
 
 const MAX_PROMPT_CHARS = 64 * 1024;
+/** Adapter refusals raised before anything is written to the provider: the prompt provably did not leave the Cockpit. */
+const NOT_SENT: ReadonlySet<string> = new Set(["provider_session_not_loaded", "provider_session_busy", "provider_input_invalid", "provider_connection_closed", "provider_not_initialized"]);
 const UNCERTAIN: readonly RunStatus[] = ["dispatching", "running", "awaiting_approval"];
 function failureReason(errorClass: ProviderErrorClass | null | undefined): string { return errorClass ? ERROR_REASON[errorClass] : "provider_turn_failed"; }
 const TERMINAL: readonly RunStatus[] = ["completed", "failed", "interrupted"];
@@ -77,7 +82,7 @@ export function loadDigestKey(path: string): Uint8Array {
  */
 export class ExecutionService {
   readonly #store: RuntimeStore;
-  readonly #adapter: ProviderAdapter;
+  readonly #adapters = new Map<Provider, ProviderAdapter>();
   readonly #hub: EventHub;
   readonly #refresh: () => Promise<Snapshot>;
   readonly #now: () => Date;
@@ -94,7 +99,11 @@ export class ExecutionService {
 
   constructor(options: ExecutionOptions) {
     this.#store = options.store;
-    this.#adapter = options.adapter;
+    for (const adapter of [...(options.adapter ? [options.adapter] : []), ...(options.adapters ?? [])]) {
+      if (this.#adapters.has(adapter.provider)) throw new SafeError("duplicate_provider_adapter");
+      this.#adapters.set(adapter.provider, adapter);
+    }
+    if (this.#adapters.size === 0) throw new SafeError("provider_adapter_required");
     this.#hub = options.hub;
     this.#refresh = options.refresh;
     this.#now = options.now ?? (() => new Date());
@@ -107,15 +116,26 @@ export class ExecutionService {
     }
   }
 
-  /** Refresh discovery server-side and require the exact VM to be a running, non-orphaned Codex VM of the project. */
+  /** True when a registered adapter can operate this VM (provider supported and the VM not reserved by the adapter). */
+  supports(provider: Provider, vmName?: string): boolean {
+    const adapter = this.#adapters.get(provider);
+    return Boolean(adapter && (vmName === undefined || !adapter.acceptsTarget || adapter.acceptsTarget(vmName)));
+  }
+
+  capabilities(provider: Provider): ProviderCapabilities | null {
+    const adapter = this.#adapters.get(provider);
+    return adapter ? { ...adapter.capabilities } : null;
+  }
+
+  /** Refresh discovery server-side and require the exact VM to be a running, non-orphaned agent VM of the project with a registered provider. */
   async revalidate(vmName: string, projectId?: string): Promise<ExecutionTarget> {
     const snapshot = await this.#refresh();
     const vm = snapshot.vms.find(item => item.vm_name === vmName);
-    if (!vm || vm.provider !== "codex" || vm.state !== "running" || vm.orphaned || !snapshot.projects.includes(vm.project) ||
+    if (!vm || !this.supports(vm.provider, vm.vm_name) || vm.state !== "running" || vm.orphaned || !snapshot.projects.includes(vm.project) ||
       (projectId !== undefined && vm.project !== projectId)) {
       throw new SafeError("target_unavailable");
     }
-    return { provider: "codex", projectId: vm.project, vmName: vm.vm_name, vmInstanceId: null, discoveryVersion: snapshot.observed_at };
+    return { provider: vm.provider, projectId: vm.project, vmName: vm.vm_name, vmInstanceId: null, discoveryVersion: snapshot.observed_at };
   }
 
   async listThreads(target: ExecutionTarget): Promise<ThreadView[]> {
@@ -127,8 +147,9 @@ export class ExecutionService {
 
   async openSession(target: ExecutionTarget, mode: "new" | "resume", threadId?: string): Promise<SessionRecord> {
     const live = await this.#ensure(target);
+    const known = mode === "resume" && threadId ? this.#store.findSession(target, threadId) : null;
     const ref = mode === "new" ? await live.connection.startSession({ mode: "new" })
-      : await live.connection.resumeSession({ id: threadId ?? "" });
+      : await live.connection.resumeSession({ id: threadId ?? "" }, known ? this.#resumeHints(known) : undefined);
     live.loaded.add(ref.id);
     const existing = this.#store.findSession(target, ref.id);
     if (existing) { this.#store.touchSession(existing.sessionId, this.#iso()); return existing; }
@@ -189,7 +210,7 @@ export class ExecutionService {
       const other = this.#store.activeRunForProject(session.target.projectId);
       if (this.#active.has(key) || (other && other.runId !== run.runId)) throw new SafeError("project_busy");
       if (!live.loaded.has(session.providerSessionId)) {
-        await live.connection.resumeSession({ id: session.providerSessionId });
+        await live.connection.resumeSession({ id: session.providerSessionId }, this.#resumeHints(session));
         live.loaded.add(session.providerSessionId);
       }
       if (this.#active.has(key) || this.#store.activeRunForProject(session.target.projectId)) throw new SafeError("project_busy");
@@ -216,8 +237,16 @@ export class ExecutionService {
       summary: pending && !pending.live.closed ? pending.summary : null };
   }
 
-  async decide(approval: ApprovalRecord, decision: "approve" | "reject", expectedVersion: number): Promise<ApprovalRecord> {
+  async decide(approval: ApprovalRecord, decision: "approve" | "reject", expectedVersion: number, answers?: Record<string, string>): Promise<ApprovalRecord> {
+    // Answers belong only to an approved question; a question is never "approved" without them.
+    if (approval.actionType === "question" ? (decision === "approve") !== (answers !== undefined) : answers !== undefined) throw new SafeError("invalid_body");
     const pending = this.#approvals.get(approval.approvalId);
+    if (answers !== undefined && pending) {
+      // Validate before any state change: a malformed answer must never resolve the approval or put the run in doubt.
+      const expected = (pending.summary.questions ?? []).map(item => item.question);
+      const keys = Object.keys(answers);
+      if (keys.length !== expected.length || keys.some(key => !expected.includes(key))) throw new SafeError("invalid_body");
+    }
     if (approval.status === "pending" && (!pending || pending.live.closed)) {
       // The provider handle died with its connection or process: the request can never be answered now.
       this.#store.expireApproval(approval.approvalId, "provider_handle_lost", this.#iso());
@@ -227,7 +256,8 @@ export class ExecutionService {
     }
     let outcome: { approval: ApprovalRecord; changed: boolean };
     try {
-      outcome = this.#store.resolveApproval(approval.approvalId, expectedVersion, decision === "approve" ? "approved" : "denied", this.#iso());
+      outcome = this.#store.resolveApproval(approval.approvalId, expectedVersion, decision === "approve" ? "approved" : "denied", this.#iso(),
+        approval.actionType === "question" && decision === "approve" ? "human_answer" : "human_decision");
     } catch (error) {
       if (error instanceof SafeError && error.code === "approval_expired") {
         this.#store.expireApproval(approval.approvalId, "ttl_elapsed", this.#iso());
@@ -241,7 +271,7 @@ export class ExecutionService {
     this.#approvals.delete(approval.approvalId);
     this.#hub.journal();
     try {
-      await pending.live.connection.decideApproval(pending.ref, decision);
+      await pending.live.connection.decideApproval(pending.ref, answers === undefined ? { decision } : { decision, answers });
       this.#log({ event: "approval.decided", run_id: pending.runId, outcome: resolved.status });
     } catch (error) {
       this.#log({ event: "approval.decided", run_id: pending.runId, outcome: "delivery_unconfirmed", error_code: safeCode(error) });
@@ -272,7 +302,7 @@ export class ExecutionService {
       if (!this.#move(prepared.runId, "dispatching")) throw new SafeError("run_version_conflict");
       live = await this.#ensure(target);
       if (!live.loaded.has(session.providerSessionId)) {
-        await live.connection.resumeSession({ id: session.providerSessionId });
+        await live.connection.resumeSession({ id: session.providerSessionId }, this.#resumeHints(session, prepared.runId));
         live.loaded.add(session.providerSessionId);
       }
       if (this.#active.has(key)) throw new SafeError("session_busy");
@@ -294,14 +324,15 @@ export class ExecutionService {
       const current = this.#store.getRun(prepared.runId);
       if (this.#active.get(key)?.runId === prepared.runId && !sent) this.#active.delete(key);
       if (current && (current.status === "dispatching" || current.status === "prepared")) {
-        if (sent) {
+        if (sent && !NOT_SENT.has(code)) {
           this.#active.delete(key);
           this.#move(prepared.runId, "unknown", { reasonCode: "dispatch_unconfirmed" });
         } else {
+          if (sent && this.#active.get(key)?.runId === prepared.runId) this.#active.delete(key);
           this.#move(prepared.runId, "failed", { reasonCode: code.length <= 64 && /^[a-z][a-z0-9_]*$/.test(code) ? code : "dispatch_failed" });
         }
       }
-      this.#log({ event: "run.dispatch_failed", run_id: prepared.runId, outcome: sent ? "unknown" : "failed", error_code: code });
+      this.#log({ event: "run.dispatch_failed", run_id: prepared.runId, outcome: sent && !NOT_SENT.has(code) ? "unknown" : "failed", error_code: code });
     }
   }
 
@@ -309,12 +340,14 @@ export class ExecutionService {
     if (this.#closed) return Promise.reject(new SafeError("cockpit_shutting_down"));
     const existing = this.#connections.get(target.vmName);
     if (existing) return existing;
+    const adapter = this.#adapters.get(target.provider);
+    if (!adapter) return Promise.reject(new SafeError("target_unavailable"));
     const pending = (async () => {
-      const connection = await this.#adapter.connect(target);
+      const connection = await adapter.connect(target);
       let identity: ProtocolIdentity;
       try { identity = await connection.initialize(); }
       catch (error) { await connection.close().catch(() => {}); throw error; }
-      const live: Live = { vmName: target.vmName, connection, identity, loaded: new Set(), closed: false, files: new Map() };
+      const live: Live = { vmName: target.vmName, adapter, connection, identity, loaded: new Set(), closed: false, files: new Map() };
       this.#lives.set(target.vmName, live);
       this.#log({ event: "provider.connected", outcome: identity.serverVersion });
       void this.#pump(live);
@@ -362,6 +395,7 @@ export class ExecutionService {
 
   #onEvent(live: Live, event: ProviderEvent): void {
     if (event.type === "session.connected" || event.type === "session.resumed") return;
+    if (event.type === "session.lost") { this.#sessionLost(live, event.sessionId, event.reason); return; }
     if (event.type === "approval.resolved") {
       for (const [id, pending] of this.#approvals) {
         if (pending.live === live && pending.ref.requestId === event.requestId) {
@@ -398,7 +432,7 @@ export class ExecutionService {
         this.#hub.live({ ...base, kind: "item", data: { phase: event.phase, item: event.item } });
         return;
       case "usage.updated":
-        this.#store.recordUsage(active.runId, event, this.#iso());
+        this.#store.recordUsage(active.runId, event, this.#iso(), live.adapter.capabilities.usage === "run" ? "run" : "session_cumulative");
         return;
       case "run.error":
         this.#hub.live({ ...base, kind: "error", data: { message: event.message, willRetry: event.willRetry, errorClass: event.errorClass ?? null } });
@@ -424,7 +458,7 @@ export class ExecutionService {
       case "approval.requested": {
         const approvalId = `apr-${randomUUID()}`;
         const at = this.#now();
-        const files = event.summary.itemId ? live.files.get(event.summary.itemId) ?? [] : [];
+        const files = event.summary.files?.length ? event.summary.files.slice(0, 50) : event.summary.itemId ? live.files.get(event.summary.itemId) ?? [] : [];
         const summary = { ...event.summary, files };
         this.#store.createApproval({ approvalId, runId: active.runId, actionType: summary.actionType,
           actionDigest: this.#digest(JSON.stringify([active.runId, String(event.approval.requestId), summary])),
@@ -451,6 +485,30 @@ export class ExecutionService {
         return;
       }
     }
+  }
+
+  /** The provider handle of one session died: its in-flight run can no longer be confirmed, its approvals never answered. */
+  #sessionLost(live: Live, providerSessionId: string, reason: string): void {
+    live.loaded.delete(providerSessionId);
+    const key = this.#key(live.vmName, providerSessionId);
+    const active = this.#active.get(key);
+    if (!active || active.live !== live) return;
+    this.#active.delete(key);
+    this.#blocked.delete(active.runId);
+    for (const [id, pending] of this.#approvals) if (pending.runId === active.runId) this.#approvals.delete(id);
+    const reasonCode = reason === "claude_turn_time_limit" ? "turn_time_limit" : "provider_session_lost";
+    this.#store.expireApprovals(active.runId, reasonCode, this.#iso());
+    const run = this.#store.getRun(active.runId);
+    if (run && UNCERTAIN.includes(run.status)) this.#move(run.runId, "unknown", { reasonCode });
+    this.#hub.journal();
+    this.#hub.live({ projectId: active.session.target.projectId, sessionId: active.session.sessionId, runId: active.runId, kind: "status", data: { status: "unknown", errorMessage: null, reasonCode } });
+    this.#log({ event: "run.transport_lost", run_id: active.runId, outcome: "unknown", error_code: /^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "provider_session_lost" });
+  }
+
+  /** A transcript can exist on the provider only if some run of this session (other than `exclude`) may have reached it. */
+  #resumeHints(session: SessionRecord, exclude?: string): { hasRuns: boolean } {
+    const runs = this.#store.listRuns(session.sessionId, 500).filter(run => run.runId !== exclude);
+    return { hasRuns: runs.some(run => run.providerRunId !== null || run.status === "unknown" || run.status === "running" || run.status === "awaiting_approval") };
   }
 
   #move(runId: string, next: RunStatus, options: { providerRunId?: string; reasonCode?: string } = {}): RunRecord | null {

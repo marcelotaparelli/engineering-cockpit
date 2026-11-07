@@ -53,7 +53,7 @@ describe("typed provider contract and supported Codex mapping", () => {
       throw new Error("unexpected fake method");
     });
     const adapter = new CodexAppServerAdapter(() => rpc);
-    expect(await adapter.probe()).toEqual({ resume: true, interrupt: true, approvals: true, history: "paged", usage: "session_cumulative" });
+    expect(await adapter.probe()).toEqual({ resume: true, interrupt: true, approvals: true, questions: false, sessionListing: "provider", history: "paged", usage: "session_cumulative", reconcile: "provider" });
     const connection = await adapter.connect(target);
     expect(await connection.initialize()).toEqual({ provider: "codex", protocolVersion: "codex-app-server-jsonl-v1", serverVersion: "0.163.0" });
     expect(rpc.requests[0]?.params).toMatchObject({ clientInfo: { name: "engineering-cockpit", title: "Engineering Cockpit", version: "m0b.1a" } });
@@ -72,8 +72,8 @@ describe("typed provider contract and supported Codex mapping", () => {
       { method: "item/fileChange/requestApproval", params: { threadId: fixture.session.id, turnId: fixture.run.id }, requestId: 74 },
     );
     for await (const _event of connection.events()) { /* register exact pending handles */ }
-    await connection.decideApproval({ sessionId: fixture.session.id, runId: fixture.run.id, requestId: 73 }, "reject");
-    await connection.decideApproval({ sessionId: fixture.session.id, runId: fixture.run.id, requestId: 74 }, "approve");
+    await connection.decideApproval({ sessionId: fixture.session.id, runId: fixture.run.id, requestId: 73 }, { decision: "reject" });
+    await connection.decideApproval({ sessionId: fixture.session.id, runId: fixture.run.id, requestId: 74 }, { decision: "approve" });
     expect(rpc.responses).toEqual([{ id: 73, result: { decision: "decline" } }, { id: 74, result: { decision: "accept" } }]);
     expect(rpc.requests.find(call => call.method === "thread/start")?.params).toEqual({ cwd: "/workspace", approvalPolicy: "on-request" });
     expect(rpc.requests.find(call => call.method === "turn/start")?.params).toEqual({ threadId: fixture.session.id, input: [{ type: "text", text: "synthetic prompt", text_elements: [] }] });
@@ -99,10 +99,10 @@ describe("typed provider contract and supported Codex mapping", () => {
     expect(events[2]).toMatchObject({ runId: "run-inconclusive", status: "unknown" });
     const approval = events.find(event => event.type === "approval.requested");
     expect(approval?.approval).toEqual({ sessionId: "session-provider-1", runId: "run-provider-1", requestId: "approval-1" });
-    await expect(connection.decideApproval({ sessionId: "wrong-session", runId: "run-provider-1", requestId: "approval-1" }, "approve"))
+    await expect(connection.decideApproval({ sessionId: "wrong-session", runId: "run-provider-1", requestId: "approval-1" }, { decision: "approve" }))
       .rejects.toThrow("provider_approval_invalid");
-    await connection.decideApproval({ sessionId: "session-provider-1", runId: "run-provider-1", requestId: "approval-1" }, "reject");
-    await expect(connection.decideApproval({ sessionId: "session-provider-1", runId: "run-provider-1", requestId: "approval-1" }, "reject"))
+    await connection.decideApproval({ sessionId: "session-provider-1", runId: "run-provider-1", requestId: "approval-1" }, { decision: "reject" });
+    await expect(connection.decideApproval({ sessionId: "session-provider-1", runId: "run-provider-1", requestId: "approval-1" }, { decision: "reject" }))
       .rejects.toThrow("provider_approval_invalid");
     expect(events[4]).toMatchObject({ inputTokens: 2, outputTokens: 3, cachedInputTokens: 1 });
     // The command is surfaced transiently so the operator can decide; it is never journaled (see runtime tests).
@@ -111,7 +111,7 @@ describe("typed provider contract and supported Codex mapping", () => {
   });
 
   test("unsupported capabilities and raw transport failures produce stable safe errors", async () => {
-    const capabilities: ProviderCapabilities = { resume: false, interrupt: false, approvals: false, history: "none", usage: "none" };
+    const capabilities: ProviderCapabilities = { resume: false, interrupt: false, approvals: false, questions: false, sessionListing: "provider", history: "none", usage: "none", reconcile: "provider" };
     const rpc = new FakeRpc(method => {
       if (method === "initialize") return validInitialize;
       throw new Error("SYNTHETIC_PROVIDER_SECRET");
@@ -263,7 +263,8 @@ describe("typed provider contract and supported Codex mapping", () => {
     };
     const fake: ProviderAdapter = {
       provider: "claude",
-      async probe() { return { resume: true, interrupt: true, approvals: false, history: "paged", usage: "none" }; },
+      capabilities: { resume: true, interrupt: true, approvals: false, questions: false, sessionListing: "provider", history: "paged", usage: "none", reconcile: "provider" },
+      async probe() { return { resume: true, interrupt: true, approvals: false, questions: false, sessionListing: "provider", history: "paged", usage: "none", reconcile: "provider" }; },
       async connect() { return connection; },
     };
     const connected = await fake.connect({ ...target, provider: "claude", vmName: "claude-demo" });

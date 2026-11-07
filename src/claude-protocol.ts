@@ -74,10 +74,14 @@ export function userMessage(text: string): JsonObject {
 export function interruptRequest(requestId: string): JsonObject {
   return { type: "control_request", request_id: requestId, request: { subtype: "interrupt" } };
 }
-export function toolDecision(requestId: string, decision: "allow" | "deny", input?: JsonObject): JsonObject {
+export function toolDecision(requestId: string, decision: "allow" | "deny", input?: JsonObject, message = "Rejeitado pelo operador no Engineering Cockpit."): JsonObject {
   // UNVERIFIED: `allow` echoes the original `updatedInput`; `deny` carries a message. Never answered automatically.
-  const response = decision === "allow" ? { behavior: "allow", updatedInput: input ?? {} } : { behavior: "deny", message: "Rejeitado pelo operador no Engineering Cockpit." };
+  const response = decision === "allow" ? { behavior: "allow", updatedInput: input ?? {} } : { behavior: "deny", message };
   return { type: "control_response", response: { subtype: "success", request_id: requestId, response } };
+}
+/** Fail-closed answer to a control request the Cockpit does not implement: an error, never a permissive success. */
+export function controlError(requestId: string, error = "unsupported_by_engineering_cockpit"): JsonObject {
+  return { type: "control_response", response: { subtype: "error", request_id: requestId, error } };
 }
 /** AskUserQuestion is answered through the same permission channel: allow with `answers` keyed by question text. UNVERIFIED. */
 export function questionAnswer(requestId: string, questions: unknown, answers: Record<string, string>): JsonObject {
@@ -86,20 +90,30 @@ export function questionAnswer(requestId: string, questions: unknown, answers: R
 
 // ------------------------------------------------------------------------------------ inbound (claude → host)
 export type ClaudeErrorClass = "usage_limit" | "auth" | "overloaded" | "bad_request" | "max_turns" | "execution";
+export interface ClaudeQuestion { question: string; header: string | null; options: string[]; descriptions: Array<string | null>; multiSelect: boolean }
+export type AssistantBlock =
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: JsonObject };
+export interface ToolResult { toolUseId: string; isError: boolean; text: string }
 export type ClaudeEvent =
   | { type: "init"; sessionId: string; model: string | null; permissionMode: string | null; apiKeySource: string | null }
-  | { type: "delta"; text: string }
-  | { type: "assistant"; text: string; toolUses: string[] }
-  | { type: "user_replay" }
-  | { type: "permission_request"; requestId: string; tool: string; command: string | null }
-  | { type: "question"; requestId: string; questions: Array<{ question: string; options: string[]; multiSelect: boolean }>; raw: unknown }
+  | { type: "message_start"; messageId: string | null }
+  | { type: "delta"; text: string; kind: "text" | "thinking" }
+  | { type: "assistant"; text: string; toolUses: string[]; messageId: string | null; blocks: AssistantBlock[] }
+  | { type: "user_replay"; toolResults: ToolResult[] }
+  | { type: "permission_request"; requestId: string; tool: string; command: string | null; input: JsonObject; toolUseId: string | null }
+  | { type: "question"; requestId: string; questions: ClaudeQuestion[]; raw: unknown; input: JsonObject; toolUseId: string | null }
+  | { type: "control_unsupported"; requestId: string; subtype: string }
   | { type: "control_ack"; requestId: string; ok: boolean }
-  | { type: "result"; ok: boolean; subtype: string; sessionId: string | null; errorClass: ClaudeErrorClass | null; inputTokens: number | null; outputTokens: number | null }
+  | { type: "result"; ok: boolean; subtype: string; sessionId: string | null; errorClass: ClaudeErrorClass | null; inputTokens: number | null; outputTokens: number | null; cachedInputTokens: number | null }
   | { type: "other"; kind: string };
 
 const bound = (value: unknown, max: number): string => typeof value === "string" ? value.slice(0, max) : "";
 const isObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
 const count = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+const optionalId = (value: unknown): string | null => typeof value === "string" && ID.test(value) ? value : null;
 
 /** Structured codes only — never message text. HTTP-style status is used when the CLI reports one (UNVERIFIED field name `api_error_status`). */
 export function classifyResultError(result: JsonObject): ClaudeErrorClass | null {
@@ -114,6 +128,12 @@ export function classifyResultError(result: JsonObject): ClaudeErrorClass | null
   return null;
 }
 
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content.slice(0, 16 * 1024);
+  if (!Array.isArray(content)) return "";
+  return content.filter(isObject).map(part => part.type === "text" ? bound(part.text, 16 * 1024) : "").join("\n").slice(0, 16 * 1024);
+}
+
 export function parseClaudeEvent(line: JsonObject): ClaudeEvent {
   const type = bound(line.type, 64);
   if (type === "system" && line.subtype === "init") {
@@ -122,34 +142,57 @@ export function parseClaudeEvent(line: JsonObject): ClaudeEvent {
     return { type: "init", sessionId, model: bound(line.model, 128) || null, permissionMode: bound(line.permissionMode, 32) || null, apiKeySource: bound(line.apiKeySource, 32) || null };
   }
   if (type === "stream_event" && isObject(line.event)) {
+    if (line.event.type === "message_start") return { type: "message_start", messageId: isObject(line.event.message) ? optionalId(line.event.message.id) : null };
     const delta = isObject(line.event.delta) ? line.event.delta : null;
-    if (line.event.type === "content_block_delta" && delta?.type === "text_delta") return { type: "delta", text: bound(delta.text, 64 * 1024) };
+    if (line.event.type === "content_block_delta" && delta?.type === "text_delta") return { type: "delta", kind: "text", text: bound(delta.text, 64 * 1024) };
+    if (line.event.type === "content_block_delta" && delta?.type === "thinking_delta") return { type: "delta", kind: "thinking", text: bound(delta.thinking, 64 * 1024) };
     return { type: "other", kind: "stream_event" };
   }
   if (type === "assistant" && isObject(line.message) && Array.isArray(line.message.content)) {
     let text = "";
     const toolUses: string[] = [];
+    const blocks: AssistantBlock[] = [];
     for (const block of line.message.content) {
       if (!isObject(block)) continue;
-      if (block.type === "text") text += bound(block.text, 64 * 1024);
-      if (block.type === "tool_use") toolUses.push(bound(block.name, 64));
+      if (block.type === "text") { const value = bound(block.text, 64 * 1024); text += value; blocks.push({ type: "text", text: value }); }
+      if (block.type === "thinking") blocks.push({ type: "thinking", text: bound(block.thinking, 64 * 1024) });
+      if (block.type === "tool_use") {
+        const name = bound(block.name, 64);
+        toolUses.push(name);
+        const id = optionalId(block.id);
+        if (id) blocks.push({ type: "tool_use", id, name, input: isObject(block.input) ? block.input : {} });
+      }
     }
-    return { type: "assistant", text, toolUses };
+    return { type: "assistant", text, toolUses, messageId: optionalId(line.message.id), blocks };
   }
-  if (type === "user") return { type: "user_replay" };
-  if (type === "control_request" && isObject(line.request) && line.request.subtype === "can_use_tool") {
+  if (type === "user") {
+    const content = isObject(line.message) ? line.message.content : null;
+    const toolResults: ToolResult[] = [];
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (!isObject(block) || block.type !== "tool_result") continue;
+        const toolUseId = optionalId(block.tool_use_id);
+        if (toolUseId) toolResults.push({ toolUseId, isError: block.is_error === true, text: toolResultText(block.content) });
+      }
+    }
+    return { type: "user_replay", toolResults };
+  }
+  if (type === "control_request" && isObject(line.request)) {
     const requestId = bound(line.request_id, 128);
     if (!requestId) throw new SafeError("claude_protocol_invalid");
+    if (line.request.subtype !== "can_use_tool") return { type: "control_unsupported", requestId, subtype: bound(line.request.subtype, 64) || "unknown" };
     const tool = bound(line.request.tool_name, 64);
     const input = isObject(line.request.input) ? line.request.input : {};
+    const toolUseId = optionalId(line.request.tool_use_id);
     if (tool === "AskUserQuestion" && Array.isArray(input.questions)) {
-      const questions = input.questions.filter(isObject).slice(0, 4).map(item => ({
-        question: bound(item.question, 512), multiSelect: item.multiSelect === true,
-        options: (Array.isArray(item.options) ? item.options : []).filter(isObject).slice(0, 8).map(option => bound(option.label, 128)),
-      }));
-      return { type: "question", requestId, questions, raw: input.questions };
+      const questions = input.questions.filter(isObject).slice(0, 4).map(item => {
+        const options = (Array.isArray(item.options) ? item.options : []).filter(isObject).slice(0, 8);
+        return { question: bound(item.question, 512), header: bound(item.header, 64) || null, multiSelect: item.multiSelect === true,
+          options: options.map(option => bound(option.label, 128)), descriptions: options.map(option => bound(option.description, 512) || null) };
+      });
+      return { type: "question", requestId, questions, raw: input.questions, input, toolUseId };
     }
-    return { type: "permission_request", requestId, tool, command: tool === "Bash" ? bound(input.command, 4096) : null };
+    return { type: "permission_request", requestId, tool, command: tool === "Bash" ? bound(input.command, 4096) : null, input, toolUseId };
   }
   if (type === "control_response" && isObject(line.response)) {
     return { type: "control_ack", requestId: bound(line.response.request_id, 128), ok: line.response.subtype === "success" };
@@ -158,7 +201,8 @@ export function parseClaudeEvent(line: JsonObject): ClaudeEvent {
     const usage = isObject(line.usage) ? line.usage : {};
     const ok = line.is_error !== true && line.subtype === "success";
     return { type: "result", ok, subtype: bound(line.subtype, 64), sessionId: UUID.test(bound(line.session_id, 64)) ? bound(line.session_id, 64) : null,
-      errorClass: ok ? null : classifyResultError(line), inputTokens: count(usage.input_tokens), outputTokens: count(usage.output_tokens) };
+      errorClass: ok ? null : classifyResultError(line), inputTokens: count(usage.input_tokens), outputTokens: count(usage.output_tokens),
+      cachedInputTokens: count(usage.cache_read_input_tokens) };
   }
   return { type: "other", kind: type || "unknown" };
 }

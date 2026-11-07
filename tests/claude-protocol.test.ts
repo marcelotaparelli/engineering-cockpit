@@ -42,8 +42,8 @@ describe("E2 claude protocol (pure)", () => {
   test("inbound classification: init, deltas, permission, question, result; raw error text never classifies", () => {
     expect(parseClaudeEvent({ type: "system", subtype: "init", session_id: SID, model: "m", permissionMode: "default", apiKeySource: "none" })).toMatchObject({ type: "init", sessionId: SID, permissionMode: "default" });
     expect(() => parseClaudeEvent({ type: "system", subtype: "init", session_id: "x" })).toThrow("claude_protocol_invalid");
-    expect(parseClaudeEvent({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "ab" } } })).toEqual({ type: "delta", text: "ab" });
-    expect(parseClaudeEvent({ type: "control_request", request_id: "q", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "ls" } } })).toEqual({ type: "permission_request", requestId: "q", tool: "Bash", command: "ls" });
+    expect(parseClaudeEvent({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "ab" } } })).toEqual({ type: "delta", kind: "text", text: "ab" });
+    expect(parseClaudeEvent({ type: "control_request", request_id: "q", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "ls" } } })).toEqual({ type: "permission_request", requestId: "q", tool: "Bash", command: "ls", input: { command: "ls" }, toolUseId: null });
     const question = parseClaudeEvent({ type: "control_request", request_id: "q2", request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: { questions: [{ question: "A?", multiSelect: false, options: [{ label: "x" }, { label: "y" }] }] } } });
     expect(question).toMatchObject({ type: "question", requestId: "q2", questions: [{ question: "A?", options: ["x", "y"] }] });
     expect(parseClaudeEvent({ type: "result", subtype: "success", is_error: false, session_id: SID, usage: { input_tokens: 3, output_tokens: 4 } })).toMatchObject({ ok: true, errorClass: null, inputTokens: 3 });

@@ -7,7 +7,7 @@ import { assertNoSymlinks } from "./paths.ts";
 import type { ExecutionTarget, RunStatus } from "./provider.ts";
 
 const APPLICATION_ID = 0x4352544d;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const RUN_STATUSES: readonly RunStatus[] = ["prepared", "dispatching", "running", "awaiting_approval", "completed", "failed", "interrupted", "unknown"];
 const SCHEMA_V1 = [
   "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, provider TEXT NOT NULL, project_id TEXT NOT NULL, vm_name TEXT NOT NULL, vm_instance_id TEXT, discovery_version TEXT NOT NULL, provider_session_id TEXT NOT NULL, created_at TEXT NOT NULL, last_observed_at TEXT NOT NULL, UNIQUE(provider, project_id, vm_name, provider_session_id))",
@@ -21,7 +21,18 @@ const SCHEMA_V2_ADDITIONS = [
   "CREATE INDEX approvals_by_status ON approvals(status, run_id)",
   "CREATE INDEX runs_by_session ON runs(session_id, created_at)",
 ];
-const SCHEMA = [...SCHEMA_V1, ...SCHEMA_V2_ADDITIONS];
+const SCHEMA_V2 = [...SCHEMA_V1, ...SCHEMA_V2_ADDITIONS];
+// v3 (E3): the same approvals table also carries provider tool permissions and agent questions; metrics may be per run.
+// SQLite cannot widen a CHECK in place, so both tables are rebuilt with identical columns and their rows copied.
+const APPROVALS_V3 = "CREATE TABLE approvals (approval_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), action_type TEXT NOT NULL CHECK(action_type IN ('command','file_change','tool','question')), action_digest TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')), version INTEGER NOT NULL CHECK(version >= 1), created_at TEXT NOT NULL, expires_at TEXT NOT NULL, resolved_at TEXT, reason_code TEXT)";
+const RUN_METRICS_V3 = "CREATE TABLE run_metrics (run_id TEXT PRIMARY KEY REFERENCES runs(run_id), input_tokens INTEGER, output_tokens INTEGER, cached_input_tokens INTEGER, token_scope TEXT NOT NULL CHECK(token_scope IN ('not_measured','session_cumulative','run')), updated_at TEXT NOT NULL)";
+const SCHEMA = [...SCHEMA_V1, APPROVALS_V3, RUN_METRICS_V3, SCHEMA_V2_ADDITIONS[2]!, SCHEMA_V2_ADDITIONS[3]!];
+const MIGRATE_V2_TO_V3 = [
+  "ALTER TABLE approvals RENAME TO approvals_v2", APPROVALS_V3, "INSERT INTO approvals SELECT * FROM approvals_v2", "DROP TABLE approvals_v2",
+  "ALTER TABLE run_metrics RENAME TO run_metrics_v2", RUN_METRICS_V3, "INSERT INTO run_metrics SELECT * FROM run_metrics_v2", "DROP TABLE run_metrics_v2",
+  SCHEMA_V2_ADDITIONS[2]!,
+];
+const ACTION_TYPES: readonly string[] = ["command", "file_change", "tool", "question"];
 
 export interface SessionRecord {
   sessionId: string;
@@ -66,7 +77,7 @@ export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
 export interface ApprovalRecord {
   approvalId: string;
   runId: string;
-  actionType: "command" | "file_change";
+  actionType: "command" | "file_change" | "tool" | "question";
   actionDigest: string;
   status: ApprovalStatus;
   version: number;
@@ -79,7 +90,7 @@ export interface RunMetrics {
   inputTokens: number | null;
   outputTokens: number | null;
   cachedInputTokens: number | null;
-  tokenScope: "not_measured" | "session_cumulative";
+  tokenScope: "not_measured" | "session_cumulative" | "run";
   durationMs: number | null;
   durationSource: "host_clock" | "not_measured";
 }
@@ -174,9 +185,9 @@ function mapApproval(row: ApprovalRow): ApprovalRecord {
   try {
     requireId(row.approval_id); requireId(row.run_id); requireDigest(row.action_digest); requireTime(row.created_at); requireTime(row.expires_at);
     if (row.resolved_at !== null) requireTime(row.resolved_at);
-    if ((row.action_type !== "command" && row.action_type !== "file_change") || !["pending", "approved", "denied", "expired"].includes(row.status) ||
+    if (!ACTION_TYPES.includes(row.action_type) || !["pending", "approved", "denied", "expired"].includes(row.status) ||
       !Number.isSafeInteger(row.version) || row.version < 1) throw new Error();
-    return { approvalId: row.approval_id, runId: row.run_id, actionType: row.action_type, actionDigest: row.action_digest,
+    return { approvalId: row.approval_id, runId: row.run_id, actionType: row.action_type as ApprovalRecord["actionType"], actionDigest: row.action_digest,
       status: row.status as ApprovalStatus, version: row.version, createdAt: row.created_at, expiresAt: row.expires_at,
       resolvedAt: row.resolved_at, reasonCode: row.reason_code };
   } catch { throw new SafeError("runtime_database_corrupt"); }
@@ -219,6 +230,14 @@ export class RuntimeStore {
           // Exact v1 schema only: additive, transactional migration.
           this.db.transaction(() => {
             for (const sql of SCHEMA_V2_ADDITIONS) this.db.exec(sql);
+            this.db.exec("PRAGMA user_version=2;");
+          })();
+        }
+        const afterV1 = this.db.query("PRAGMA user_version").get() as { user_version: number };
+        if (afterV1.user_version === 2 && matches(SCHEMA_V2)) {
+          // Exact v2 schema only: rebuild the two tables whose CHECK widened, rows preserved, in one transaction.
+          this.db.transaction(() => {
+            for (const sql of MIGRATE_V2_TO_V3) this.db.exec(sql);
             this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION};`);
           })();
         }
@@ -383,7 +402,7 @@ export class RuntimeStore {
   createApproval(record: Omit<ApprovalRecord, "status" | "version" | "resolvedAt" | "reasonCode">): ApprovalRecord {
     requireId(record.approvalId); requireId(record.runId); requireDigest(record.actionDigest);
     requireTime(record.createdAt); requireTime(record.expiresAt);
-    if (record.actionType !== "command" && record.actionType !== "file_change") throw new SafeError("invalid_approval");
+    if (!ACTION_TYPES.includes(record.actionType)) throw new SafeError("invalid_approval");
     return this.db.transaction(() => {
       this.db.prepare("INSERT INTO approvals VALUES (?, ?, ?, ?, 'pending', 1, ?, ?, NULL, NULL)")
         .run(record.approvalId, record.runId, record.actionType, record.actionDigest, record.createdAt, record.expiresAt);
@@ -404,8 +423,9 @@ export class RuntimeStore {
   }
 
   /** Compare-and-set of a human decision. Identical replay is a no-op; anything else conflicts. */
-  resolveApproval(approvalId: string, expectedVersion: number, status: "approved" | "denied", at: string): { approval: ApprovalRecord; changed: boolean } {
+  resolveApproval(approvalId: string, expectedVersion: number, status: "approved" | "denied", at: string, reasonCode: "human_decision" | "human_answer" = "human_decision"): { approval: ApprovalRecord; changed: boolean } {
     requireId(approvalId); requireTime(at);
+    if (reasonCode !== "human_decision" && reasonCode !== "human_answer") throw new SafeError("invalid_reason_code");
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new SafeError("approval_conflict");
     return this.db.transaction(() => {
       const current = this.getApproval(approvalId);
@@ -413,10 +433,10 @@ export class RuntimeStore {
       if (current.status === status && current.version === expectedVersion + 1) return { approval: current, changed: false };
       if (current.status !== "pending" || current.version !== expectedVersion) throw new SafeError("approval_conflict");
       if (Date.parse(current.expiresAt) <= Date.parse(at)) throw new SafeError("approval_expired");
-      this.db.prepare("UPDATE approvals SET status=?, version=version+1, resolved_at=?, reason_code='human_decision' WHERE approval_id=? AND version=?")
-        .run(status, at, approvalId, expectedVersion);
+      this.db.prepare("UPDATE approvals SET status=?, version=version+1, resolved_at=?, reason_code=? WHERE approval_id=? AND version=?")
+        .run(status, at, reasonCode, approvalId, expectedVersion);
       this.#insertJournal({ eventId: `${approvalId}:${expectedVersion + 1}`, runId: current.runId, type: "approval.resolved", occurredAt: at,
-        payload: { approvalId, status, reasonCode: "human_decision" } });
+        payload: { approvalId, status, reasonCode } });
       return { approval: this.getApproval(approvalId)!, changed: true };
     })();
   }
@@ -431,16 +451,17 @@ export class RuntimeStore {
     return this.db.transaction(() => this.#expirePendingApprovals("SELECT approval_id FROM approvals WHERE status='pending' AND approval_id=?", [approvalId], reasonCode, at))();
   }
 
-  recordUsage(runId: string, usage: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }, at: string): void {
+  recordUsage(runId: string, usage: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }, at: string, scope: "session_cumulative" | "run" = "session_cumulative"): void {
     requireId(runId); requireTime(at);
+    if (scope !== "session_cumulative" && scope !== "run") throw new SafeError("invalid_token_scope");
     const count = (value: number | undefined) => value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : null;
-    this.db.prepare("INSERT INTO run_metrics VALUES (?, ?, ?, ?, 'session_cumulative', ?) ON CONFLICT(run_id) DO UPDATE SET input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, cached_input_tokens=excluded.cached_input_tokens, token_scope=excluded.token_scope, updated_at=excluded.updated_at")
-      .run(runId, count(usage.inputTokens), count(usage.outputTokens), count(usage.cachedInputTokens), at);
+    this.db.prepare("INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, cached_input_tokens=excluded.cached_input_tokens, token_scope=excluded.token_scope, updated_at=excluded.updated_at")
+      .run(runId, count(usage.inputTokens), count(usage.outputTokens), count(usage.cachedInputTokens), scope, at);
   }
 
   metrics(run: RunRecord): RunMetrics {
     const row = this.db.prepare("SELECT input_tokens, output_tokens, cached_input_tokens, token_scope FROM run_metrics WHERE run_id=?").get(run.runId) as
-      { input_tokens: number | null; output_tokens: number | null; cached_input_tokens: number | null; token_scope: "not_measured" | "session_cumulative" } | null;
+      { input_tokens: number | null; output_tokens: number | null; cached_input_tokens: number | null; token_scope: RunMetrics["tokenScope"] } | null;
     const started = run.startedAt ? Date.parse(run.startedAt) : NaN;
     const ended = run.endedAt ? Date.parse(run.endedAt) : NaN;
     const terminal = run.status === "completed" || run.status === "failed" || run.status === "interrupted";

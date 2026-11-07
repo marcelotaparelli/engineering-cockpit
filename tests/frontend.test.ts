@@ -344,3 +344,82 @@ test("E1: a blocked agent is flagged in the list and in the inbox with cause and
     expect(ui.document.getElementById("run-status")!.textContent).toContain("Travado");
   });
 });
+
+// ---------------------------------------------------------------- E3: Claude Code in the same UI
+const claudeVm = { ...vm, vm_name: "claude-demo", provider: "claude", session_id: null, sessions: 0,
+  capabilities: { resume: true, interrupt: true, approvals: true, questions: true, sessionListing: "cockpit", history: "session_memory", usage: "run", reconcile: "process" } };
+
+test("E3: a Claude question is answered from the inbox by option or free text; nothing is pre-selected; markup stays text", async () => {
+  const markup = '<img src=x onerror="globalThis.compromised=true">';
+  const question = { kind: "approval", approval_id: "apr-q", run_id: "run-c", session_id: "ses-c", project: "demo", vm_name: "claude-demo", provider: "claude", version: 1,
+    action_type: "question", created_at: new Date().toISOString(), summary: { actionType: "question", itemId: null, command: null, cwd: null, reason: null, toolName: "AskUserQuestion",
+      questions: [{ question: `Qual banco? ${markup}`, header: "Banco", multiSelect: false, options: [{ label: "Postgres", description: "relacional" }, { label: "SQLite", description: null }] },
+        { question: "Quais testes?", header: null, multiSelect: true, options: [{ label: "unit", description: null }, { label: "e2e", description: null }] }] } };
+  const decisions: Call[] = [];
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: dashboard({ vms: [vm, claudeVm], attention: decisions.length ? [] : [question] }) };
+    if (call.method === "POST" && call.path === "/api/approvals/apr-q/decision") { decisions.push(call); return { status: 200, body: { status: "approved", version: 2 } }; }
+    return undefined;
+  });
+  await withUi(router, async ui => {
+    const inbox = ui.document.getElementById("attention")!;
+    expect(inbox.textContent).toContain("O agente pergunta");
+    expect(inbox.textContent).toContain(markup);
+    expect(ui.document.querySelectorAll("img").length).toBe(0);
+    const inputs = [...inbox.querySelectorAll("input")] as unknown as HTMLInputElement[];
+    expect(inputs.map(input => input.type)).toEqual(["radio", "radio", "checkbox", "checkbox"]);
+    expect(inputs.some(input => input.checked)).toBe(false);
+    // Unanswered → refused locally, nothing posted.
+    click([...inbox.querySelectorAll("button")].find(node => node.textContent === "Responder"));
+    await settle();
+    expect(decisions).toHaveLength(0);
+    inputs[1]!.checked = true; inputs[2]!.checked = true; inputs[3]!.checked = true;
+    click([...inbox.querySelectorAll("button")].find(node => node.textContent === "Responder"));
+    await settle();
+    expect(JSON.parse(decisions[0]!.body!)).toEqual({ decision: "approve", expected_version: 1, answers: { [`Qual banco? ${markup}`]: "SQLite", "Quais testes?": "unit, e2e" } });
+  });
+});
+
+test("E3: a Claude tool approval shows the tool name and its full input; truncation is warned", async () => {
+  const approval = { kind: "approval", approval_id: "apr-t", run_id: "run-c", session_id: "ses-c", project: "demo", vm_name: "claude-demo", version: 1, action_type: "tool",
+    created_at: new Date().toISOString(), summary: { actionType: "tool", toolName: "WebFetch", itemId: null, command: null, cwd: null, reason: null, files: [],
+      detail: '{\n  "url": "https://example.invalid/doc"\n}', truncated: true } };
+  let decision: Call | null = null;
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: dashboard({ vms: [vm, claudeVm], attention: decision ? [] : [approval] }) };
+    if (call.method === "POST" && call.path === "/api/approvals/apr-t/decision") { decision = call; return { status: 200, body: { status: "denied", version: 2 } }; }
+    return undefined;
+  });
+  await withUi(router, async ui => {
+    const inbox = ui.document.getElementById("attention")!;
+    expect(inbox.textContent).toContain("Aprovar uso de ferramenta: WebFetch");
+    expect(inbox.textContent).toContain("https://example.invalid/doc");
+    expect(inbox.textContent).toContain("maior do que o exibido");
+    click([...inbox.querySelectorAll("button")].find(node => node.textContent === "Rejeitar"));
+    await settle();
+    expect(JSON.parse(decision!.body!)).toEqual({ decision: "reject", expected_version: 1 });
+  });
+});
+
+test("E3: a Claude VM offers only Cockpit sessions (no thread listing call), states partial history and per-run tokens", async () => {
+  const session = { session_id: "ses-c", project: "demo", vm_name: "claude-demo", thread_id: "0b7f3c1e-0000-4000-8000-000000000000", last_activity: new Date().toISOString(), latest_run: null, state: "completed" };
+  const run = { run_id: "run-c", session_id: "ses-c", status: "completed", provider_bound: true, reason_code: null, metrics: { inputTokens: 12, outputTokens: 3, tokenScope: "run", durationMs: 1200 } };
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: dashboard({ vms: [vm, { ...claudeVm, session_id: "ses-c", sessions: 1 }], sessions: [session] }) };
+    if (call.path === "/api/sessions/ses-c") return { status: 200, body: { session: { session_id: "ses-c", provider: "claude", capabilities: claudeVm.capabilities }, runs: [run], approvals: [] } };
+    if (call.path === "/api/sessions/ses-c/history") return { status: 200, body: { items: [{ id: "t:prompt", runId: "turn-1", kind: "user_message", text: "oi", status: null, command: null, exitCode: null, files: [] },
+      { id: "tool:1", runId: "turn-1", kind: "tool", tool: "Grep", text: "3 resultados", status: "completed", command: null, exitCode: null, files: [] }], runs: [], next_cursor: null } };
+    return undefined;
+  });
+  await withUi(router, async (ui, calls) => {
+    click([...ui.document.querySelectorAll(".agent")].find(node => node.textContent!.includes("claude-demo")));
+    await settle();
+    expect(calls.some(call => call.path.includes("/threads"))).toBe(false);
+    const conversation = ui.document.getElementById("conversation")!.textContent!;
+    expect(conversation).toContain("Histórico parcial");
+    expect(conversation).toContain("Grep");
+    expect(conversation).toContain("3 resultados");
+    expect(ui.document.getElementById("run-detail")!.textContent).toContain("tokens (desta execução): 12 in / 3 out");
+    expect(ui.document.getElementById("vm-meta")!.textContent).toContain("claude");
+  });
+});

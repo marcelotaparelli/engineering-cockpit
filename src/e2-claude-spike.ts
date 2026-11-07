@@ -5,8 +5,8 @@ import { SafeError, safeCode } from "./model.ts";
 import { minimalChildEnv, type MsbChild, type MsbSpawn } from "./msb-transport.ts";
 import { parseVmInventory } from "./parser.ts";
 import { assertRuntime } from "./runtime.ts";
-import { assertClaudeTarget, claudeExecArgv, claudeStreamArgv, interruptRequest, probeCapabilities, questionAnswer, toolDecision, userMessage, type Capabilities, type ClaudeEvent } from "./claude-protocol.ts";
-import { ClaudeStreamProcess, type ExitReport } from "./claude-process.ts";
+import { assertClaudeTarget, claudeStreamArgv, interruptRequest, probeCapabilities, questionAnswer, toolDecision, userMessage, type Capabilities, type ClaudeEvent } from "./claude-protocol.ts";
+import { ClaudeStreamProcess, execClaudeOnce, type ExitReport } from "./claude-process.ts";
 
 /**
  * E2 spike: proves (or refuses to prove) Claude Code control over `msb exec --stream` + `claude -p` stream-json
@@ -36,23 +36,9 @@ const PROMPTS = {
 
 const nativeSpawn: MsbSpawn = (argv, options) => { assertArchHost(); return Bun.spawn([...argv], options) as unknown as MsbChild; };
 
-async function execOnce(spawn: MsbSpawn, vm: string, command: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string }> {
-  const child = spawn(claudeExecArgv(vm, command), { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: minimalChildEnv() });
-  try { await child.stdin.end(); } catch { /* not needed */ }
-  void (async () => { const reader = child.stderr.getReader(); try { while (!(await reader.read()).done) { /* discard */ } } catch { /* ignored */ } })();
-  let stdout = "";
-  const read = (async () => {
-    const reader = child.stdout.getReader(); const decoder = new TextDecoder();
-    for (;;) { const chunk = await reader.read(); if (chunk.done) return; stdout += decoder.decode(chunk.value, { stream: true }); if (stdout.length > 1024 * 1024) throw new SafeError("e2_output_limit"); }
-  })();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const code = await Promise.race([child.exited.then(value => value as number | null), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); })]);
-    if (code === null) throw new SafeError("e2_command_timeout");
-    await read;
-    return { code, stdout };
-  } finally { if (timer) clearTimeout(timer); try { child.kill("SIGKILL"); } catch { /* already gone */ } }
-}
+const execOnce = (spawn: MsbSpawn, vm: string, command: string[], timeoutMs: number) => execClaudeOnce(spawn, vm, command, timeoutMs).catch(error => {
+  throw error instanceof SafeError && error.code === "claude_command_timeout" ? new SafeError("e2_command_timeout") : error instanceof SafeError && error.code === "claude_output_limit" ? new SafeError("e2_output_limit") : error;
+});
 
 export async function runClaudeSpike(overrides?: SpikeOverrides): Promise<SpikeReport> {
   const checks: SpikeCheck[] = CHECK_IDS.map(id => ({ id, status: "NOT_VERIFIED", reason: "not_exercised", duration_ms: 0 }));

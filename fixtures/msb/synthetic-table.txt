@@ -1,4 +1,4 @@
 NAME STATUS IMAGE
 codex-demo running synthetic
-claude-demo stopped synthetic
+claude-demo running synthetic
 opencode-lab stopped synthetic

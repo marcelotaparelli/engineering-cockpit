@@ -120,6 +120,16 @@ function errorStatus(code: string): number {
   if (/^(provider|rpc|transport|msb)_/.test(code)) return 502;
   return 500;
 }
+/** Question answers: 1–4 entries, bounded question text keys and answer values, no NUL. Semantic checks happen in the adapter. */
+function answersBody(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SafeError("invalid_body");
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length < 1 || entries.length > 4) throw new SafeError("invalid_body");
+  for (const [key, answer] of entries) {
+    if (!key || key.length > 512 || key.includes("\0") || typeof answer !== "string" || !answer.trim() || answer.length > 2000 || answer.includes("\0")) throw new SafeError("invalid_body");
+  }
+  return Object.fromEntries(entries) as Record<string, string>; // own properties only (no prototype keys)
+}
 export function runView(store: RuntimeStore, run: RunRecord): Record<string, unknown> {
   return {
     run_id: run.runId, session_id: run.sessionId, status: run.status, lifecycle_version: run.lifecycleVersion,
@@ -127,9 +137,10 @@ export function runView(store: RuntimeStore, run: RunRecord): Record<string, unk
     ended_at: run.endedAt, provider_bound: run.providerRunId !== null, metrics: store.metrics(run),
   };
 }
-export function sessionView(session: SessionRecord): Record<string, unknown> {
+export function sessionView(session: SessionRecord, execution?: ExecutionService): Record<string, unknown> {
   return { session_id: session.sessionId, project: session.target.projectId, vm_name: session.target.vmName, provider: session.target.provider,
-    thread_id: session.providerSessionId, created_at: session.createdAt, last_activity: session.lastObservedAt };
+    thread_id: session.providerSessionId, created_at: session.createdAt, last_activity: session.lastObservedAt,
+    capabilities: execution?.capabilities(session.target.provider) ?? null };
 }
 
 export function startServer(options: ServerOptions): Bun.Server<undefined> {
@@ -285,7 +296,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           const store = requireRuntime();
           const session = options.security.authorizeSession(store, principal, param);
           const runs = store.listRuns(session.sessionId, 50);
-          return json({ session: sessionView(session), runs: runs.map(run => runView(store, run)),
+          return json({ session: sessionView(session, options.execution), runs: runs.map(run => runView(store, run)),
             approvals: store.pendingApprovals().filter(item => runs.some(run => run.runId === item.runId)).map(item => requireExecution().approvalView(item)).filter(Boolean) });
         }
         if (route === "/api/sessions/:id/history") {
@@ -311,13 +322,14 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
         }
         if (route === "/api/approvals/:id/decision") {
           const store = requireRuntime();
-          exact(body, ["decision", "expected_version"]);
+          exact(body, ["decision", "expected_version"], ["answers"]);
           if ((body.decision !== "approve" && body.decision !== "reject") || !Number.isSafeInteger(body.expected_version)) throw new SafeError("invalid_body");
+          const answers = body.answers === undefined ? undefined : answersBody(body.answers);
           if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(param)) throw new SafeError("resource_not_found");
           const approval = store.getApproval(param);
           if (!approval) throw new SafeError("resource_not_found");
           options.security.authorizeRun(store, principal, approval.runId);
-          const decided = await requireExecution().decide(approval, body.decision, body.expected_version as number);
+          const decided = await requireExecution().decide(approval, body.decision, body.expected_version as number, answers);
           return json({ approval_id: decided.approvalId, status: decided.status, version: decided.version });
         }
         if (route === "/api/dashboard") {
@@ -356,7 +368,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           const execution = requireExecution();
           const target = await execution.revalidate(vm.vm_name, vm.project);
           const session = await execution.openSession(target, body.mode, body.thread_id as string | undefined);
-          return json(sessionView(session), 201);
+          return json(sessionView(session, execution), 201);
         }
         const visible = options.security.visible(snapshot, principal);
         const { projects, vms, ...meta } = visible;

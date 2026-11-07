@@ -5,23 +5,25 @@ const STATE_LABEL = { working: 'Trabalhando', blocked: 'Travado — precisa de v
 const RUN_LABEL = { prepared: 'Preparando', dispatching: 'Enviando', running: 'Executando', awaiting_approval: 'Aguardando aprovação', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', unknown: 'Não confirmado' };
 const REASON = {
   transport_lost: 'A conexão com a VM caiu durante a execução. Nada foi reenviado.',
-  dispatch_unconfirmed: 'O envio pode ter chegado ao Codex, mas não foi confirmado. Nada foi reenviado.',
+  dispatch_unconfirmed: 'O envio pode ter chegado ao agente, mas não foi confirmado. Nada foi reenviado.',
   process_restarted: 'O Cockpit reiniciou durante a execução. Nada foi reenviado.',
   not_dispatched_before_restart: 'O Cockpit reiniciou antes do envio; o prompt não chegou ao agente.',
-  provider_turn_failed: 'O agente encerrou a tarefa com erro (o Codex não informou a causa).',
-  provider_turn_error: 'O Codex reportou um erro durante a tarefa (causa não classificada).',
-  provider_usage_limit: 'Limite de uso ou quota do Codex esgotado. Aguarde a renovação ou troque de plano.',
-  provider_auth_failed: 'Falha de autenticação no Codex da VM. Refaça o login dentro da VM.',
-  provider_transport_error: 'Falha de conexão entre o Codex e o serviço do modelo. Tente novamente depois.',
+  provider_turn_failed: 'O agente encerrou a tarefa com erro (o provedor não informou a causa).',
+  provider_turn_error: 'O agente reportou um erro durante a tarefa (causa não classificada).',
+  provider_usage_limit: 'Limite de uso ou quota do agente esgotado. Aguarde a renovação ou troque de plano.',
+  provider_auth_failed: 'Falha de autenticação do agente na VM. Refaça o login dentro da VM.',
+  provider_transport_error: 'Falha de conexão entre o agente e o serviço do modelo. Tente novamente depois.',
   provider_context_window: 'A conversa excedeu a janela de contexto do modelo.',
   provider_bad_request: 'O modelo recusou a requisição (requisição inválida).',
   provider_overloaded: 'O serviço do modelo está sobrecarregado. Tente novamente depois.',
-  provider_sandbox_error: 'Erro no sandbox de execução do Codex.',
+  provider_sandbox_error: 'Erro no sandbox de execução do agente.',
   provider_internal_error: 'Erro interno do serviço do modelo.',
   approval_delivery_unconfirmed: 'A decisão de aprovação não teve entrega confirmada.',
-  reconciled: 'Estado confirmado pelo histórico do Codex.',
+  reconciled: 'Estado confirmado pelo provedor.',
   target_unavailable: 'VM indisponível (parada, ausente ou órfã).',
-  provider_status_unknown: 'O Codex retornou um estado não reconhecido.',
+  provider_status_unknown: 'O agente retornou um estado não reconhecido.',
+  provider_session_lost: 'O processo do agente na VM terminou durante a execução. Nada foi reenviado; confira o resultado na VM antes de repetir.',
+  turn_time_limit: 'A execução passou do tempo máximo e foi encerrada pelo Cockpit. Nada foi reenviado.',
 };
 const ERROR_TEXT = {
   project_busy: 'Já existe uma execução ativa neste projeto. Aguarde ou interrompa antes de enviar outra.',
@@ -32,7 +34,10 @@ const ERROR_TEXT = {
   run_not_interruptible: 'A execução ainda não pode ser interrompida (envio em curso) ou já não está ativa.',
   csrf_denied: 'Sessão desta aba inválida para alterações. Entre novamente.',
   invalid_prompt: 'Prompt vazio ou grande demais.',
+  invalid_body: 'Resposta inválida: responda todas as perguntas (até 2000 caracteres cada).',
 };
+const TOOL_TITLE = { command: 'Aprovar comando', file_change: 'Aprovar alteração de arquivos', tool: 'Aprovar uso de ferramenta', question: 'O agente pergunta' };
+const PROVIDER_NAME = { codex: 'Codex', claude: 'Claude Code', opencode: 'OpenCode' };
 const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
 const ACTIVE = new Set(['prepared', 'dispatching', 'running', 'awaiting_approval']);
 
@@ -250,25 +255,72 @@ $('filter').addEventListener('input', () => { if (state.dashboard) renderAgents(
 function approvalCard(item, onDone) {
   const li = el('li', null, 'card');
   const summary = item.summary;
+  const type = item.action_type || item.actionType;
   const head = el('div', null, 'head');
-  head.append(el('strong', item.action_type === 'file_change' || item.actionType === 'file_change' ? 'Aprovar alteração de arquivos' : 'Aprovar comando'), el('span', ago(item.created_at || item.createdAt), 'where'));
+  const title = type === 'tool' && summary && summary.toolName ? `${TOOL_TITLE.tool}: ${summary.toolName}` : TOOL_TITLE[type] || TOOL_TITLE.command;
+  head.append(el('strong', title), el('span', ago(item.created_at || item.createdAt), 'where'));
   li.append(head);
   if (item.vm_name) li.append(el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
-  if (summary && summary.command) li.append(el('pre', summary.command));
-  if (summary && summary.files && summary.files.length) li.append(el('pre', summary.files.join('\n')));
-  if (summary && summary.reason) li.append(el('div', summary.reason, 'muted'));
-  if (summary && summary.cwd) li.append(el('div', `cwd: ${summary.cwd}`, 'muted'));
-  if (!summary) li.append(el('div', 'Detalhes indisponíveis (conexão perdida).', 'muted'));
   const id = item.approval_id || item.approvalId;
   const version = item.version;
   const actions = el('div', null, 'actions');
-  const decide = decision => async () => {
-    for (const control of actions.querySelectorAll('button')) control.disabled = true;
-    try { await post(`/api/approvals/${encodeURIComponent(id)}/decision`, { decision, expected_version: version }); }
+  const submit = body => async () => {
+    for (const control of li.querySelectorAll('button, input, textarea')) control.disabled = true;
+    try { await post(`/api/approvals/${encodeURIComponent(id)}/decision`, { ...body, expected_version: version }); }
     catch (error) { showError(ERROR_TEXT[error.code] || `Falha na decisão: ${error.code}`); }
     await onDone();
   };
-  actions.append(button('Aprovar', decide('approve'), 'primary'), button('Rejeitar', decide('reject'), 'danger'));
+  if (!summary) li.append(el('div', 'Detalhes indisponíveis (conexão perdida).', 'muted'));
+  if (type === 'question') {
+    // Each question is answered by choosing an offered option or writing a free answer; nothing is pre-selected.
+    const readers = [];
+    (summary && summary.questions || []).forEach((question, qIndex) => {
+      const box = el('fieldset', null, 'question');
+      box.append(el('legend', question.header ? `${question.header}: ${question.question}` : question.question));
+      const name = `q-${id}-${qIndex}`;
+      const choices = [];
+      for (const option of question.options || []) {
+        const label = el('label', null, 'choice');
+        const input = document.createElement('input');
+        input.type = question.multiSelect ? 'checkbox' : 'radio';
+        input.name = name;
+        input.value = option.label;
+        choices.push(input);
+        label.append(input, el('span', option.label));
+        if (option.description) label.append(el('span', ` — ${option.description}`, 'muted small'));
+        box.append(label);
+      }
+      const free = document.createElement('textarea');
+      free.rows = 1; free.maxLength = 2000; free.placeholder = 'Outra resposta (opcional)';
+      box.append(free);
+      readers.push(() => {
+        const text = free.value.trim();
+        const picked = choices.filter(input => input.checked).map(input => input.value);
+        return [question.question, text || picked.join(', ')];
+      });
+      li.append(box);
+    });
+    const answer = async () => {
+      const entries = readers.map(read => read());
+      if (!entries.length || entries.some(([, value]) => !value)) { showError(ERROR_TEXT.invalid_body); return; }
+      await submit({ decision: 'approve', answers: Object.fromEntries(entries) })();
+    };
+    actions.append(button('Responder', answer, 'primary'), button('Não responder', submit({ decision: 'reject' }), 'danger'));
+  } else {
+    if (summary && summary.command) li.append(el('pre', summary.command));
+    if (summary && summary.files && summary.files.length) li.append(el('pre', summary.files.join('\n')));
+    if (summary && summary.reason) li.append(el('div', summary.reason, 'muted'));
+    if (summary && summary.cwd) li.append(el('div', `cwd: ${summary.cwd}`, 'muted'));
+    if (summary && summary.detail) {
+      // The exact input that will run if approved (display only, text nodes).
+      const details = el('details', null, 'detail');
+      details.open = type !== 'command';
+      details.append(el('summary', 'Entrada completa da ferramenta'), el('pre', summary.detail));
+      li.append(details);
+      if (summary.truncated) li.append(el('div', 'Atenção: a entrada é maior do que o exibido. Aprove só se confiar no restante.', 'muted small warn'));
+    }
+    actions.append(button('Aprovar', submit({ decision: 'approve' }), 'primary'), button('Rejeitar', submit({ decision: 'reject' }), 'danger'));
+  }
   if (item.session_id && item.vm_name && item.session_id !== state.sessionId) actions.append(button('Abrir sessão', () => selectVm(item.vm_name, item.session_id)));
   li.append(actions);
   return li;
@@ -286,7 +338,7 @@ function renderAttention(items) {
     if (item.kind === 'blocked') {
       head.append(el('strong', 'Agente travado'), el('span', ago(item.created_at), 'where'));
       li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
-      li.append(el('div', `O Codex pediu algo que o Cockpit não consegue responder com segurança (${item.method}${item.occurrences > 1 ? `, ${item.occurrences}×` : ''}). A tarefa não avança sozinha.`, 'muted small'));
+      li.append(el('div', `O agente pediu algo que o Cockpit não consegue responder com segurança (${item.method}${item.occurrences > 1 ? `, ${item.occurrences}×` : ''}). A tarefa não avança sozinha.`, 'muted small'));
       li.append(el('div', 'O que fazer: abra a sessão, interrompa a execução e reformule o prompt sem exigir essa interação.', 'muted small'));
       const actions = el('div', null, 'actions');
       actions.append(button('Abrir e interromper', () => selectVm(item.vm_name, item.session_id), 'danger'));
@@ -325,15 +377,16 @@ async function selectVm(vmName, sessionId) {
     option.value = `s:${item.session_id}`;
     select.append(option);
   }
-  if (vm && vm.runnable) {
+  // Providers that cannot enumerate their sessions (Claude Code) only offer the Cockpit's own sessions.
+  if (vm && vm.runnable && !(vm.capabilities && vm.capabilities.sessionListing === 'cockpit')) {
     try {
       const threads = await get(`/api/vms/${encodeURIComponent(vmName)}/threads`);
       for (const thread of threads.threads.filter(item => !item.sessionId)) {
-        const option = el('option', `Retomar thread Codex ${thread.id.slice(0, 8)} · ${ago(thread.updatedAt)}`);
+        const option = el('option', `Retomar thread ${PROVIDER_NAME[vm.provider] || vm.provider} ${thread.id.slice(0, 8)} · ${ago(thread.updatedAt)}`);
         option.value = `t:${thread.id}`;
         select.append(option);
       }
-    } catch (error) { if (error.status !== 401) $('composer-note').textContent = `Threads do Codex indisponíveis: ${error.code}`; }
+    } catch (error) { if (error.status !== 401) $('composer-note').textContent = `Threads do agente indisponíveis: ${error.code}`; }
     if (token !== selectToken) return; // a newer selection superseded this one while threads loaded
   }
   if (!select.options.length) {
@@ -403,6 +456,8 @@ async function loadHistory() {
     const page = await get(`/api/sessions/${encodeURIComponent(state.sessionId)}/history`);
     conversation.replaceChildren();
     state.liveItems.clear();
+    const caps = state.sessionData && state.sessionData.session && state.sessionData.session.capabilities;
+    if (caps && caps.history === 'session_memory') conversation.append(el('li', 'Histórico parcial: este agente só mostra o que o Cockpit observou desde que iniciou; conversas anteriores ficam na VM.', 'msg note memory'));
     for (const item of page.items) conversation.append(renderItem(item));
     if (!page.items.length) conversation.append(el('li', 'Sessão sem mensagens ainda.', 'msg note'));
   } catch (error) {
@@ -424,6 +479,12 @@ function renderItem(item) {
   }
   if (item.kind === 'file_change') return el('li', `Arquivos (${item.status || 'pendente'}): ${(item.files || []).join(', ')}`, `msg action ${item.status || ''}`);
   if (item.kind === 'plan') return el('li', `Plano: ${item.text || ''}`, 'msg note');
+  if (item.kind === 'tool') {
+    const status = item.status || 'in_progress';
+    const node = el('li', `${item.tool || 'ferramenta'}${item.text && status === 'in_progress' ? ` · ${item.text}` : ''}  [${status}]`, `msg action ${status}`);
+    if (item.text && status !== 'in_progress') node.append(el('div', item.text, 'muted'));
+    return node;
+  }
   if (item.kind === 'reasoning') {
     if (item.text) return el('li', `Raciocínio: ${item.text}`, 'msg note');
     // Empty reasoning is only a transient "thinking" placeholder while a run is active; never after it ended.
@@ -456,7 +517,8 @@ function renderRun() {
   if (run.reason_code) parts.push(REASON[run.reason_code] || run.reason_code);
   const metrics = run.metrics || {};
   if (metrics.durationMs !== null && metrics.durationMs !== undefined) parts.push(`duração ${(metrics.durationMs / 1000).toFixed(1)}s`);
-  parts.push(metrics.inputTokens === null || metrics.inputTokens === undefined ? 'tokens: não medido' : `tokens (acumulado da sessão): ${metrics.inputTokens} in / ${metrics.outputTokens ?? 'não medido'} out`);
+  const scope = metrics.tokenScope === 'run' ? 'desta execução' : 'acumulado da sessão';
+  parts.push(metrics.inputTokens === null || metrics.inputTokens === undefined ? 'tokens: não medido' : `tokens (${scope}): ${metrics.inputTokens} in / ${metrics.outputTokens ?? 'não medido'} out`);
   $('run-detail').textContent = parts.join(' · ');
   $('interrupt').hidden = !(run.status === 'running' || run.status === 'awaiting_approval');
   $('interrupt').disabled = !run.provider_bound;

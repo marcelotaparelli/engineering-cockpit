@@ -147,3 +147,10 @@ input, select, textarea { font: inherit; color: inherit; background: var(--bg); 
 .conn { flex: none; }
 .card > div:not(.head):not(.actions) { font-size: .85rem; }
 @media (max-width: 900px) { #refresh { display: none; } }
+/* E3: agent questions and full tool input inside approval cards */
+.card fieldset.question { border: 1px solid var(--line); border-radius: 4px; margin: 0; padding: 6px 8px; display: grid; gap: 4px; min-width: 0; }
+.card fieldset.question legend { font-weight: 600; font-size: .85rem; padding: 0 4px; }
+.card label.choice { display: flex; gap: 6px; align-items: baseline; font-size: .85rem; cursor: pointer; }
+.card fieldset.question textarea { font: inherit; font-size: .85rem; resize: vertical; min-height: 1.8em; }
+.card details.detail summary { cursor: pointer; font-size: .78rem; color: var(--muted); }
+.card .warn { color: var(--warn); }
