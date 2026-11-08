@@ -25,6 +25,10 @@ describe("E2 claude protocol (pure)", () => {
     expect(argv).toContain("default");
     expect(argv.join(" ")).not.toMatch(/dangerously|bypassPermissions|acceptEdits|--bare/);
     expect(claudeStreamArgv("claude-cockpit-e2-test", { resume: SID, permissionPrompt: "tool" })).toContain("--permission-prompt-tool");
+    // E2 Arch regression: `--permission-prompts host` alone never routes prompts to stdio; the hidden stdio route must be present.
+    const host = claudeStreamArgv("claude-cockpit-e2-test", { sessionId: SID, permissionPrompt: "host" });
+    expect(host[host.indexOf("--permission-prompts") + 1]).toBe("host");
+    expect(host[host.indexOf("--permission-prompt-tool") + 1]).toBe("stdio");
     expect(() => claudeStreamArgv("codex-cockpit-e2-test", { permissionPrompt: "host" })).toThrow("e2_target_not_claude");
     expect(() => claudeStreamArgv("claude-engineering-cockpit", { permissionPrompt: "host" })).toThrow("e2_target_forbidden");
     expect(() => assertClaudeTarget("claude-bad name")).toThrow("invalid_vm_name");
@@ -53,5 +57,14 @@ describe("E2 claude protocol (pure)", () => {
     expect(classifyResultError({ is_error: true, subtype: "error_max_turns" })).toBe("max_turns");
     expect(classifyResultError({ is_error: true, subtype: "success", result: "usage limit reached, 429" })).toBeNull(); // text alone is never trusted
     expect(parseClaudeEvent({ type: "rate_limit_event" })).toEqual({ type: "other", kind: "rate_limit_event" });
+  });
+  test("local permission denials are parsed structurally (tool, id, reason tag) without message text", () => {
+    const denied = parseClaudeEvent({ type: "system", subtype: "permission_denied", tool_name: "Bash", tool_use_id: "toolu_1", decision_reason_type: "asyncAgent", message: "SEGREDO" });
+    expect(denied).toEqual({ type: "permission_denied", toolName: "Bash", toolUseId: "toolu_1", reasonType: "asyncAgent" });
+    expect(JSON.stringify(denied)).not.toContain("SEGREDO");
+    expect(parseClaudeEvent({ type: "system", subtype: "permission_denied", tool_name: "Bash", tool_use_id: "bad id!", decision_reason_type: "x y" }))
+      .toMatchObject({ toolUseId: null, reasonType: null });
+    expect(parseClaudeEvent({ type: "result", subtype: "success", is_error: false, permission_denials: [{}, {}] })).toMatchObject({ ok: true, permissionDenials: 2 });
+    expect(parseClaudeEvent({ type: "result", subtype: "success", is_error: false })).toMatchObject({ permissionDenials: 0 });
   });
 });

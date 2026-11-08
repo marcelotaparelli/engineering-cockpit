@@ -49,6 +49,23 @@ describe("E2 spike runner against the fake Claude CLI (no quota, no real process
     expect(json).not.toContain("approval-probe");
   });
 
+  test("E2 Arch regression: the spike argv routes prompts over stdio; a local CLI deny is a routing FAIL with structural diagnosis", async () => {
+    const world = newFakeWorld();
+    const report = await runClaudeSpike(overrides(world, { COCKPIT_E2_REAL_PROMPTS: "yes" }));
+    expect(status(report, "approval_reject").evidence).toMatchObject({ request_seen: true, tool_use_seen: true });
+    // The argv that ran on Arch (no `--permission-prompt-tool stdio`): the CLI denies by itself and the host never sees a request.
+    const old = newFakeWorld();
+    const spawn = fakeClaudeSpawn(old);
+    const stripped = await runClaudeSpike(overrides(old, { COCKPIT_E2_REAL_PROMPTS: "yes" }, { spawn: (argv, options) => {
+      const index = argv.indexOf("--permission-prompt-tool");
+      return spawn(index >= 0 ? [...argv.slice(0, index), ...argv.slice(index + 2)] : argv, options);
+    } }));
+    expect(status(stripped, "approval_reject")).toMatchObject({ status: "FAIL", reason: "prompt_not_routed_to_host",
+      evidence: { request_seen: false, tool_use_seen: true, auto_denied: 1, result_permission_denials: 1 } });
+    expect(status(stripped, "question_answer")).toMatchObject({ status: "FAIL", reason: "prompt_not_routed_to_host" });
+    expect(JSON.stringify(stripped)).not.toContain("CANARIO-E2");
+  });
+
   test("a process that ignores stdin close is killed and the check fails, never left running", async () => {
     const world = newFakeWorld(); world.hangOnClose = true;
     const report = await runClaudeSpike(overrides(world, { COCKPIT_E2_REAL_PROMPTS: "yes" }));

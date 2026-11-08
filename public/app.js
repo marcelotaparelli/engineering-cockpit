@@ -468,7 +468,22 @@ async function loadHistory() {
   conversation.scrollTop = conversation.scrollHeight;
 }
 
+// A permission outcome the operator did not decide: always shown, never folded into the normal status.
+const ITEM_NOTICE = {
+  auto_denied: 'Negado automaticamente pelo agente, sem pedir aprovação ao Cockpit. Verifique o roteamento de permissões.',
+  unapproved_execution: 'Executado sem aprovação do Cockpit (permitido pela configuração dentro da VM).',
+};
+function withNotice(node, item) {
+  if (item.notice && ITEM_NOTICE[item.notice]) node.append(el('div', ITEM_NOTICE[item.notice], 'item-notice small'));
+  return node;
+}
+
 function renderItem(item) {
+  const node = renderItemBody(item);
+  return item.notice ? withNotice(node, item) : node;
+}
+
+function renderItemBody(item) {
   if (item.kind === 'user_message') return el('li', item.text || '', 'msg user');
   if (item.kind === 'agent_message') return el('li', item.text || '', 'msg agent');
   if (item.kind === 'command') {

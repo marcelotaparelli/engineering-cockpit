@@ -23,7 +23,8 @@ import type {
  *  - sessions are only those opened through the Cockpit (`sessionListing: "cockpit"`);
  *  - history is what this process observed, bounded and memory-only (`history: "session_memory"`);
  *  - a run can be confirmed only by its live process (`reconcile: "process"`): after a crash or restart it stays `unknown`.
- * Every tool use is gated by the CLI (`--permission-mode default`) and forwarded to a human; unknown control requests are
+ * Every tool use is gated by the CLI (`--permission-mode default`) and routed to the host (`--permission-prompt-tool stdio`)
+ * to be decided by a human; a tool the CLI refuses or runs on its own is flagged on the item (`notice`). Unknown control requests are
  * answered with an error (never a permissive success); requests outside a Cockpit turn are denied.
  */
 export const CLAUDE_CAPABILITIES: ProviderCapabilities = Object.freeze({
@@ -57,6 +58,8 @@ export interface ClaudeAdapterOptions {
 const nativeSpawn: MsbSpawn = (argv, options) => { assertArchHost(); return Bun.spawn([...argv], options) as unknown as MsbChild; };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FILE_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+/** Tools whose execution without a Cockpit approval must be flagged (commands and file writes). */
+const SENSITIVE_TOOLS = new Set(["Bash", ...FILE_TOOLS]);
 const MAX_DETAIL = 8 * 1024;
 const MAX_ANSWER = 2000;
 
@@ -91,6 +94,8 @@ interface Turn {
   texts: Map<string, string>;
   thinkingStarted: Set<string>;
   tools: Map<string, ActivityItem>;
+  /** tool_use ids the CLI asked the Cockpit about (permission or question): a denial of those is the operator's own. */
+  asked: Set<string>;
   timer: ReturnType<typeof setTimeout> | undefined;
   killTimer: ReturnType<typeof setTimeout> | undefined;
 }
@@ -184,7 +189,7 @@ class ClaudeConnection implements ProviderConnection {
   #closed = false;
   #reaper: ReturnType<typeof setInterval> | undefined;
   /** Diagnostics only (counts, never content). */
-  readonly stats = { deniedOutsideTurn: 0, deniedOverLimit: 0, unsupportedControl: 0, ignoredFrames: 0 };
+  readonly stats = { deniedOutsideTurn: 0, deniedOverLimit: 0, unsupportedControl: 0, ignoredFrames: 0, autoDenied: 0, unapprovedExecutions: 0 };
 
   constructor(vm: string, options: Required<ClaudeAdapterOptions>) {
     this.#vm = vm;
@@ -246,7 +251,7 @@ class ClaudeConnection implements ProviderConnection {
     if (session.turn) throw new SafeError("provider_session_busy");
     const message = userMessage(input.prompt); // validates before anything is written
     const turn: Turn = { id: `turn-${randomUUID()}`, interruptRequested: false, messageKey: "m0", messageSeq: 0, texts: new Map(),
-      thinkingStarted: new Set(), tools: new Map(), timer: undefined, killTimer: undefined };
+      thinkingStarted: new Set(), tools: new Map(), asked: new Set(), timer: undefined, killTimer: undefined };
     session.turn = turn;
     session.lastActivity = Date.now();
     this.#record(session.id, { id: `${turn.id}:prompt`, kind: "user_message", status: null, text: input.prompt.slice(0, 64 * 1024), command: null, exitCode: null, files: [], runId: turn.id });
@@ -388,6 +393,7 @@ class ClaudeConnection implements ProviderConnection {
           void session.proc.send(toolDecision(event.requestId, "deny", undefined, "Limite de pedidos pendentes no Engineering Cockpit.")).catch(() => {});
           return;
         }
+        if (event.toolUseId && turn.asked.size < 2000) turn.asked.add(event.toolUseId);
         const itemId = event.toolUseId ? `tool:${event.toolUseId}` : null;
         let summary: ApprovalSummary;
         if (event.type === "question") {
@@ -473,14 +479,29 @@ class ClaudeConnection implements ProviderConnection {
       case "user_replay":
         for (const result of event.toolResults) {
           const started = turn.tools.get(result.toolUseId);
-          if (!started) continue;
+          if (!started || started.status !== "in_progress") continue; // unknown, or already settled (e.g. auto-denied)
+          // A sensitive tool that ran although the Cockpit was never asked: allowed by configuration inside the VM.
+          const unapproved = !result.isError && SENSITIVE_TOOLS.has(started.tool ?? "") && !turn.asked.has(result.toolUseId);
+          if (unapproved) this.stats.unapprovedExecutions++;
           const item: ActivityItem = { ...started, status: result.isError ? "failed" : "completed",
-            text: started.kind === "file_change" ? started.text : result.text || started.text };
-          turn.tools.delete(result.toolUseId);
+            text: started.kind === "file_change" ? started.text : result.text || started.text, ...(unapproved ? { notice: "unapproved_execution" as const } : {}) };
+          turn.tools.set(result.toolUseId, item);
           this.#record(session.id, { ...item, runId: turn.id });
           emit({ ...base, type: "run.item", runId: turn.id, phase: "completed", item });
         }
         return;
+      case "permission_denied": {
+        // A denial the operator decided is already shown by the approval; anything else the CLI refused on its own.
+        if (event.toolUseId && turn.asked.has(event.toolUseId)) return;
+        this.stats.autoDenied++;
+        const id = event.toolUseId ?? `denied-${randomUUID()}`;
+        const started = turn.tools.get(id) ?? toolItem(`tool:${id}`, event.toolName, {});
+        const item: ActivityItem = { ...started, status: "declined", notice: "auto_denied" };
+        if (turn.tools.has(id) || turn.tools.size < 2000) turn.tools.set(id, item);
+        this.#record(session.id, { ...item, runId: turn.id });
+        emit({ ...base, type: "run.item", runId: turn.id, phase: "completed", item });
+        return;
+      }
     }
   }
 

@@ -1,16 +1,48 @@
 # E3 — Claude Code como provider operacional do Cockpit
 
-**Estado (2026-11-07):** implementado e testado **só com o Claude falso** (Debian). Nenhum prompt real, nenhuma VM, credencial ou processo do Arch foi tocado. **Aceite E3 pendente da homologação no Arch** (roteiro abaixo).
+**Estado (2026-11-08):** implementado e testado com o Claude falso (Debian). O E2 real rodou no Arch (Claude Code 2.1.319). Aprovação e AskUserQuestion continuam **INCONCLUSIVAS**: a causa provável foi achada e corrigida, mas falta confirmar no Arch. **O aceite do E3 depende da homologação no Arch** (roteiro abaixo).
 
-**Evidência E2:** o operador relatou "E2 PASS no Arch", mas **não há relatório no repositório** (`docs/evidence/` só tem UI). Os formatos reais do stream-json continuam **não comprovados** aqui; o passo 1 do roteiro recupera essa evidência sem gastar mais do que os 6 prompts do E2.
+## Evidência E2 real (`docs/evidence/e2-claude-spike-arch.json`)
+| Check | Arch | Leitura |
+| --- | --- | --- |
+| streaming_turn | PASS, `incremental=false`, `delta_count=1` | O prompt pedia só "OK", e uma resposta de 1 token gera 1 delta. **Streaming incremental não comprovado**: no teste de interrupção a interrupção saiu já no 1º delta. Vai ser verificado no passo (a). |
+| multi_turn / process_exit / resume | PASS | Batem com o adapter: vários turnos por processo, fechamento pela stdin, `--resume` com o mesmo `session_id` e contexto. |
+| interrupt | PASS, `ack=true`, `result_subtype=error_during_execution`, processo vivo | O adapter já mapeia esse `result` para `interrupted`, porque o Cockpit pediu a interrupção. |
+| init.permissionMode | `default` | Bate com a checagem fail-closed do adapter. O `--help` 2.1.319 não lista `default` (lista `manual`, `auto`…), mas o CLI aceita e reporta `default`. |
+| approval_reject | **INCONCLUSIVE** `no_permission_request_seen` | Turno de 3,4 s encerrado sem nenhum `can_use_tool`. Ver causa abaixo. |
+| question_answer | **INCONCLUSIVE** `no_question_seen` | Mesmo mecanismo. |
+| error_classification | NOT_VERIFIED | Não dá para forçar sem esgotar a quota. |
+
+### Causa dos inconclusivos (achado demonstrável: **opções da CLI**, não prompt nem protocolo)
+Fiz uma leitura estática, só de leitura, do binário `claude` 2.1.319 instalado neste Debian (mesma versão do Arch):
+- Quem responde as permissões é decidido assim: `L2(permissionPromptTool, …, permissionPrompts)`. Só com `--permission-prompt-tool stdio` o CLI cria o `canUseTool` que manda `control_request {subtype:"can_use_tool", tool_name, input, tool_use_id}` ao host. Sem essa opção (o nosso argv tinha só `--permission-prompts host`), o handler é **local**: um pedido `ask` vira **deny automático**, emitido como `system/permission_denied` e somado em `result.permission_denials`. O host nunca vê nada.
+- `--permission-prompt-tool` é uma opção **oculta** (`hideHelp()`). O E2 concluiu pelo `--help` que ela "não existe" e escolheu só `--permission-prompts host`. Essa flag apenas diz que os pedidos *não* são negados por política (`none`); ela não abre a rota stdio. O Agent SDK passa `--permission-prompt-tool=stdio`.
+- O AskUserQuestion usa o mesmo canal `can_use_tool`, então foi afetado do mesmo jeito.
+- O spike não registrava `tool_use`, `permission_denied` nem `permission_denials`. Por isso o relatório **não distingue** entre "o CLI negou sozinho" e "o modelo não chamou a ferramenta". As outras hipóteses (regra `permissions.allow` ou sandbox na VM liberando o Bash; modelo sem chamar a ferramenta) **não estão descartadas pela evidência**. Agora o Cockpit sinaliza as duas primeiras na tela.
+
+**Situação:** aprovação e pergunta continuam **não comprovadas**. A correção vem da leitura do código do CLI, não de uma execução real.
+
+### Correções (com testes de regressão)
+- `claudeStreamArgv` passa a enviar `--permission-prompts host --permission-prompt-tool stdio`.
+- O CLI falso agora reproduz o 2.1.319: **sem** a rota stdio, nega localmente e emite `system/permission_denied`. Os testes de aprovação e de pergunta só passam com a rota correta. Há também um teste que reproduz o argv do Arch e espera a negação automática.
+- O parser lê `system/permission_denied` (ferramenta, id e tag do motivo; nunca a mensagem) e `result.permission_denials` (contagem).
+- No adapter:
+  - Ferramenta negada pelo próprio CLI: o item fica `declined` com `notice:"auto_denied"`.
+  - Bash ou ferramenta de arquivo executada sem nenhum pedido ao Cockpit: `notice:"unapproved_execution"` (regra da VM).
+  - Nos dois casos a UI mostra um aviso no item.
+  - O deny do próprio operador não é confundido com negação automática.
+- No spike do E2 (não executado de novo):
+  - Responde com erro a pedidos de controle desconhecidos.
+  - Registra `tool_use_seen`, `auto_denied` e `result_permission_denials`.
+  - Negação local passa a ser `FAIL prompt_not_routed_to_host`, e não mais INCONCLUSIVE.
 
 ## Resultado dos testes
-**217/217 testes passaram em ambiente simulado** (Claude e Codex falsos; typecheck limpo), executados numa cópia do repositório com o pin de Bun ajustado à versão local. Isso **não** substitui a homologação: **o E3 ainda depende de homologação real no Arch** (roteiro abaixo).
+**236/236 testes passaram em ambiente simulado.** Eram 217 no commit `c1630c1`; foram somados 19 de regressão do roteamento de permissões e da preparação da homologação. O typecheck está limpo. A suíte rodou numa cópia do repositório com o pin de Bun ajustado à versão local. Isso **não** substitui a homologação: **o E3 ainda depende de homologação real no Arch.**
 
 ## Arquitetura (sem plataforma paralela)
 Mesmo `ExecutionService`, `RuntimeStore` (sessões, runs, journal, idempotência, aprovações), `EventHub`/SSE, `LocalSecurity`, revalidação de discovery e UI do Codex. O `ExecutionService` passou a ter um **registro de adapters por provider** (`adapters: [codex, claude]`); nada no fluxo de envio/aprovação/recuperação foi duplicado.
 
-`ClaudeCodeAdapter` (`src/claude-adapter.ts`): uma `ProviderConnection` por VM; dentro dela, **um processo `claude -p` stream-json por sessão aberta** (`msb exec --stream <vm> -- claude ... --permission-mode default --permission-prompts host`), vários turnos pela mesma stdin (decisão do E2). Reutiliza `ClaudeStreamProcess`, `MsbChild`, `minimalChildEnv` (só `PATH/LANG/LC_ALL`).
+`ClaudeCodeAdapter` (`src/claude-adapter.ts`): uma `ProviderConnection` por VM; dentro dela, **um processo `claude -p` stream-json por sessão aberta** (`msb exec --stream <vm> -- claude ... --permission-mode default --permission-prompts host --permission-prompt-tool stdio`), vários turnos pela mesma stdin (decisão do E2). Reutiliza `ClaudeStreamProcess`, `MsbChild`, `minimalChildEnv` (só `PATH/LANG/LC_ALL`).
 
 ### Capabilities (particularidades preservadas, sem imitar o Codex)
 | Capability | Codex | Claude Code | Consequência |
@@ -48,8 +80,9 @@ Mesmo `ExecutionService`, `RuntimeStore` (sessões, runs, journal, idempotência
 | Comportamento | Situação |
 | --- | --- |
 | Fluxo completo pelo navegador/HTTP (sessão, envio, streaming, ferramentas, aprovação, pergunta, interrupção, limite de uso, queda, retomada) | **Comprovado com Claude falso** (testes + smoke do `index.ts` em modo mock) |
-| Formatos reais: `init.permissionMode`, `message_start.message.id`, `thinking_delta`, `tool_use_id` em `can_use_tool`, `tool_result`, `control_response` allow/deny, `answers` do AskUserQuestion, `api_error_status` | **Não verificados** — assumidos do protocolo SDK (mesmas suposições do E2) |
-| Interrupção com processo vivo; `--resume` com contexto | Não verificados no Arch (dependem do relatório E2) |
+| `init` (session_id, `permissionMode=default`), `result` ok, vários turnos, interrupção (`control_response` ok, `error_during_execution`, processo vivo), encerramento pela stdin, `--resume` com contexto | **Comprovados no Arch** (E2, 2.1.319) |
+| Forma de `can_use_tool` (`tool_name`, `input`, `tool_use_id`), `system/permission_denied`, `result.permission_denials` | Conferidos por **leitura estática** do CLI 2.1.319; não observados no Arch |
+| Pedido de aprovação e AskUserQuestion chegando ao host; resposta allow/deny/`answers`; streaming incremental; `thinking_delta`; `api_error_status` | **Não comprovados** (INCONCLUSIVOS ou não exercitados) |
 | Classificação real de quota/autenticação | Não forçável sem esgotar quota; só estrutural (nunca por texto) |
 
 ## Limitações reais do protocolo (CLI stream-json)
@@ -61,18 +94,39 @@ Mesmo `ExecutionService`, `RuntimeStore` (sessões, runs, journal, idempotência
 6. Pedidos de controle desconhecidos (hooks, MCP) são respondidos com erro: recursos que dependam deles não funcionam pelo Cockpit.
 
 ## Roteiro de homologação no Arch (operador)
-Pré-requisitos: VM `claude-cockpit-e2-test` Running e logada (por você, dentro dela). Nada abaixo cria, inicia ou altera VM.
+O E2 **não** é repetido. Pré-requisitos:
+- A VM `claude-cockpit-e2-test` está Running e logada (por você, dentro dela).
+- O diretório `$HOME/sandboxes/agent/projects/cockpit-e2-test` existe.
+- O commit com esta correção está no checkout do Arch.
 
-1. **Evidência E2 (6 prompts curtos)**: grava o relatório que falta no repositório; ele valida os formatos dos quais o adapter depende (`permission_mode`, streaming, interrupt, deny, AskUserQuestion, resume):
+Nada abaixo cria, inicia ou altera VM, e nada mexe no Cockpit em execução (E0: porta 8787, ACL `cockpit-e0-test`, `data/`).
+
+1. **Preparar (um comando).** Faz o preflight só de leitura, sem prompt: consentimento, host Arch, VM exclusiva `claude-cockpit-e2*`, ACL explícita, diretório do projeto, VM Running, `claude --version`/`--help`/`auth status`, porta livre e diretório de dados. Só se tudo passar, sobe **outra** instância:
+   - porta 8788;
+   - `data/e3-homologation/`;
+   - ACL = `cockpit-e2-test`;
+   - token novo, mostrado uma vez no terminal.
+
+   Uma `COCKPIT_ALLOWED_PROJECTS` diferente no ambiente é **recusada**, não sobrescrita. O token do E0 nunca é reaproveitado.
    ```sh
-   COCKPIT_MODE=host COCKPIT_HOST_CONFIRMED=yes COCKPIT_E2_CONFIRMED=yes COCKPIT_E2_REAL_PROMPTS=yes COCKPIT_E2_VM=claude-cockpit-e2-test ./scripts/cockpit e2-claude-spike > docs/evidence/e2-claude-spike-arch.json; echo "exit=$?"
+   COCKPIT_MODE=host COCKPIT_HOST_CONFIRMED=yes COCKPIT_E3_CONFIRMED=yes COCKPIT_E3_VM=claude-cockpit-e2-test COCKPIT_ALLOWED_PROJECTS=cockpit-e2-test COCKPIT_PROJECTS_BASE="$HOME/sandboxes/agent/projects" ./scripts/cockpit e3-homologation
    ```
-   `exit=0` é o pré-requisito para o passo 2. Com FAIL/INCONCLUSIVE, pare e traga o JSON (não contém conteúdo nem identidade).
-2. **E3 pelo navegador** (`./scripts/cockpit start` em modo host, com o projeto `cockpit-e2-test` no grant): na VM `claude-cockpit-e2-test`, (a) nova sessão + prompt curto → streaming e "Concluído" com tokens "desta execução"; (b) prompt que peça `Bash` (`touch /tmp/e3-probe`) → card com comando e entrada completa → **Rejeitar**; (c) prompt que peça `AskUserQuestion` → responder no card; (d) prompt longo → **Interromper** → "Interrompido" e próximo prompt funciona; (e) `./scripts/cockpit` reiniciado durante um prompt → run "Não confirmado", nada reenviado; (f) mesma sessão após 20 min ou após (e) → novo prompt retoma (`--resume`) com contexto.
-3. Registrar em `docs/evidence/` os estados observados (sem conteúdo de prompt/resposta).
+   A 1ª linha do stdout é o JSON do preflight, que não traz segredos. Exit 1/2 = não subiu nada; traga o JSON.
+2. **No navegador** (`http://127.0.0.1:8788`, login com o token impresso), na VM `claude-cockpit-e2-test`:
+   - (a) Nova sessão e um prompt que peça um parágrafo. Esperado: o texto aparece aos poucos (**streaming incremental**) e termina em "Concluído", com tokens "desta execução".
+   - (b) Prompt que peça `Bash` (`touch /tmp/e3-probe`). Esperado: card com o comando e a entrada completa → **Rejeitar**.
+     - Se aparecer o aviso "Negado automaticamente", a rota stdio não funcionou.
+     - Se aparecer "Executado sem aprovação", existe regra de permissão na VM.
+     - Nos dois casos é FAIL; anote qual aviso apareceu.
+   - (c) Prompt que peça `AskUserQuestion`. Esperado: card de pergunta → responder.
+   - (d) Prompt longo → **Interromper**. Esperado: "Interrompido", e o próximo prompt funciona.
+   - (e) Ctrl+C na instância durante um prompt, depois o mesmo comando do passo 1. Esperado: run "Não confirmado" e nada reenviado.
+   - (f) Novo prompt na mesma sessão depois de (e). Esperado: retoma com contexto (`--resume`).
+3. Registre em `docs/evidence/e3-browser-arch.md` só os estados observados (PASS/FAIL por passo e qual aviso apareceu), sem conteúdo de prompt ou resposta. Ctrl+C encerra só a instância E3.
 
 ## Pendências para o aceite E3
-- Relatório E2 real no repositório (passo 1) e roteiro E3 (passo 2) executados no Arch.
+- Aprovação e AskUserQuestion **comprovadas no Arch** (passos 2b/2c). Até lá continuam INCONCLUSIVAS. A correção da rota stdio vem só de leitura estática do CLI.
+- Streaming incremental comprovado (2a). Recuperação e retomada pelo navegador (2e/2f).
 - Fixar versão mínima/testada do Claude Code após o passo 1 (hoje: major ≥ 2 + flags exigidas presentes).
 - Revisar `ERROR_CLASS` com um erro real de quota/autenticação quando ocorrer naturalmente.
 - Bun local desta VM é 1.4.3 (pin 1.4.4, mantido): no repositório real 29 testes falham só por `bun_version_mismatch` (conjunto idêntico ao baseline).

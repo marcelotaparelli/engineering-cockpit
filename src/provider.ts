@@ -71,6 +71,11 @@ export interface ActivityItem {
   files: string[];
   /** Provider tool name for `tool` items (e.g. a Claude Code tool). */
   tool?: string | null;
+  /**
+   * Permission outcome the operator must see: `auto_denied` = the provider refused the tool itself without asking the Cockpit;
+   * `unapproved_execution` = a sensitive tool ran without any Cockpit approval (allowed by provider-side configuration).
+   */
+  notice?: "auto_denied" | "unapproved_execution" | null;
 }
 export interface HistoryItem extends ActivityItem { runId: string | null }
 export interface HistoryRun { id: string; status: Exclude<RunStatus, "prepared" | "dispatching" | "awaiting_approval"> }

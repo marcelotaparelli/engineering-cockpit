@@ -423,3 +423,25 @@ test("E3: a Claude VM offers only Cockpit sessions (no thread listing call), sta
     expect(ui.document.getElementById("vm-meta")!.textContent).toContain("claude");
   });
 });
+
+test("E3: a tool the agent denied by itself, or ran without Cockpit approval, is flagged in the conversation", async () => {
+  const session = { session_id: "ses-n", project: "demo", vm_name: "claude-demo", thread_id: "0b7f3c1e-0000-4000-8000-000000000001", last_activity: new Date().toISOString(), latest_run: null, state: "completed" };
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: dashboard({ vms: [vm, { ...claudeVm, session_id: "ses-n", sessions: 1 }], sessions: [session] }) };
+    if (call.path === "/api/sessions/ses-n") return { status: 200, body: { session: { session_id: "ses-n", provider: "claude", capabilities: claudeVm.capabilities }, runs: [], approvals: [] } };
+    if (call.path === "/api/sessions/ses-n/history") return { status: 200, body: { items: [
+      { id: "tool:a", runId: "turn-1", kind: "command", command: "touch /tmp/x", text: null, status: "declined", exitCode: null, files: [], notice: "auto_denied" },
+      { id: "tool:b", runId: "turn-1", kind: "file_change", text: null, status: "completed", command: null, exitCode: null, files: ["/w/a.md"], notice: "unapproved_execution" },
+      { id: "tool:c", runId: "turn-1", kind: "tool", tool: "Grep", text: "ok", status: "completed", command: null, exitCode: null, files: [], notice: "<img src=x onerror=alert(1)>" }], runs: [], next_cursor: null } };
+    return undefined;
+  });
+  await withUi(router, async ui => {
+    click([...ui.document.querySelectorAll(".agent")].find(node => node.textContent!.includes("claude-demo")));
+    await settle();
+    const notices = [...ui.document.querySelectorAll("#conversation .item-notice")].map(node => node.textContent);
+    expect(notices).toHaveLength(2); // unknown notice values are ignored, never rendered as markup
+    expect(notices[0]).toContain("Negado automaticamente");
+    expect(notices[1]).toContain("sem aprovação do Cockpit");
+    expect(ui.document.querySelector("#conversation img")).toBeNull();
+  });
+});

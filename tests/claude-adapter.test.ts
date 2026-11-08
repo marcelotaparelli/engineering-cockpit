@@ -299,3 +299,63 @@ describe("Claude Code adapter: fail-closed protocol handling and recovery", () =
     await connection.close();
   });
 });
+
+/** The E2 Arch argv: `--permission-prompts host` without the stdio route (what produced the INCONCLUSIVE approval/question). */
+const withoutStdioRoute = (spawn: ReturnType<typeof fakeClaudeSpawn>): ReturnType<typeof fakeClaudeSpawn> => (argv, options) => {
+  const index = argv.indexOf("--permission-prompt-tool");
+  return spawn(index >= 0 ? [...argv.slice(0, index), ...argv.slice(index + 2)] : argv, options);
+};
+
+describe("Claude Code adapter: permission routing (E2 Arch INCONCLUSIVE regression)", () => {
+  test("the session argv routes prompts to the host over stdio, so Bash and AskUserQuestion reach the operator", async () => {
+    const { world, connection, events } = await connect();
+    const session = await connection.startSession({ mode: "new" });
+    const argv = streams(world)[0]!.argv;
+    expect(argv[argv.indexOf("--permission-prompt-tool") + 1]).toBe("stdio");
+    const run = await connection.startRun({ session, prompt: "approve this" });
+    await until(() => ofType(events, "approval.requested").length === 1);
+    await connection.decideApproval(ofType(events, "approval.requested")[0]!.approval, { decision: "reject" });
+    await until(() => Boolean(finished(events, run.id)));
+    const ask = await connection.startRun({ session, prompt: "ask me" });
+    await until(() => ofType(events, "approval.requested").length === 2);
+    expect(ofType(events, "approval.requested")[1]!.summary.actionType).toBe("question");
+    await connection.interrupt(ask);
+    await until(() => Boolean(finished(events, ask.id)));
+    expect(streams(world)[0]!.autoDenied).toEqual([]);
+    // The operator's own deny is reported back by the CLI too: it must not be mistaken for an automatic one.
+    expect(ofType(events, "run.item").some(event => event.item.notice === "auto_denied")).toBe(false);
+    await connection.close();
+  });
+
+  test("without the stdio route the CLI denies locally: no approval, the tool item is flagged auto_denied, nothing is approved", async () => {
+    const world = newFakeWorld();
+    const { connection, events, adapter } = await connect(world, { spawn: withoutStdioRoute(fakeClaudeSpawn(world)) });
+    const session = await connection.startSession({ mode: "new" });
+    const run = await connection.startRun({ session, prompt: "approve this" });
+    await until(() => Boolean(finished(events, run.id)));
+    expect(ofType(events, "approval.requested")).toEqual([]);
+    expect(streams(world)[0]!.autoDenied).toEqual(["Bash"]);
+    const flagged = ofType(events, "run.item").filter(event => event.item.notice === "auto_denied");
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]!.item).toMatchObject({ kind: "command", status: "declined", command: "touch /tmp/e2-approval-probe" });
+    expect(JSON.stringify(events)).not.toContain("CANARIO-E2"); // the CLI's deny message is never copied
+    // A later tool_result must not downgrade the flag back to a plain failure.
+    const history = await connection.history(session);
+    expect(history.items.find(item => item.id === flagged[0]!.item.id)).toMatchObject({ status: "declined", notice: "auto_denied" });
+    expect(adapter).toBeDefined();
+    await connection.close();
+  });
+
+  test("a sensitive tool that runs without any Cockpit approval (VM allow rule) is flagged unapproved_execution", async () => {
+    const world = newFakeWorld();
+    world.autoAllow = ["Bash"];
+    const { connection, events } = await connect(world);
+    const session = await connection.startSession({ mode: "new" });
+    const run = await connection.startRun({ session, prompt: "approve this" });
+    await until(() => Boolean(finished(events, run.id)));
+    expect(ofType(events, "approval.requested")).toEqual([]);
+    const done = ofType(events, "run.item").filter(event => event.item.kind === "command" && event.phase === "completed");
+    expect(done.at(-1)!.item).toMatchObject({ status: "completed", notice: "unapproved_execution" });
+    await connection.close();
+  });
+});

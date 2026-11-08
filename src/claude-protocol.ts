@@ -49,6 +49,9 @@ export function assertClaudeTarget(vmName: string): void {
   if (FORBIDDEN_E2_VMS.includes(vmName)) throw new SafeError("e2_target_forbidden");
 }
 
+/** Routes permission prompts (and AskUserQuestion) to the host over stdio as `control_request`/`can_use_tool`. */
+export const STDIO_PROMPT_TOOL = Object.freeze(["--permission-prompt-tool", "stdio"] as const);
+
 export interface TurnProcessOptions { sessionId?: string; resume?: string; permissionPrompt: "host" | "tool" }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -60,7 +63,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function claudeStreamArgv(vmName: string, options: TurnProcessOptions): readonly string[] {
   if (options.sessionId !== undefined && options.resume !== undefined) throw new SafeError("invalid_claude_argv");
   for (const id of [options.sessionId, options.resume]) if (id !== undefined && !UUID.test(id)) throw new SafeError("invalid_claude_session_id");
-  const prompts = options.permissionPrompt === "host" ? ["--permission-prompts", "host"] : ["--permission-prompt-tool", "stdio"];
+  // `--permission-prompts host` only says prompts are not auto-denied; the route to THIS process's stdio is the hidden
+  // `--permission-prompt-tool stdio` (what the Agent SDK passes). Without it 2.1.x answers every prompt with a local deny
+  // (`system/permission_denied`, `result.permission_denials`) and no `can_use_tool` ever reaches the host — the E2 Arch
+  // INCONCLUSIVE outcome. Static reading of the 2.1.319 CLI (same version as the Arch run); still to be confirmed on Arch.
+  const prompts = options.permissionPrompt === "host" ? ["--permission-prompts", "host", ...STDIO_PROMPT_TOOL] : [...STDIO_PROMPT_TOOL];
   return claudeExecArgv(vmName, ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--include-partial-messages", "--replay-user-messages", "--permission-mode", "default", ...prompts,
     ...(options.sessionId ? ["--session-id", options.sessionId] : []), ...(options.resume ? ["--resume", options.resume] : [])]);
@@ -105,8 +112,10 @@ export type ClaudeEvent =
   | { type: "permission_request"; requestId: string; tool: string; command: string | null; input: JsonObject; toolUseId: string | null }
   | { type: "question"; requestId: string; questions: ClaudeQuestion[]; raw: unknown; input: JsonObject; toolUseId: string | null }
   | { type: "control_unsupported"; requestId: string; subtype: string }
+  /** The CLI denied a tool itself (no host asked). `reasonType` is a structural tag, never message text. */
+  | { type: "permission_denied"; toolName: string; toolUseId: string | null; reasonType: string | null }
   | { type: "control_ack"; requestId: string; ok: boolean }
-  | { type: "result"; ok: boolean; subtype: string; sessionId: string | null; errorClass: ClaudeErrorClass | null; inputTokens: number | null; outputTokens: number | null; cachedInputTokens: number | null }
+  | { type: "result"; ok: boolean; subtype: string; sessionId: string | null; errorClass: ClaudeErrorClass | null; inputTokens: number | null; outputTokens: number | null; cachedInputTokens: number | null; permissionDenials: number }
   | { type: "other"; kind: string };
 
 const bound = (value: unknown, max: number): string => typeof value === "string" ? value.slice(0, max) : "";
@@ -140,6 +149,10 @@ export function parseClaudeEvent(line: JsonObject): ClaudeEvent {
     const sessionId = bound(line.session_id, 64);
     if (!UUID.test(sessionId)) throw new SafeError("claude_protocol_invalid");
     return { type: "init", sessionId, model: bound(line.model, 128) || null, permissionMode: bound(line.permissionMode, 32) || null, apiKeySource: bound(line.apiKeySource, 32) || null };
+  }
+  if (type === "system" && line.subtype === "permission_denied") {
+    const reason = bound(line.decision_reason_type, 64);
+    return { type: "permission_denied", toolName: bound(line.tool_name, 64) || "unknown", toolUseId: optionalId(line.tool_use_id), reasonType: /^[A-Za-z0-9_-]{1,64}$/.test(reason) ? reason : null };
   }
   if (type === "stream_event" && isObject(line.event)) {
     if (line.event.type === "message_start") return { type: "message_start", messageId: isObject(line.event.message) ? optionalId(line.event.message.id) : null };
@@ -202,7 +215,7 @@ export function parseClaudeEvent(line: JsonObject): ClaudeEvent {
     const ok = line.is_error !== true && line.subtype === "success";
     return { type: "result", ok, subtype: bound(line.subtype, 64), sessionId: UUID.test(bound(line.session_id, 64)) ? bound(line.session_id, 64) : null,
       errorClass: ok ? null : classifyResultError(line), inputTokens: count(usage.input_tokens), outputTokens: count(usage.output_tokens),
-      cachedInputTokens: count(usage.cache_read_input_tokens) };
+      cachedInputTokens: count(usage.cache_read_input_tokens), permissionDenials: Array.isArray(line.permission_denials) ? Math.min(line.permission_denials.length, 1000) : 0 };
   }
   return { type: "other", kind: type || "unknown" };
 }

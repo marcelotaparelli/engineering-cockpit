@@ -5,7 +5,7 @@ import { SafeError, safeCode } from "./model.ts";
 import { minimalChildEnv, type MsbChild, type MsbSpawn } from "./msb-transport.ts";
 import { parseVmInventory } from "./parser.ts";
 import { assertRuntime } from "./runtime.ts";
-import { assertClaudeTarget, claudeStreamArgv, interruptRequest, probeCapabilities, questionAnswer, toolDecision, userMessage, type Capabilities, type ClaudeEvent } from "./claude-protocol.ts";
+import { assertClaudeTarget, claudeStreamArgv, controlError, interruptRequest, probeCapabilities, questionAnswer, toolDecision, userMessage, type Capabilities, type ClaudeEvent } from "./claude-protocol.ts";
 import { ClaudeStreamProcess, execClaudeOnce, type ExitReport } from "./claude-process.ts";
 
 /**
@@ -140,11 +140,22 @@ export async function runClaudeSpike(overrides?: SpikeOverrides): Promise<SpikeR
       if (event.type === "result") return { events: seen, result: event, ended: false };
       const verdict = await handlers.onEvent?.(event);
       if (verdict === "stop") return { events: seen, result: null, ended: false };
+      // Fail-closed: a control request the spike does not implement gets an error, never silence (the CLI would wait).
+      if (event.type === "control_unsupported") { await proc.send(controlError(event.requestId)); continue; }
       if ((event.type === "permission_request" || event.type === "question") && !handlers.onEvent) {
         unexpectedPermissionRequests += 1;
         await proc.send(toolDecision(event.requestId, "deny"));
       }
     }
+  };
+  /** Why a prompt may not have reached the host: structural tags only (tool names from a fixed list, counts). */
+  const diag = (events: ClaudeEvent[], tool: "Bash" | "AskUserQuestion") => {
+    const result = events.find((event): event is Extract<ClaudeEvent, { type: "result" }> => event.type === "result");
+    return {
+      tool_use_seen: events.some(event => event.type === "assistant" && event.toolUses.includes(tool)),
+      auto_denied: events.filter(event => event.type === "permission_denied" && event.toolName === tool).length,
+      result_permission_denials: result?.permissionDenials ?? null,
+    };
   };
   const text = (events: ClaudeEvent[]) => events.map(event => event.type === "assistant" ? event.text : "").join("");
   let exit: ExitReport | null = null;
@@ -187,8 +198,12 @@ export async function runClaudeSpike(overrides?: SpikeOverrides): Promise<SpikeR
       if (event.type === "permission_request") { asked = { tool: event.tool }; await p1.send(toolDecision(event.requestId, "deny")); }
       if (event.type === "question") await p1.send(toolDecision(event.requestId, "deny"));
     } });
-    set("approval_reject", asked && approval.result ? "PASS" : approval.result ? "INCONCLUSIVE" : "FAIL", asked ? (approval.result ? null : "turn_did_not_end_after_deny") : "no_permission_request_seen", started,
-      { request_seen: Boolean(asked), tool: (asked as { tool: string } | null)?.tool ?? null, decision: "deny", turn_ended: Boolean(approval.result) });
+    // The CLI denying the tool itself (without asking the host) is a routing failure, not "the model did not try".
+    const approvalDiag = diag(approval.events, "Bash");
+    const approvalLocal = !asked && approvalDiag.auto_denied > 0;
+    set("approval_reject", asked && approval.result ? "PASS" : approvalLocal ? "FAIL" : approval.result ? "INCONCLUSIVE" : "FAIL",
+      asked ? (approval.result ? null : "turn_did_not_end_after_deny") : approvalLocal ? "prompt_not_routed_to_host" : "no_permission_request_seen", started,
+      { request_seen: Boolean(asked), tool: (asked as { tool: string } | null)?.tool ?? null, decision: "deny", turn_ended: Boolean(approval.result), ...approvalDiag });
 
     started = Date.now();
     let questioned: { count: number } | null = null;
@@ -200,8 +215,11 @@ export async function runClaudeSpike(overrides?: SpikeOverrides): Promise<SpikeR
       }
       if (event.type === "permission_request") await p1.send(toolDecision(event.requestId, "deny"));
     } });
-    set("question_answer", questioned && question.result ? "PASS" : question.result ? "INCONCLUSIVE" : "FAIL", questioned ? (question.result ? null : "turn_did_not_end_after_answer") : "no_question_seen", started,
-      { question_seen: Boolean(questioned), questions: (questioned as { count: number } | null)?.count ?? 0, turn_ended: Boolean(question.result) });
+    const questionDiag = diag(question.events, "AskUserQuestion");
+    const questionLocal = !questioned && questionDiag.auto_denied > 0;
+    set("question_answer", questioned && question.result ? "PASS" : questionLocal ? "FAIL" : question.result ? "INCONCLUSIVE" : "FAIL",
+      questioned ? (question.result ? null : "turn_did_not_end_after_answer") : questionLocal ? "prompt_not_routed_to_host" : "no_question_seen", started,
+      { question_seen: Boolean(questioned), questions: (questioned as { count: number } | null)?.count ?? 0, turn_ended: Boolean(question.result), ...questionDiag });
 
     started = Date.now();
     exit = await p1.close(grace);

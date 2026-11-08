@@ -23,7 +23,7 @@
 | Autenticação | O runner só lê `claude auth status --json` **na VM** e guarda `logged_in` + enum de método; e-mail/organização/tokens são descartados. Nenhuma credencial é copiada ou lida pelo Cockpit |
 
 ## Riscos de protocolo e autenticação
-1. O `--help` local lista `--permission-prompts host`; o canal clássico `--permission-prompt-tool stdio` não aparece. O runner escolhe pelo que a VM expõe e reporta qual (`permission_prompt`).
+1. O `--help` local lista `--permission-prompts host`; o canal `--permission-prompt-tool stdio` **é uma opção oculta** (não aparece no `--help`, mas existe no 2.1.319). **Correção pós-Arch:** `--permission-prompts host` sozinho não roteia nada ao host; sem `--permission-prompt-tool stdio` o CLI nega localmente (causa provável dos INCONCLUSIVE de aprovação/pergunta). O argv agora envia os dois — ver `docs/e3-claude-code.md`.
 2. Nomes de campos de `control_request`/`result` vêm do protocolo SDK conhecido, não de observação; divergência aparece como FAIL por turno, sem vazar conteúdo.
 3. Com `--resume`, a CLI persiste a sessão em disco **na VM**; credenciais e sessões compartilhadas entre VMs (como `shared/codex-auth`) ampliam o raio de dano — a VM E2 deve ser exclusiva, logada à parte (`claude auth login` dentro dela, por você).
 4. Interrupção de ferramenta em andamento e `--include-partial-messages` com *thinking* podem emitir tipos de evento novos: viram `other` (ignorados), nunca erro.

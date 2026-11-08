@@ -6,7 +6,8 @@ import { JsonlObjectParser, encodeJsonl, type JsonObject } from "./jsonl.ts";
  * (UNVERIFIED against a real CLI). Prompt keywords: "approve" (Bash permission), "ask" (AskUserQuestion), "slow" (runs until interrupted),
  * "quota" (429 result), "remember WORD" / "recall" (context across --resume), "edit" (Write permission on a file), "fetch" (WebFetch
  * permission, a generic tool), "think" (thinking deltas), "hook" (an unsupported control request), "crash" (process dies mid-turn),
- * "stray" (a permission request after the turn ended). Nothing is spawned; no network, no quota.
+ * "stray" (a permission request after the turn ended). Permission routing follows 2.1.319: without `--permission-prompt-tool stdio`
+ * every prompt is denied locally (`system/permission_denied`); `world.autoAllow` models VM allow rules. Nothing is spawned.
  */
 export const FAKE_CLAUDE_VERSION = "2.1.319";
 const FLAG_LINES: Record<string, string> = {
@@ -17,21 +18,23 @@ const FLAG_LINES: Record<string, string> = {
 };
 
 export interface FakeSpawn { argv: readonly string[]; killed: boolean; ended: boolean; interrupts: number; decisions: string[]; closedByStdin: boolean;
-  prompts: string[]; allowedInputs: JsonObject[]; controlErrors: string[]; strayDecisions: string[] }
+  prompts: string[]; allowedInputs: JsonObject[]; controlErrors: string[]; strayDecisions: string[]; autoDenied: string[] }
 export interface FakeClaudeWorld {
   memory: Map<string, string>; spawned: FakeSpawn[];
   hangOnClose: boolean; omitFlags: string[]; authLoggedIn: boolean; canary: string; initialSession?: string;
   /** Sessions that exist on disk (created by a first turn); `--resume` of anything else exits with an error. */
   persisted: Set<string>; version: string; permissionMode: string;
+  /** Tools a VM-side allow rule lets run without asking anyone (models `permissions.allow` / sandbox auto-allow). */
+  autoAllow: string[];
 }
 export const newFakeWorld = (): FakeClaudeWorld => ({ memory: new Map(), spawned: [], hangOnClose: false, omitFlags: [], authLoggedIn: true, canary: "CANARIO-E2",
-  persisted: new Set(), version: FAKE_CLAUDE_VERSION, permissionMode: "default" });
+  persisted: new Set(), version: FAKE_CLAUDE_VERSION, permissionMode: "default", autoAllow: [] });
 
 const UUID = () => crypto.randomUUID();
 
 export function fakeClaudeSpawn(world: FakeClaudeWorld): MsbSpawn {
   return (argv): MsbChild => {
-    const record: FakeSpawn = { argv, killed: false, ended: false, interrupts: 0, decisions: [], closedByStdin: false, prompts: [], allowedInputs: [], controlErrors: [], strayDecisions: [] };
+    const record: FakeSpawn = { argv, killed: false, ended: false, interrupts: 0, decisions: [], closedByStdin: false, prompts: [], allowedInputs: [], controlErrors: [], strayDecisions: [], autoDenied: [] };
     world.spawned.push(record);
     const enc = new TextEncoder();
     let outController!: ReadableStreamDefaultController<Uint8Array>;
@@ -60,6 +63,12 @@ export function fakeClaudeSpawn(world: FakeClaudeWorld): MsbSpawn {
     const resumeIndex = command.indexOf("--resume");
     const sessionIndex = command.indexOf("--session-id");
     const sessionId = resumeIndex >= 0 ? command[resumeIndex + 1]! : sessionIndex >= 0 ? command[sessionIndex + 1]! : UUID();
+    // Like 2.1.319: prompts reach the host only through `--permission-prompt-tool stdio`; `--permission-prompts host` alone
+    // (or `none`) means the CLI answers them itself with a local deny.
+    const toolIndex = command.indexOf("--permission-prompt-tool");
+    const promptsIndex = command.indexOf("--permission-prompts");
+    const hostRouted = toolIndex >= 0 && command[toolIndex + 1] === "stdio" && !(promptsIndex >= 0 && command[promptsIndex + 1] === "none");
+    let denials: JsonObject[] = [];
     const parser = new JsonlObjectParser();
     let turn: { interrupted: boolean; wake: (() => void) | undefined } | null = null;
     const pendingDecisions = new Map<string, (response: JsonObject) => void>();
@@ -68,7 +77,7 @@ export function fakeClaudeSpawn(world: FakeClaudeWorld): MsbSpawn {
     const init = () => { if (initialized) return; initialized = true; out({ type: "system", subtype: "init", session_id: sessionId, model: "fake-model", permissionMode: world.permissionMode, apiKeySource: "none", tools: [] }); };
     // `--resume` of a session without a transcript, or `--session-id` of one that already has one: the CLI refuses and exits.
     if ((resumeIndex >= 0 && !world.persisted.has(sessionId)) || (sessionIndex >= 0 && world.persisted.has(sessionId))) queueMicrotask(() => finish(1));
-    const result = (extra: JsonObject = {}) => out({ type: "result", subtype: "success", is_error: false, session_id: sessionId, usage: { input_tokens: 10, output_tokens: 5 }, ...extra });
+    const result = (extra: JsonObject = {}) => { const permission_denials = denials; denials = []; out({ type: "result", subtype: "success", is_error: false, session_id: sessionId, usage: { input_tokens: 10, output_tokens: 5 }, permission_denials, ...extra }); };
 
     const runTurn = async (prompt: string) => {
       const state = { interrupted: false, wake: undefined as (() => void) | undefined };
@@ -93,13 +102,21 @@ export function fakeClaudeSpawn(world: FakeClaudeWorld): MsbSpawn {
       const ask = (toolName: string, input: JsonObject) => new Promise<JsonObject>(resolve => {
         const requestId = `req-${crypto.randomUUID()}`;
         const toolUseId = `toolu_${crypto.randomUUID().replaceAll("-", "")}`;
+        const toolResult = (allowed: boolean) => out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, is_error: !allowed, content: allowed ? "feito" : "negado" }] } });
+        const denied = (reason: string) => {
+          denials.push({ tool_name: toolName, tool_use_id: toolUseId, tool_input: input });
+          out({ type: "system", subtype: "permission_denied", tool_name: toolName, tool_use_id: toolUseId, decision_reason_type: reason, message: `negado ${world.canary}`, session_id: sessionId });
+        };
+        out({ type: "assistant", message: { id: `msg_${toolUseId}`, role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: toolName, input }] } });
+        if (world.autoAllow.includes(toolName)) { toolResult(true); resolve({ behavior: "allow", auto: true }); return; }
+        if (!hostRouted) { record.autoDenied.push(toolName); denied("asyncAgent"); toolResult(false); resolve({ behavior: "deny", auto: true }); return; }
         pendingDecisions.set(requestId, response => {
           if (response.behavior === "allow") record.allowedInputs.push((response.updatedInput ?? {}) as JsonObject);
-          out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, is_error: response.behavior !== "allow", content: response.behavior === "allow" ? "feito" : "negado" }] } });
+          else denied("host"); // conservative: the real CLI may also report the host's own deny this way
+          toolResult(response.behavior === "allow");
           resolve(response);
         });
         state.wake = () => { pendingDecisions.delete(requestId); resolve({ behavior: "interrupted" }); };
-        out({ type: "assistant", message: { id: `msg_${toolUseId}`, role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: toolName, input }] } });
         out({ type: "control_request", request_id: requestId, request: { subtype: "can_use_tool", tool_name: toolName, input, tool_use_id: toolUseId } });
       });
 

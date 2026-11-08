@@ -39,6 +39,7 @@ case "$COMMAND" in
   protocol-diagnose) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/protocol-diagnose.ts ;;
   e0-recovery-test) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/e0-recovery.ts ;;
   e2-claude-spike) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/e2-claude-spike.ts ;;
+  e3-homologation) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/e3-homologation.ts ;;
   frontend-test) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file test tests/frontend.test.ts ;;
   artifact) exec "$RUNTIME" --no-env-file scripts/artifact.ts "$@" ;;
   *) echo 'Usage: ./scripts/cockpit [bootstrap|start|verify|host-check|discovery-report|m0b1a-smoke|protocol-diagnose|e0-recovery-test|e2-claude-spike|frontend-test|artifact]' >&2; exit 2 ;;
