@@ -53,7 +53,14 @@ try {
   console.log(JSON.stringify({ event: "listening", url: server.url.toString(), source: settings.source, host_verification: "not_verified", runtime_ownership: runtime.ownership }));
   // Synchronously after `listening` (the first stdout line is a contract) and before any request can be served.
   processes.recover();
-  for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => { void (async () => { server.stop(true); await execution.close().catch(() => {}); runtime.close(); store.close(); process.exit(0); })(); });
+  // Orderly shutdown runs once: a second signal (Ctrl+C reaches both the e3-homologation wrapper and this child) must not close
+  // SQLite while the first pass is still recording partial answers and ending provider processes.
+  let stopping = false;
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
+    if (stopping) { console.log(JSON.stringify({ event: "shutdown.repeated_signal", outcome: signal })); return; }
+    stopping = true;
+    void (async () => { server.stop(true); await execution.close().catch(() => {}); runtime.close(); store.close(); process.exit(0); })();
+  });
 } catch (error) {
   console.error(JSON.stringify({ event: "startup_failed", error_code: safeCode(error) }));
   process.exitCode = 1;
