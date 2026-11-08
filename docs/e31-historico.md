@@ -1,6 +1,6 @@
 # E3.1 — Histórico persistente de conversas
 
-**Estado (2026-11-08):** implementado e testado em ambiente simulado. **O aceite depende da homologação no Arch** (roteiro no fim).
+**Estado (2026-11-08):** **aceito no Arch** para o histórico visual preservado após reinício, por atestado do operador ([registro](evidence/e31-historico-arch.md)). A persistência de resposta parcial após **queda abrupta** não foi homologada com o Claude real. O E4 corrigiu uma lacuna nesse ponto e cobre o caso com processos reais e agente simulado ([E4](e4-confiabilidade.md)).
 
 ## Problema e causa
 Na homologação do E3, depois de reiniciar o Cockpit a sessão reaparecia (ela está no SQLite), mas a conversa mostrava "Sessão sem mensagens ainda".
@@ -52,7 +52,7 @@ A redação de segredos é **de melhor esforço** e roda em toda string gravada:
 
 ## Limitações
 - Conversas de **antes do E3.1** nunca foram gravadas, porque ficavam só na memória, e **não podem ser recuperadas** sem ler o transcript do Claude na VM, o que fica fora do escopo por desenho. Sessões antigas mostram só os turnos novos.
-- Num `kill -9` do Cockpit, a resposta parcial perde no máximo cerca de 1 s de texto. No desligamento ordenado (Ctrl+C/SIGTERM), nada se perde.
+- Num `kill -9` do Cockpit, a resposta parcial perde no máximo cerca de 1 s de texto. No desligamento ordenado (Ctrl+C/SIGTERM), nada se perde. *Correção E4:* até o E3.1 esse limite só valia com streaming contínuo. Numa pausa (ferramenta, aprovação), a cauda ficava em memória até o próximo trecho. Agora uma gravação de cauda por intervalo garante o limite também durante as pausas.
 - A redação de segredos não reconhece todos os formatos de segredo; por isso a saída de ferramentas nunca é gravada.
 
 ## Testes

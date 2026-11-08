@@ -2,7 +2,7 @@
 
 Painel local (127.0.0.1) para operar agentes Codex em micro-VMs Microsandbox: selecionar VM, abrir ou retomar sessão, enviar prompt, acompanhar em streaming, interromper, decidir aprovações e ver numa única tela o que está trabalhando, o que terminou e o que depende de você. Bun 1.4.4, TypeScript strict, SQLite. O padrão é **mock**, com agente simulado e identificado como "SIMULAÇÃO".
 
-**Estado:** fluxo de execução (M0b Fatia 3), correção do discovery no Arch e workspace de 3 áreas (Fatia 4) implementados e verificados localmente; **aceite no Arch pendente**. Veja [docs/m0b-fatia4-ux.md](docs/m0b-fatia4-ux.md) (roteiro mínimo de validação) e [docs/m0b-fatia3.md](docs/m0b-fatia3.md) (garantias de execução).
+**Estado (2026-11-08):** E0–E3 homologados no Arch, e o E3.1 aceito para o histórico após reinício ([registro](docs/evidence/e31-historico-arch.md)). O **E4 (confiabilidade e recuperação)** está implementado e testado localmente, com **aceite no Arch pendente**: `./scripts/cockpit e4-homologation` (veja [docs/e4-confiabilidade.md](docs/e4-confiabilidade.md)). Garantias de execução em [docs/m0b-fatia3.md](docs/m0b-fatia3.md).
 
 ## Experimentar em modo mock
 
@@ -15,7 +15,33 @@ Abra `http://127.0.0.1:8787` e digite a credencial. Palavras no prompt controlam
 
 ## Histórico de marcos
 
-M0a e M0a.2 trouxeram a descoberta somente leitura. M0b.1a criou a fundação de provider, transporte e runtime; o smoke no Arch passou em 26/10, por atestado do operador. M0b.1b adicionou autenticação local, CSRF e autorização por projeto, VM e run. A Fatia 3 acrescentou sessões, runs idempotentes, SSE, interrupt, aprovações, reconcile e o painel.
+M0a e M0a.2 trouxeram a descoberta somente leitura. M0b.1a criou a fundação de provider, transporte e runtime; o smoke no Arch passou em 26/10, por atestado do operador. M0b.1b adicionou autenticação local, CSRF e autorização por projeto, VM e run. A Fatia 3 acrescentou sessões, runs idempotentes, SSE, interrupt, aprovações, reconcile e o painel. Os marcos seguintes:
+- **E0**: Codex real, com recuperação após queda.
+- **E1**: agentes bloqueados.
+- **E2/E3**: Claude Code.
+- **E3.1**: histórico persistente.
+- **E4**: confiabilidade.
+  - O banco de runtime passa a ter um único dono.
+  - Processos órfãos são detectados e bloqueiam o envio.
+  - Parciais são persistidas durante as pausas.
+  - Uma VM parada é distinguida de uma queda de conexão ou de processo.
+  - A reconciliação ganha resultado explícito.
+  - Entram métricas e logs estruturados.
+
+## Homologação E4 (comando único, seguro)
+
+```sh
+./scripts/cockpit e4-homologation
+```
+
+O comando roda o typecheck, a suíte completa e um drill de recuperação com processos reais do Cockpit em **modo simulado**:
+- não usa `msb` nem VM, não envia prompt real e não consome quota;
+- usa uma porta, dados e token próprios;
+- nunca toca nos Cockpits em execução.
+
+A saída é JSON, com exit `0/1/2` = `PASS/FAIL/NOT_VERIFIED`. Detalhes e limitações estão em [docs/e4-confiabilidade.md](docs/e4-confiabilidade.md).
+
+Um banco migrado para o **schema v5** (E4) não abre com código anterior ao E4. Antes do primeiro start com o E4, guarde uma cópia de `data/` se quiser poder voltar atrás. Uma segunda instância no mesmo diretório de dados é recusada (`runtime_database_in_use`).
 
 ## Inicialização reproduzível
 
