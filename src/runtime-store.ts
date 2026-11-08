@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, lstatSync, mkdirSync, openSync } from "node:fs";
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { SafeError, validProject, vmIdentity } from "./model.ts";
 import { assertNoSymlinks } from "./paths.ts";
@@ -220,13 +220,47 @@ function mapApproval(row: ApprovalRow): ApprovalRecord {
   } catch { throw new SafeError("runtime_database_corrupt"); }
 }
 
+/** Other live processes holding the runtime database open. `null`: this platform cannot tell (no `/proc`). */
+export type DatabaseHolders = (path: string) => number[] | null;
+
+/**
+ * E4 — every process (visible to this UID) with an open descriptor on `path`, matched by device and inode, excluding `self`.
+ * Linux `/proc` only. SQLite opens its files close-on-exec, so the Cockpit's own children (msb exec) never appear here.
+ */
+export function procDatabaseHolders(path: string, self = process.pid): number[] | null {
+  if (process.platform !== "linux") return null;
+  let target: { dev: number; ino: number };
+  let entries: string[];
+  try { target = statSync(path); entries = readdirSync("/proc"); } catch { return null; }
+  const holders: number[] = [];
+  for (const name of entries) {
+    if (!/^[1-9][0-9]{0,9}$/.test(name) || Number(name) === self) continue;
+    let fds: string[];
+    try { fds = readdirSync(`/proc/${name}/fd`); } catch { continue; } // gone, or another user's process
+    for (const fd of fds) {
+      try {
+        const info = statSync(`/proc/${name}/fd/${fd}`);
+        if (info.dev === target.dev && info.ino === target.ino) { holders.push(Number(name)); break; }
+      } catch { /* closed meanwhile */ }
+    }
+  }
+  return holders;
+}
+
+export interface RuntimeOwnership {
+  /** Override of the holder probe (tests). Default: `procDatabaseHolders`. */
+  holders?: DatabaseHolders;
+}
+
 export class RuntimeStore {
   readonly db: Database;
+  /** "exclusive": no other process had the database open when this store took it over; "not_verified": the platform cannot tell. */
+  readonly ownership: "exclusive" | "not_verified";
 
   readonly #transcriptLimits: Required<TranscriptLimits>;
   #transcriptWrites = 0;
 
-  constructor(path: string, recoveryTime = new Date().toISOString(), limits: TranscriptLimits = {}) {
+  constructor(path: string, recoveryTime = new Date().toISOString(), limits: TranscriptLimits = {}, ownership: RuntimeOwnership = {}) {
     requireTime(recoveryTime);
     this.#transcriptLimits = {
       maxItemsPerSession: limits.maxItemsPerSession ?? 2000, maxItems: limits.maxItems ?? 50_000, retentionDays: limits.retentionDays ?? 180,
@@ -249,6 +283,12 @@ export class RuntimeStore {
     }
     this.db = new Database(path, { strict: true });
     try {
+      // E4: one Cockpit per runtime database. Checked after opening (two simultaneous starters see each other and both stop)
+      // and before migration or recovery: a second instance must never mark a live instance's runs `unknown`, expire its
+      // approvals or let a second writer into the same project.
+      const holders = (ownership.holders ?? procDatabaseHolders)(path);
+      if (holders !== null && holders.length > 0) throw new SafeError("runtime_database_in_use");
+      this.ownership = holders === null ? "not_verified" : "exclusive";
       if (created) {
         this.db.transaction(() => {
           this.db.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION};`);

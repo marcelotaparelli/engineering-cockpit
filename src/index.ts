@@ -27,7 +27,9 @@ try {
   assertNoSymlinks(settings.databasePath);
   await mkdir(dirname(settings.databasePath), { recursive: true });
   const store = new SnapshotStore(settings.databasePath);
+  // Refuses to start (`runtime_database_in_use`) while another process holds this data directory's runtime database.
   const runtime = new RuntimeStore(settings.runtimeDatabasePath);
+  console.log(JSON.stringify({ event: "runtime.ownership", outcome: runtime.ownership }));
   const discovery = new Discovery({ ...settings, store, readOutput: settings.source === "mock" ? mockOutput : readHostVmList });
   const hub = new EventHub();
   // Mock mode never spawns anything: an in-process simulated App Server is clearly labelled as such in the UI.
