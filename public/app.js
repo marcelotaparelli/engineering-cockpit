@@ -1,7 +1,7 @@
 'use strict';
 // Engineering Cockpit UI. Plain DOM, textContent only (no HTML from data), same-origin fetch with session proof.
 const $ = id => document.getElementById(id);
-const STATE_LABEL = { working: 'Trabalhando', blocked: 'Travado — precisa de você', awaiting_approval: 'Aguardando você', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', unknown: 'Não confirmado', idle: 'Ocioso', offline: 'Offline' };
+const STATE_LABEL = { working: 'Trabalhando', blocked: 'Travado — precisa de você', awaiting_approval: 'Aguardando você', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', unknown: 'Não confirmado', idle: 'Ocioso', offline: 'Offline', unsupported: 'Sem suporte' };
 const RUN_LABEL = { prepared: 'Preparando', dispatching: 'Enviando', running: 'Executando', awaiting_approval: 'Aguardando aprovação', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', unknown: 'Não confirmado' };
 const REASON = {
   transport_lost: 'A conexão com a VM caiu durante a execução. Nada foi reenviado.',
@@ -52,7 +52,9 @@ const PROVIDER_NAME = { codex: 'Codex', claude: 'Claude Code', opencode: 'OpenCo
 const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
 const ACTIVE = new Set(['prepared', 'dispatching', 'running', 'awaiting_approval']);
 
-const state = { csrf: null, proof: null, dashboard: null, vm: null, sessionId: null, sessionData: null, run: null, lastEventId: null, stream: null, refreshTimer: null, liveItems: new Map(), retry: 0 };
+const state = { csrf: null, proof: null, dashboard: null, vm: null, sessionId: null, sessionData: null, run: null, lastEventId: null, stream: null, refreshTimer: null, liveItems: new Map(), retry: 0,
+  // F1 (L5): text streamed per in-progress agent item, kept apart from the DOM so a history reload can never drop it.
+  streamed: new Map(), historyText: new Map(), completedItems: new Map(), endedRuns: new Set() };
 try { state.proof = sessionStorage.getItem('cockpit_session_proof'); } catch {}
 try { const view = JSON.parse(sessionStorage.getItem('cockpit_view') || 'null'); if (view) { state.vm = view.vm || null; state.sessionId = view.sessionId || null; } } catch {}
 
@@ -92,19 +94,118 @@ async function request(path, options = {}) {
   try { data = await response.json(); } catch {}
   if (!response.ok) {
     const code = data && data.error && data.error.code ? data.error.code : 'request_failed';
-    if (response.status === 401 && path !== '/api/auth/logout') { showLogin(); }
+    if (response.status === 401 && path !== '/api/auth/logout') { sessionLost(); }
     throw new ApiError(code, response.status);
   }
   return data;
 }
 const get = path => request(path);
-const post = (path, body, extra = {}) => request(path, { method: 'POST', body: JSON.stringify(body),
-  headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf || '', 'X-Request-Nonce': nonce(), ...extra } });
+const post = async (path, body, extra = {}) => {
+  const result = await request(path, { method: 'POST', body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf || '', 'X-Request-Nonce': nonce(), ...extra } });
+  noteServerRenewal(); // a CSRF-verified mutation is operator activity on the server too
+  return result;
+};
+
+// ---------------------------------------------------------------- F1: sliding session (activity signal, indicator, other tabs)
+// The server ends a session after 30 min without operator activity (max. 12 h). Activity is ONLY real input on this page:
+// polling, the live stream and timers never send the signal, so an unattended tab expires on its own.
+const ACTIVITY_PING_MS = 60_000;
+const WARN_BEFORE_MS = 5 * 60_000;
+const sessionClock = { expiresAt: null, absoluteAt: null, idleMs: 30 * 60_000, lastInput: 0, lastPing: 0, pinging: false };
+function applySessionInfo(info) {
+  if (!info) return;
+  const expires = Date.parse(info.expires_at); const absolute = Date.parse(info.absolute_expires_at);
+  sessionClock.expiresAt = Number.isFinite(expires) ? expires : null;
+  sessionClock.absoluteAt = Number.isFinite(absolute) ? absolute : null;
+  if (Number.isSafeInteger(info.idle_timeout_seconds) && info.idle_timeout_seconds > 0) sessionClock.idleMs = info.idle_timeout_seconds * 1000;
+  renderSessionBadge();
+}
+function noteServerRenewal() {
+  if (sessionClock.expiresAt === null) return;
+  const next = Date.now() + sessionClock.idleMs;
+  sessionClock.expiresAt = sessionClock.absoluteAt === null ? next : Math.min(next, sessionClock.absoluteAt);
+  sessionClock.lastPing = Date.now();
+  renderSessionBadge();
+}
+async function pingActivity() {
+  if (!state.proof || !state.csrf || sessionClock.pinging) return;
+  sessionClock.pinging = true;
+  sessionClock.lastPing = Date.now();
+  try { applySessionInfo(await request('/api/auth/session', { headers: { 'X-Session-Activity': 'user' } })); }
+  catch { /* 401 already returned to the login */ }
+  finally { sessionClock.pinging = false; }
+}
+function markActivity() {
+  sessionClock.lastInput = Date.now();
+  if (Date.now() - sessionClock.lastPing >= ACTIVITY_PING_MS) pingActivity();
+}
+for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart']) document.addEventListener(type, markActivity, { capture: true, passive: true });
+function renderSessionBadge() {
+  const badge = $('session');
+  if (!badge) return;
+  const left = sessionClock.expiresAt === null || !state.proof ? null : sessionClock.expiresAt - Date.now();
+  if (left === null || left > WARN_BEFORE_MS) { badge.hidden = true; badge.textContent = ''; return; }
+  const minutes = Math.max(0, Math.ceil(left / 60_000));
+  const ceiling = sessionClock.absoluteAt !== null && sessionClock.absoluteAt <= sessionClock.expiresAt;
+  badge.textContent = ceiling ? `Sessão termina em ${minutes} min (limite de 12 h)` : `Sessão expira em ${minutes} min sem atividade`;
+  badge.title = ceiling ? 'A sessão local dura no máximo 12 horas. Depois disso, entre de novo com a credencial local.'
+    : 'Sem uso da página (teclado, mouse ou toque) por 30 minutos, a sessão local expira. Qualquer interação a renova.';
+  badge.className = 'badge conn warn';
+  badge.hidden = false;
+}
+setInterval(() => {
+  if (!state.proof || sessionClock.expiresAt === null) return;
+  // Input that arrived inside the throttle window is still reported, once; no input → no signal.
+  if (sessionClock.lastInput > sessionClock.lastPing && Date.now() - sessionClock.lastPing >= ACTIVITY_PING_MS) pingActivity();
+  if (Date.now() >= sessionClock.expiresAt) { get('/api/auth/session').then(applySessionInfo).catch(() => {}); return; } // the server decides
+  renderSessionBadge();
+}, 15_000);
+
+// A new tab of this same origin reuses the session of an open tab: the proof travels only over a same-origin
+// BroadcastChannel (never the URL, the cookie or storage shared with other ports). Without an open tab, log in again.
+const SESSION_PROOF = /^[A-Za-z0-9_-]{22,128}$/;
+const peers = typeof BroadcastChannel === 'function' ? new BroadcastChannel('cockpit-session') : null;
+let offerWaiter = null;
+if (peers) peers.onmessage = event => {
+  const message = event.data || {};
+  if (message.type === 'request' && state.proof && state.csrf) peers.postMessage({ type: 'offer', proof: state.proof });
+  else if (message.type === 'offer' && offerWaiter) offerWaiter(message.proof);
+  else if (message.type === 'logout' && state.proof) get('/api/auth/session').catch(() => {}); // 401 → login, if it was ours
+};
+function adoptPeerSession(exclude) {
+  if (!peers) return Promise.resolve(null);
+  return new Promise(resolve => {
+    const timer = setTimeout(() => { offerWaiter = null; resolve(null); }, 400);
+    offerWaiter = proof => {
+      if (typeof proof !== 'string' || !SESSION_PROOF.test(proof) || proof === exclude) return;
+      clearTimeout(timer); offerWaiter = null; resolve(proof);
+    };
+    peers.postMessage({ type: 'request' });
+  });
+}
+function useProof(proof) {
+  state.proof = proof;
+  try { sessionStorage.setItem('cockpit_session_proof', proof); } catch {}
+}
+let recovering = false;
+/** 401: another open tab may hold a newer session (it logged in again); otherwise back to the login form. */
+async function sessionLost() {
+  const failed = state.proof;
+  showLogin();
+  if (recovering || !failed) return;
+  recovering = true;
+  try {
+    const proof = await adoptPeerSession(failed);
+    if (proof && !state.proof) { useProof(proof); await init(); }
+  } finally { recovering = false; }
+}
 
 function stopStream() { if (state.stream) { state.stream.abort(); state.stream = null; } }
 function showLogin() {
   stopStream();
   state.csrf = null; state.proof = null; state.dashboard = null;
+  sessionClock.expiresAt = null; renderSessionBadge();
   try { sessionStorage.removeItem('cockpit_session_proof'); } catch {}
   $('login').hidden = false; $('logout').hidden = true; $('app').hidden = true; $('refresh').hidden = true; $('live').hidden = true;
   $('agents').replaceChildren(); $('attention').replaceChildren(); $('conversation').replaceChildren();
@@ -125,10 +226,15 @@ for (const tab of document.querySelectorAll('.tabs button')) tab.addEventListene
 setPane('session');
 
 async function init() {
-  if (!state.proof) { showLogin(); return; }
+  if (!state.proof) {
+    const proof = await adoptPeerSession(null);
+    if (!proof) { showLogin(); return; }
+    useProof(proof);
+  }
   try {
     const session = await get('/api/auth/session');
     state.csrf = session.csrf;
+    applySessionInfo(session);
     showApp();
     await loadDashboard();
     connectStream();
@@ -146,8 +252,9 @@ $('login').addEventListener('submit', async event => {
     const response = await fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential }) });
     if (!response.ok) throw new Error('login_failed');
     const session = await response.json();
-    state.csrf = session.csrf; state.proof = session.proof;
-    try { sessionStorage.setItem('cockpit_session_proof', state.proof); } catch {}
+    state.csrf = session.csrf; useProof(session.proof);
+    sessionClock.lastPing = Date.now();
+    try { applySessionInfo(await get('/api/auth/session')); } catch {}
     clearError();
     showApp();
     await loadDashboard();
@@ -163,6 +270,7 @@ $('logout').addEventListener('click', async () => {
   if (!state.csrf) return;
   try {
     await post('/api/auth/logout', {});
+    if (peers) peers.postMessage({ type: 'logout' });
     showLogin();
   } catch (error) {
     if (error.status === 401) {
@@ -506,9 +614,52 @@ async function loadSession(withHistory) {
 const HISTORY_NOTE = 'Histórico registrado pelo Cockpit: mostra o que o Cockpit observou nesta sessão. Saídas de ferramentas não são armazenadas.';
 // Renders one history item and indexes it by id, so a later live event for the same item replaces it instead of duplicating it.
 function historyNode(item) {
-  const node = renderItem(item);
+  // A history page read before an answer completed must not replace the completed text this page already shows.
+  const completed = item.id && state.completedItems.get(item.id);
+  if (completed && item.kind === 'agent_message' && (completed.text || '').length > (item.text || '').length) item = completed;
+  if (item.id && item.kind === 'agent_message' && !item.incomplete) state.historyText.set(item.id, item.text || '');
+  const streamed = item.id && state.streamed.get(item.id);
+  // An answer still streaming: the persisted prefix joined with what this page already received (never shorter, never twice).
+  const node = streamed && streamed.sessionId === state.sessionId ? liveNode(item.id) : renderItem(item);
   if (item.id) state.liveItems.set(item.id, node);
   return node;
+}
+
+// ---------------------------------------------------------------- F1 (L5): streamed text survives history reloads
+const MAX_STREAMED_ITEMS = 64;
+const MAX_STREAMED_CHARS = 256 * 1024;
+/**
+ * Joins a persisted prefix with streamed text that may start before, at or after the prefix's end. Overlaps shorter than
+ * MIN_OVERLAP are not trusted (a shared space or letter is not evidence); then the two are only concatenated. Any residual
+ * gap is transient: the completed item or the end-of-run history replaces the text.
+ */
+const MIN_OVERLAP = 8;
+function mergeText(persisted, streamed) {
+  if (!persisted) return streamed;
+  if (streamed.startsWith(persisted)) return streamed;
+  if (persisted.startsWith(streamed)) return persisted;
+  for (let k = Math.min(persisted.length, streamed.length) - 1; k >= MIN_OVERLAP; k--) {
+    if (persisted.endsWith(streamed.slice(0, k))) return persisted + streamed.slice(k);
+  }
+  return persisted + streamed;
+}
+function liveNode(itemId) {
+  const entry = state.streamed.get(itemId);
+  return el('li', mergeText(state.historyText.get(itemId) || '', entry ? entry.text : ''), 'msg agent live');
+}
+function recordDelta(event) {
+  let entry = state.streamed.get(event.itemId);
+  if (!entry) {
+    if (state.streamed.size >= MAX_STREAMED_ITEMS) state.streamed.delete(state.streamed.keys().next().value);
+    entry = { sessionId: event.session_id, text: '' };
+    state.streamed.set(event.itemId, entry);
+  }
+  if (entry.text.length < MAX_STREAMED_CHARS) entry.text += String(event.delta || '');
+}
+function forgetStreamed(sessionId) { for (const [id, entry] of state.streamed) if (entry.sessionId === sessionId) state.streamed.delete(id); }
+function remember(collection, key, value) {
+  if (collection instanceof Map) collection.set(key, value); else collection.add(key);
+  if (collection.size > 512) collection.delete(collection.keys().next().value);
 }
 function olderButton(sessionId, cursor) {
   const li = el('li', '', 'msg note older');
@@ -531,11 +682,21 @@ async function loadHistory() {
     if (state.sessionId !== sessionId) return;
     conversation.replaceChildren();
     state.liveItems.clear();
+    state.historyText.clear();
     const caps = state.sessionData && state.sessionData.session && state.sessionData.session.capabilities;
     if (caps && caps.history === 'cockpit') conversation.append(el('li', HISTORY_NOTE, 'msg note memory'));
     if (page.next_cursor) conversation.append(olderButton(sessionId, page.next_cursor));
     for (const item of page.items) conversation.append(historyNode(item));
-    if (!page.items.length) conversation.append(el('li', 'Sessão sem mensagens ainda.', 'msg note'));
+    // Answers this page is receiving that the history does not contain yet (a provider that does not persist partials).
+    let streaming = 0;
+    for (const [id, entry] of state.streamed) {
+      if (entry.sessionId !== sessionId || state.liveItems.has(id)) continue;
+      const node = liveNode(id);
+      state.liveItems.set(id, node);
+      conversation.append(node);
+      streaming++;
+    }
+    if (!page.items.length && !streaming) conversation.append(el('li', 'Sessão sem mensagens ainda.', 'msg note'));
   } catch (error) {
     if (error.status === 401) return;
     conversation.replaceChildren(el('li', `Histórico indisponível (${error.code}). A execução continua sendo acompanhada ao vivo.`, 'msg note'));
@@ -718,18 +879,35 @@ async function refreshAll() {
 function onJournal(event) {
   scheduleRefresh();
   // A run that ended — including one that became "não confirmado" — is redrawn from the persisted history (incomplete items).
+  if (event.payload && (TERMINAL.has(event.payload.to) || event.payload.to === 'unknown')) {
+    forgetStreamed(event.session_id);
+    if (event.run_id) remember(state.endedRuns, event.run_id); // late deltas of an ended run are ignored
+  }
   if (event.session_id === state.sessionId && event.payload && (TERMINAL.has(event.payload.to) || event.payload.to === 'unknown')) {
     setTimeout(() => { if (state.sessionId === event.session_id) loadHistory(); }, 300);
   }
 }
 function onLive(event) {
+  // Deltas are recorded for every visible session (bounded), so switching sessions mid-answer loses nothing.
+  if (event.kind === 'delta' && event.itemId && !state.completedItems.has(event.itemId) && !state.endedRuns.has(event.run_id)) recordDelta(event);
+  if (event.kind === 'item' && event.phase === 'completed' && event.item && event.item.id) {
+    state.streamed.delete(event.item.id);
+    remember(state.completedItems, event.item.id, event.item);
+  }
   if (event.session_id !== state.sessionId) return;
   const conversation = $('conversation');
   if (conversation.firstChild && conversation.firstChild.classList.contains('note') && conversation.children.length === 1) conversation.replaceChildren();
   if (event.kind === 'delta') {
-    let node = state.liveItems.get(event.itemId);
-    if (!node) { node = el('li', '', 'msg agent live'); state.liveItems.set(event.itemId, node); conversation.append(node); }
-    node.textContent += event.delta;
+    if (!state.streamed.has(event.itemId)) return; // late delta of an answer already completed
+    const existing = state.liveItems.get(event.itemId);
+    if (existing && existing.classList.contains('live')) {
+      const entry = state.streamed.get(event.itemId);
+      existing.textContent = mergeText(state.historyText.get(event.itemId) || '', entry.text);
+    } else {
+      const node = liveNode(event.itemId);
+      if (existing) existing.replaceWith(node); else conversation.append(node);
+      state.liveItems.set(event.itemId, node);
+    }
   } else if (event.kind === 'item') {
     const item = event.item;
     if (item.kind === 'user_message') return; // already shown on send

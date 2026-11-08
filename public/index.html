@@ -12,6 +12,7 @@
   </div>
   <span id="source" class="badge" role="status">Carregando…</span>
   <span id="live" class="badge conn" role="status" aria-live="polite" hidden>offline</span>
+  <span id="session" class="badge conn warn" role="status" aria-live="polite" hidden></span>
   <span class="spacer"></span>
   <button id="refresh" type="button" class="ghost" hidden title="Atualizar agora">Atualizar</button>
   <button id="logout" type="button" class="ghost" hidden>Sair</button>
@@ -23,7 +24,7 @@
     <img class="wordmark" src="/brand/wordmark.png" width="600" height="190" alt="Engineering Cockpit — The Aviation Engineering Command">
   </div>
   <h1>Acesso local</h1>
-  <p class="muted">Digite a credencial definida em <code>COCKPIT_LOCAL_TOKEN</code> ao iniciar o Cockpit.</p>
+  <p class="muted">Digite a credencial local: o arquivo de token do serviço (<code>./scripts/cockpit service token-path</code>) ou <code>COCKPIT_LOCAL_TOKEN</code>.</p>
   <label for="credential">Credencial local</label>
   <input id="credential" type="password" autocomplete="off" required>
   <button type="submit" class="primary">Entrar</button>

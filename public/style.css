@@ -226,7 +226,7 @@ select { cursor: pointer; }
 .s-awaiting_approval { --c: var(--ec-warning); }                      /* warning: needs the operator */
 .s-completed { --c: var(--ec-success); }                              /* success */
 .s-failed, .s-blocked, .s-unknown { --c: var(--ec-error); }           /* error / attention */
-.s-interrupted, .s-idle, .s-offline { --c: var(--ec-paused); }        /* paused / idle */
+.s-interrupted, .s-idle, .s-offline, .s-unsupported { --c: var(--ec-paused); }        /* paused / idle */
 .dot[class*="s-"] { background: var(--c); box-shadow: 0 0 7px -1px var(--c); }
 .chip[class*="s-"] { color: var(--c); background: color-mix(in srgb, var(--c) 11%, transparent); border-color: color-mix(in srgb, var(--c) 42%, transparent); }
 /* Shape carries the state too, so colour is never the only cue: ▶ running, ◇ needs you, ■ error, ● done, ○ queued/idle, ◌ unconfirmed. */
@@ -238,7 +238,8 @@ select { cursor: pointer; }
 .s-prepared.chip::before, .s-idle.chip::before, .s-offline.chip::before, .s-interrupted.chip::before { background: transparent; border: 1.5px solid var(--c); border-radius: 50%; }
 .chip.s-unknown { border-style: dashed; } /* not confirmed ≠ failed: same alert colour, uncertain outline and a dashed ring */
 .s-unknown.chip::before { background: transparent; border: 1.5px dashed var(--c); border-radius: 50%; }
-.s-idle.dot, .s-offline.dot, .s-interrupted.dot { box-shadow: none; }
+.s-idle.dot, .s-offline.dot, .s-interrupted.dot, .s-unsupported.dot { box-shadow: none; }
+.s-unsupported.chip::before { background: transparent; border: 1.5px solid var(--c); border-radius: 1px; } /* not operable ≠ stopped: hollow square */
 .s-working.dot, .s-running.dot { animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .dot { animation: none !important; } * { transition: none !important; } }
@@ -322,6 +323,7 @@ select { cursor: pointer; }
   .topbar .brand { grid-area: 1 / 1; } .topbar #logout { grid-area: 1 / 2; } .topbar .spacer { display: none; }
   .topbar #source { grid-area: 2 / 1; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.3; justify-self: start; max-width: 100%; }
   .topbar #live { grid-area: 2 / 2; }
+  .topbar #session { grid-area: 3 / 1 / 4 / 3; justify-self: start; } /* only near expiry; a third row instead of squeezing the second */
   .small { font-size: .85rem; } .card .where, .agent .meta { font-size: .8rem; }
   .agent .meta { white-space: normal; }
   .run-bar { padding: 8px 12px; } .run-bar button { min-height: 36px; }

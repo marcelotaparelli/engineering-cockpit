@@ -16,17 +16,22 @@ const sessionData = (runs: unknown[] = [], approvals: unknown[] = []) => ({ sess
 
 type Call = { method: string; path: string; headers: Record<string, string>; body: string | null };
 type Reply = { status: number; body: unknown } | Error | "stream";
-type Router = (call: Call) => Reply | undefined;
+type Router = (call: Call) => Reply | undefined | Promise<Reply | undefined>;
+/** What `/api/auth/session` answers (F1: deadlines of the sliding session). Tests may replace it. */
+let sessionReply: () => { status: number; body: unknown } = () => ({ status: 200, body: { csrf: "csrf-synthetic", expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+  absolute_expires_at: new Date(Date.now() + 12 * 3_600_000).toISOString(), idle_timeout_seconds: 1800 } });
 
-async function withUi(router: Router, run: (ui: Window, calls: Call[], push: (block: string) => void) => Promise<void>, storage: Record<string, string> = { cockpit_session_proof: "synthetic" }) {
+async function withUi(router: Router, run: (ui: Window, calls: Call[], push: (block: string) => void) => Promise<void>, storage: Record<string, string> = { cockpit_session_proof: "synthetic" },
+  setup: (ui: Window, sessionCalls: Call[]) => void = () => {}) {
   const ui = new Window({ url: "http://127.0.0.1:12345/", settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true } });
   const calls: Call[] = [];
+  const sessionCalls: Call[] = [];
   const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
   ui.fetch = (async (input: unknown, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) => {
     const call = { method: init.method ?? "GET", path: String(input), headers: init.headers ?? {}, body: init.body ?? null };
-    if (call.path === "/api/auth/session") return new ui.Response(JSON.stringify({ csrf: "csrf-synthetic" }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (call.path === "/api/auth/session") { sessionCalls.push(call); const r = sessionReply(); return new ui.Response(JSON.stringify(r.body), { status: r.status, headers: { "Content-Type": "application/json" } }); }
     calls.push(call);
-    const reply = router(call);
+    const reply = await router(call);
     if (reply === undefined) throw new Error(`unexpected_fetch ${call.method} ${call.path}`);
     if (reply instanceof Error) throw reply;
     if (reply === "stream") {
@@ -35,6 +40,7 @@ async function withUi(router: Router, run: (ui: Window, calls: Call[], push: (bl
     }
     return new ui.Response(JSON.stringify(reply.body), { status: reply.status, headers: { "Content-Type": "application/json" } });
   }) as typeof ui.fetch;
+  setup(ui, sessionCalls);
   ui.document.write(html);
   for (const [key, value] of Object.entries(storage)) ui.sessionStorage.setItem(key, value);
   const push = (block: string) => { for (const controller of streams) controller.enqueue(new TextEncoder().encode(block)); };
@@ -606,4 +612,257 @@ test("v1.1: state chips carry a shape cue and the simulation badge a dashed outl
   for (const state of ["s-running", "s-awaiting_approval", "s-failed", "s-completed", "s-unknown", "s-idle"]) expect(css).toContain(`.${state}.chip::before`);
   expect(css).toMatch(/\.badge\.sim[^}]*dashed/);
   expect(css).toMatch(/\.conn\.bad::before/);
+});
+
+// ---------------------------------------------------------------- F1 (L5): live stream vs history reload
+const delta = (text: string, itemId = "a1", session = "ses-1") => `event: live\ndata: ${JSON.stringify({ kind: "delta", session_id: session, run_id: "run-l5", itemId, delta: text })}\n\n`;
+const runningRun = { run_id: "run-l5", session_id: "ses-1", status: "running", provider_bound: true, reason_code: null, metrics: {} };
+const liveText = (ui: Window) => [...ui.document.querySelectorAll("#conversation .msg.agent")].map(node => node.textContent).join("|");
+
+test("F1 (L5): a history reload in the middle of a streamed answer keeps its first characters (item not yet in history)", async () => {
+  const router = defaultRouter(call => call.path === "/api/sessions/ses-1" ? { status: 200, body: sessionData([runningRun]) } : undefined);
+  await withUi(router, async (ui, _calls, push) => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    push(delta("Olá, ")); push(delta("eu sou "));
+    await settle();
+    click(ui.document.querySelector(".agent")); // reselecting reloads the history while the answer streams
+    await settle();
+    push(delta("o agente"));
+    await settle();
+    expect(liveText(ui)).toBe("resposta anterior|Olá, eu sou o agente");
+  });
+});
+
+test("F1 (L5): deltas that arrive while the history request is in flight are not lost; the persisted prefix is merged, never duplicated", async () => {
+  let release: (() => void) | null = null;
+  let historyCalls = 0;
+  const router = defaultRouter(call => {
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([runningRun]) };
+    if (call.path === "/api/sessions/ses-1/history" && ++historyCalls === 2) {
+      // The server read the persisted partial ("Olá, ") before the next deltas were streamed.
+      return new Promise(resolve => { release = () => resolve({ status: 200, body: { items: [{ id: "a1", runId: "run-l5", kind: "agent_message", text: "Olá, " }], runs: [], next_cursor: null } }); });
+    }
+    return undefined;
+  });
+  await withUi(router, async (ui, _calls, push) => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    push(delta("Olá, "));
+    await settle();
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    push(delta("eu sou ")); // in flight
+    await settle();
+    release!();
+    await settle();
+    push(delta("o agente"));
+    await settle();
+    expect(liveText(ui)).toBe("Olá, eu sou o agente");
+  });
+});
+
+test("F1 (L5): a page opened mid-answer joins the persisted prefix with the overlapping live text; completion replaces it once", async () => {
+  const router = defaultRouter(call => {
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([runningRun]) };
+    if (call.path === "/api/sessions/ses-1/history") return { status: 200, body: { items: [{ id: "a1", runId: "run-l5", kind: "agent_message", text: "Olá, eu sou" }], runs: [], next_cursor: null } };
+    return undefined;
+  });
+  await withUi(router, async (ui, _calls, push) => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    push(delta(" o agente"));
+    await settle();
+    expect(liveText(ui)).toBe("Olá, eu sou o agente");
+    push(`event: live\ndata: ${JSON.stringify({ kind: "item", phase: "completed", session_id: "ses-1", run_id: "run-l5", item: { id: "a1", runId: "run-l5", kind: "agent_message", text: "Olá, eu sou o agente." } })}\n\n`);
+    await settle();
+    expect(liveText(ui)).toBe("Olá, eu sou o agente.");
+    expect(ui.document.querySelectorAll("#conversation .msg.live").length).toBe(0);
+    push(delta("tarde demais")); // a stray delta after completion must not resurrect a second copy
+    await settle();
+    expect(ui.document.querySelectorAll("#conversation .msg.agent").length).toBe(1);
+  });
+});
+
+test("F1 (L5): deltas of another session are kept, so switching back mid-answer loses nothing", async () => {
+  const vm2 = { ...vm, vm_name: "codex-lab", project: "lab", session_id: "ses-2" };
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: dashboard({ vms: [vm, vm2], sessions: [...dashboard().sessions as unknown[], { session_id: "ses-2", project: "lab", vm_name: "codex-lab", thread_id: "thread-0002", last_activity: new Date().toISOString(), latest_run: null, state: "working" }] }) };
+    if (call.path === "/api/vms/codex-lab/threads") return { status: 200, body: { vm_name: "codex-lab", threads: [] } };
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([runningRun]) };
+    if (call.path === "/api/sessions/ses-2") return { status: 200, body: { session: { session_id: "ses-2" }, runs: [], approvals: [] } };
+    if (call.path === "/api/sessions/ses-2/history") return { status: 200, body: { items: [], runs: [], next_cursor: null } };
+    return undefined;
+  });
+  await withUi(router, async (ui, _calls, push) => {
+    click(ui.document.querySelector('.agent[data-vm="codex-demo"]'));
+    await settle();
+    push(delta("Primeira "));
+    await settle();
+    click(ui.document.querySelector('.agent[data-vm="codex-lab"]'));
+    await settle();
+    push(delta("parte, "));
+    await settle();
+    click(ui.document.querySelector('.agent[data-vm="codex-demo"]'));
+    await settle();
+    push(delta("segunda parte"));
+    await settle();
+    expect(liveText(ui)).toBe("resposta anterior|Primeira parte, segunda parte");
+  });
+});
+
+// ---------------------------------------------------------------- F1 (L2): sliding session in the page
+const activityCalls = (sessionCalls: Call[]) => sessionCalls.filter(call => call.headers["X-Session-Activity"] !== undefined);
+const withSession = async (reply: typeof sessionReply, body: () => Promise<void>) => {
+  const previous = sessionReply; sessionReply = reply;
+  try { await body(); } finally { sessionReply = previous; }
+};
+const sessionIn = (idleMs: number, absoluteMs = 12 * 3_600_000) => () => ({ status: 200, body: { csrf: "csrf-synthetic", expires_at: new Date(Date.now() + idleMs).toISOString(),
+  absolute_expires_at: new Date(Date.now() + absoluteMs).toISOString(), idle_timeout_seconds: 1800 } });
+
+test("F1: only real input sends the activity signal (throttled); stream events, refreshes and polling never do", async () => {
+  let sessions: Call[] = [];
+  await withUi(defaultRouter(), async (ui, _calls, push) => {
+    for (let i = 0; i < 3; i++) push(`event: journal\nid: ${10 + i}\ndata: ${JSON.stringify({ sequence: 10 + i, type: "run.transition", session_id: "ses-1", payload: { to: "running" } })}\n\n`);
+    await settle(400);
+    expect(activityCalls(sessions)).toHaveLength(0);
+    ui.document.dispatchEvent(new ui.KeyboardEvent("keydown", { key: "a" }));
+    await settle();
+    expect(activityCalls(sessions)).toHaveLength(1);
+    expect(activityCalls(sessions)[0]!.headers["X-Session-Activity"]).toBe("user");
+    expect(activityCalls(sessions)[0]!.headers["X-Session-Proof"]).toBe("synthetic");
+    ui.document.dispatchEvent(new ui.PointerEvent("pointerdown"));
+    ui.document.dispatchEvent(new ui.KeyboardEvent("keydown", { key: "b" }));
+    await settle();
+    expect(activityCalls(sessions)).toHaveLength(1); // at most one signal per minute
+  }, undefined, (_ui, sessionCalls) => { sessions = sessionCalls; });
+});
+
+test("F1: the session badge stays hidden until 5 minutes before expiry and says which limit applies", async () => {
+  await withSession(sessionIn(20 * 60_000), async () => {
+    await withUi(defaultRouter(), async ui => { expect(ui.document.getElementById("session")!.hasAttribute("hidden")).toBe(true); });
+  });
+  await withSession(sessionIn(3 * 60_000), async () => {
+    await withUi(defaultRouter(), async ui => {
+      const badge = ui.document.getElementById("session")!;
+      expect(badge.hasAttribute("hidden")).toBe(false);
+      expect(badge.textContent).toBe("Sessão expira em 3 min sem atividade");
+      expect(badge.className).toContain("warn");
+    });
+  });
+  await withSession(sessionIn(4 * 60_000, 4 * 60_000), async () => {
+    await withUi(defaultRouter(), async ui => { expect(ui.document.getElementById("session")!.textContent).toBe("Sessão termina em 4 min (limite de 12 h)"); });
+  });
+});
+
+const PROOF = "proof_0123456789abcdefghijklmnop"; // shape of a real session proof (22–128 base64url chars)
+/** Same-origin BroadcastChannel stand-in shared by the windows of one test (happy-dom has none). */
+function channelFactory() {
+  const members = new Set<{ onmessage: ((event: { data: unknown }) => void) | null }>();
+  const posted: unknown[] = [];
+  class FakeChannel {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    constructor(readonly name: string) { members.add(this); }
+    postMessage(data: unknown) { posted.push(data); for (const member of members) if (member !== this) setTimeout(() => member.onmessage?.({ data: structuredClone(data) }), 0); }
+    close() { members.delete(this); }
+  }
+  return { FakeChannel, posted };
+}
+
+test("F1: a new tab reuses the open tab's session over the same-origin channel; without an open tab it asks for login", async () => {
+  const { FakeChannel, posted } = channelFactory();
+  const inject = (ui: Window) => { (ui as unknown as { BroadcastChannel: unknown }).BroadcastChannel = FakeChannel; };
+  await withUi(defaultRouter(), async () => {
+    await withUi(defaultRouter(), async (tab, calls) => {
+      await settle(500);
+      expect(tab.document.getElementById("login")!.hasAttribute("hidden")).toBe(true);
+      expect(tab.document.getElementById("app")!.hasAttribute("hidden")).toBe(false);
+      expect(tab.sessionStorage.getItem("cockpit_session_proof")).toBe(PROOF);
+      expect(calls.find(call => call.path === "/api/dashboard")!.headers["X-Session-Proof"]).toBe(PROOF);
+    }, {}, inject);
+  }, { cockpit_session_proof: PROOF }, inject);
+  expect(posted).toContainEqual({ type: "offer", proof: PROOF });
+
+  const alone = channelFactory();
+  await withUi(defaultRouter(), async (tab, calls) => {
+    await settle(500);
+    expect(tab.document.getElementById("login")!.hasAttribute("hidden")).toBe(false);
+    expect(calls).toEqual([]);
+  }, {}, ui => { (ui as unknown as { BroadcastChannel: unknown }).BroadcastChannel = alone.FakeChannel; });
+});
+
+test("F1: logging out in one tab returns the other tabs of that session to the login form", async () => {
+  const { FakeChannel } = channelFactory();
+  const inject = (ui: Window) => { (ui as unknown as { BroadcastChannel: unknown }).BroadcastChannel = FakeChannel; };
+  const router = defaultRouter(call => call.method === "POST" && call.path === "/api/auth/logout" ? { status: 200, body: { status: "logged_out" } } : undefined);
+  await withUi(router, async other => {
+    await withUi(router, async tab => {
+      await settle(500);
+      sessionReply = () => ({ status: 401, body: { error: { code: "authentication_required" } } });
+      click(tab.document.getElementById("logout"));
+      await settle(200);
+      expect(tab.document.getElementById("login")!.hasAttribute("hidden")).toBe(false);
+      expect(other.document.getElementById("login")!.hasAttribute("hidden")).toBe(false);
+      expect(other.sessionStorage.getItem("cockpit_session_proof")).toBeNull();
+    }, {}, inject);
+  }, { cockpit_session_proof: PROOF }, inject).finally(() => { sessionReply = sessionIn(30 * 60_000); });
+});
+
+test("F1 (L6): a VM the Cockpit does not operate reads 'Sem suporte' with its reason, not 'Offline'/'VM parada'", async () => {
+  const reserved = { ...vm, vm_name: "claude-engineering-cockpit", project: "engineering-cockpit", provider: "claude", runnable: false, state: "unsupported", unsupported: "reserved",
+    next_step: "Reservada em COCKPIT_RESERVED_VMS", session_id: null };
+  const router = defaultRouter(call => call.path === "/api/dashboard" ? { status: 200, body: dashboard({ vms: [vm, reserved] }) } : undefined);
+  await withUi(router, async ui => {
+    const node = ui.document.querySelector('.agent[data-vm="claude-engineering-cockpit"]')!;
+    expect(node.textContent).toContain("Sem suporte");
+    expect(node.textContent).toContain("VM ligada");
+    expect(node.textContent).toContain("COCKPIT_RESERVED_VMS");
+    expect(node.textContent).not.toContain("Offline");
+    expect(node.querySelector(".chip")!.className).toContain("s-unsupported");
+    expect((node as unknown as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+test("F1 (L5, review): overlap is merged only with real evidence; a history read before completion never replaces the completed text", async () => {
+  let historyText = "Primeira frase longa. Segunda";
+  const router = defaultRouter(call => {
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([runningRun]) };
+    if (call.path === "/api/sessions/ses-1/history") return { status: 200, body: { items: [{ id: "a1", runId: "run-l5", kind: "agent_message", text: historyText }], runs: [], next_cursor: null } };
+    return undefined;
+  });
+  await withUi(router, async (ui, _calls, push) => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    push(delta("frase longa. Segunda frase.")); // joined mid-answer: 20+ characters of genuine overlap
+    await settle();
+    expect(liveText(ui)).toBe("Primeira frase longa. Segunda frase.");
+    push(`event: live\ndata: ${JSON.stringify({ kind: "item", phase: "completed", session_id: "ses-1", run_id: "run-l5", item: { id: "a1", runId: "run-l5", kind: "agent_message", text: "Primeira frase longa. Segunda frase. Fim." } })}\n\n`);
+    await settle();
+    historyText = "Primeira frase longa. Segunda frase."; // a page read before the completion was persisted
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    expect(liveText(ui)).toBe("Primeira frase longa. Segunda frase. Fim.");
+  });
+});
+
+test("F1 (L5, review): a delta arriving after its run ended does not resurrect a fragment", async () => {
+  let status = "running";
+  const router = defaultRouter(call => {
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([{ ...runningRun, status }]) };
+    if (call.path === "/api/sessions/ses-1/history") return { status: 200, body: { items: status === "running" ? [] : [{ id: "a1", runId: "run-l5", kind: "agent_message", text: "Resposta parcial", incomplete: true }], runs: [], next_cursor: null } };
+    return undefined;
+  });
+  await withUi(router, async (ui, _calls, push) => {
+    click(ui.document.querySelector(".agent"));
+    await settle();
+    push(delta("Resposta parcial"));
+    await settle();
+    status = "interrupted";
+    push(`event: journal\ndata: ${JSON.stringify({ session_id: "ses-1", run_id: "run-l5", payload: { to: "interrupted" } })}\n\n`);
+    push(delta(" tardia")); // late delta, after the terminal event
+    await settle(600);
+    expect(liveText(ui)).toContain("Resposta parcial");
+    expect(liveText(ui)).not.toContain("tardia");
+    expect(ui.document.querySelectorAll("#conversation .msg.agent").length).toBe(1);
+  });
 });
