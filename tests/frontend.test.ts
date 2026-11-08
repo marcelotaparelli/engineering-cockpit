@@ -3,6 +3,8 @@ import { Window } from "happy-dom";
 
 const html = await Bun.file(new URL("../public/index.html", import.meta.url)).text();
 const javascript = await Bun.file(new URL("../public/app.js", import.meta.url)).text();
+/** The page's own brand images (static markup). Data must never add any image beyond these. */
+const staticImages = (html.match(/<img\b/g) ?? []).length;
 
 const vm = { vm_name: "codex-demo", project: "demo", provider: "codex", vm_state: "running", orphaned: false, runnable: true, state: "idle",
   next_step: "Abrir sessão e enviar prompt", session_id: "ses-1", run_id: null, last_activity: null, sessions: 1 };
@@ -154,7 +156,7 @@ test("attention inbox decides an approval with its exact expected version; conte
   await withUi(router, async ui => {
     expect(ui.document.getElementById("attention-count")!.textContent).toBe("1");
     expect(ui.document.getElementById("attention")!.textContent).toContain(markup);
-    expect(ui.document.querySelectorAll("img").length).toBe(0);
+    expect(ui.document.querySelectorAll("img").length).toBe(staticImages);
     click([...ui.document.querySelectorAll("#attention button")].find(node => node.textContent === "Aprovar"));
     await settle();
     expect(JSON.parse(decision!.body!)).toEqual({ decision: "approve", expected_version: 3 });
@@ -365,7 +367,7 @@ test("E3: a Claude question is answered from the inbox by option or free text; n
     const inbox = ui.document.getElementById("attention")!;
     expect(inbox.textContent).toContain("O agente pergunta");
     expect(inbox.textContent).toContain(markup);
-    expect(ui.document.querySelectorAll("img").length).toBe(0);
+    expect(ui.document.querySelectorAll("img").length).toBe(staticImages);
     const inputs = [...inbox.querySelectorAll("input")] as unknown as HTMLInputElement[];
     expect(inputs.map(input => input.type)).toEqual(["radio", "radio", "checkbox", "checkbox"]);
     expect(inputs.some(input => input.checked)).toBe(false);
@@ -544,4 +546,21 @@ test("E4: an unknown run says what failed (VM stopped) and a reconcile without e
     expect(error).toContain("continua não confirmado");
     expect(calls.some(call => call.method === "POST" && call.path.endsWith("/runs"))).toBe(false); // nothing resent
   }, { cockpit_session_proof: "synthetic", cockpit_view: JSON.stringify({ vm: "codex-demo", sessionId: "ses-1" }) });
+});
+
+// ---------------------------------------------------------------- brand identity
+test("brand: the page's only images are the approved brand rasters, with text alternatives where they carry the name", () => {
+  const sources = [...html.matchAll(/<img\b[^>]*\bsrc="([^"]+)"[^>]*>/g)].map(match => [match[1], /\balt="([^"]*)"/.exec(match[0])?.[1]] as const);
+  expect(sources.length).toBe(staticImages);
+  for (const [src] of sources) expect(src).toMatch(/^\/brand\/(emblem|mark|lockup|wordmark)\.png$/);
+  expect(sources.filter(([src]) => src === "/brand/lockup.png" || src === "/brand/wordmark.png").every(([, alt]) => (alt ?? "").includes("Engineering Cockpit"))).toBe(true);
+  expect(html).toContain('<link rel="icon" type="image/png" href="/brand/favicon.png">');
+});
+
+test("brand: design tokens in CSS match the documented token file (palette of the approved board)", async () => {
+  const css = await Bun.file(new URL("../public/style.css", import.meta.url)).text();
+  const tokens = await Bun.file(new URL("../assets/brand/tokens.json", import.meta.url)).json() as { color: Record<string, string> };
+  expect(tokens.color).toMatchObject({ "ec-steel": "#d9dee6", "ec-deep-navy": "#0a1a2e", "ec-charcoal": "#11161f", "ec-forge-blue": "#1f76ff" });
+  for (const [name, value] of Object.entries(tokens.color)) expect(css).toContain(`--${name}: ${value};`);
+  expect(css).not.toMatch(/@import|url\(\s*["']?(https?:|\/\/)/); // no external asset
 });
