@@ -30,6 +30,8 @@ export interface ExecutionOptions {
   /** Per-install secret for HMAC digests of prompts/actions (kept outside the database). */
   digestKey?: Uint8Array;
   log?: (entry: ExecutionLog) => void;
+  /** Re-persist interval of streamed partial text (E3.1/E4). Default 1000 ms. */
+  partialFlushMs?: number;
 }
 
 export interface ApprovalView extends ApprovalRecord {
@@ -55,6 +57,8 @@ interface PartialText { text: string; flushedAt: number; flushedLength: number }
 interface ActiveRun {
   runId: string; session: SessionRecord; live: Live; providerRunId: string | null; buffer: ProviderEvent[]; errorClass?: ProviderErrorClass;
   partials?: Map<string, PartialText>;
+  /** Trailing flush of partial text when the stream pauses (tool use, approval, slow model): a kill loses at most one interval. */
+  partialTimer?: ReturnType<typeof setTimeout> | undefined;
 }
 /** Partial agent text is re-persisted at most this often while streaming (a hard kill loses at most this much). */
 const PARTIAL_FLUSH_MS = 1000;
@@ -98,6 +102,7 @@ export class ExecutionService {
   readonly #approvalTtlMs: number;
   readonly #digestKey: Uint8Array;
   readonly #log: (entry: ExecutionLog) => void;
+  readonly #partialFlushMs: number;
   readonly #connections = new Map<string, Promise<Live>>();
   readonly #lives = new Map<string, Live>();
   readonly #active = new Map<string, ActiveRun>(); // key: vm \0 providerSessionId
@@ -119,6 +124,8 @@ export class ExecutionService {
     this.#approvalTtlMs = options.approvalTtlMs ?? 12 * 60 * 60_000;
     this.#digestKey = options.digestKey ?? randomBytes(32);
     this.#log = options.log ?? (entry => console.log(JSON.stringify(entry)));
+    this.#partialFlushMs = options.partialFlushMs ?? PARTIAL_FLUSH_MS;
+    if (!Number.isSafeInteger(this.#partialFlushMs) || this.#partialFlushMs < 1) throw new SafeError("invalid_partial_flush_interval");
     // A prepared run whose prompt was lost with the previous process was never sent: fail it explicitly.
     for (const run of this.#store.runsWithStatus(["prepared"])) {
       this.#move(run.runId, "failed", { reasonCode: "not_dispatched_before_restart" });
@@ -578,8 +585,19 @@ export class ExecutionService {
       active.partials.set(itemId, partial);
     }
     if (partial.text.length < 64 * 1024 + 1) partial.text += delta;
-    // The first chunk is written at once so the message keeps its place in the conversation; then at most once a second.
-    if (partial.flushedLength === 0 || Date.now() - partial.flushedAt >= PARTIAL_FLUSH_MS) this.#writePartial(active, itemId, partial);
+    // The first chunk is written at once so the message keeps its place in the conversation; then at most once per interval.
+    const elapsed = Date.now() - partial.flushedAt;
+    if (partial.flushedLength === 0 || elapsed >= this.#partialFlushMs) { this.#writePartial(active, itemId, partial); return; }
+    // E4: the tail must not wait for the NEXT delta — a stream that pauses (tool call, approval, slow model) would keep it in
+    // memory indefinitely and a crash would lose it. One trailing write per interval, cancelled when the run ends.
+    if (!active.partialTimer) {
+      active.partialTimer = setTimeout(() => {
+        active.partialTimer = undefined;
+        if (this.#active.get(this.#key(active.live.vmName, active.session.providerSessionId)) !== active || !active.partials) return;
+        for (const [id, value] of active.partials) this.#writePartial(active, id, value);
+      }, Math.max(1, this.#partialFlushMs - elapsed));
+      (active.partialTimer as { unref?: () => void }).unref?.();
+    }
   }
 
   #writePartial(active: ActiveRun, itemId: string, partial: PartialText): void {
@@ -591,6 +609,7 @@ export class ExecutionService {
 
   /** The run is ending (any way): whatever was streamed and not completed is kept, marked incomplete on read. */
   #flushPartials(active: ActiveRun): void {
+    if (active.partialTimer) { clearTimeout(active.partialTimer); active.partialTimer = undefined; }
     if (!active.partials) return;
     for (const [itemId, partial] of active.partials) this.#writePartial(active, itemId, partial);
     active.partials.clear();
