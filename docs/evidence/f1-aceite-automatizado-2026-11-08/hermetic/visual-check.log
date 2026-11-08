@@ -1,0 +1,23 @@
+PASS 1. login visível antes de autenticar
+PASS 1. formulário de login some após autenticar
+PASS 2. discovery lista VMs agrupadas por projeto
+PASS credencial não aparece no DOM nem no storage
+PASS SSE conectado (badge ao vivo)
+PASS 3. seleção do agente e abertura de sessão
+PASS 4. streaming em tempo real aparece na conversa
+PASS 4. execução concluída e histórico renderizado
+PASS Precisa de você mostra a aprovação com contagem
+PASS 5. layout 1440px sem overflow horizontal
+PASS 5. 1440px mostra as três áreas
+PASS 5. 1440px editor fixo visível no viewport
+PASS 5. layout 1024px sem overflow horizontal
+PASS 5. 1024px mostra as três áreas
+PASS 5. 1024px editor fixo visível no viewport
+PASS 5. layout 390px sem overflow horizontal
+PASS 5. 390px mostra uma área por vez com abas
+PASS 5. 390px editor fixo visível no viewport
+PASS aprovação decidida pela inbox e execução concluída
+PASS 6. refresh restaura sessão e histórico sem novo envio — runs 2 → 2
+PASS interromper pelo botão
+PASS sem erros de JavaScript/CSP no console
+PASS 7. logs sem credencial nem prompts

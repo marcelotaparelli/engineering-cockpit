@@ -40,7 +40,7 @@ Os dois últimos comandos da tabela (smoke e prova F1-P1) usam **unit, porta, da
 | `tests/support/cockpit-process.ts` | o Cockpit **real** (`src/index.ts`, modo mock) como processo filho, reiniciável na mesma porta e dados; cliente de API |
 | `tests/support/mock-cockpit.ts` | o Cockpit mock composto em processo, com limites de sessão sob controle do teste (a produção não tem variável para isso) |
 | `scripts/f1-browser-acceptance.ts` | 52 checagens em Chromium real: Claude (AskUserQuestion, aprovar, rejeitar, interromper, contexto), contadores e invariantes, `kill -9` e SIGTERM reais do Cockpit, e a vida da sessão com **timers reais** (30 s ociosa / 50 s de teto no lugar de 30 min / 12 h) |
-| `src/f1-acceptance-real.ts` + `tests/f1-acceptance-real.test.ts` | o tier real somente leitura (13 checagens + 1 opcional) e 6 testes com o serviço simulado |
+| `src/f1-acceptance-real.ts` + `tests/f1-acceptance-real.test.ts` | o tier real somente leitura (unit carregada, privilégios, credencial fora do processo, só loopback, 3 sondas HTTP sem login, modos do `data/`, journal, mais o `doctor` do serviço; com `--with-login`: contadores, órfãos e journal exato) e 6 testes com o serviço simulado |
 | `src/f1-systemd-smoke.ts` (estendido) + `tests/f1-orphan-proof.test.ts` | modo de prova F1-P1 (4 checagens extras, opt-in) e **o primeiro teste de ponta a ponta do smoke inteiro** (7 testes, com gerenciador systemd e `msb` simulados) |
 | `scripts/f1-acceptance.ts` (`./scripts/cockpit f1-accept`) | o orquestrador dos dois tiers acima |
 | `tests/f1-acceptance-matrix.test.ts` | garante que esta matriz não apodrece (§4) |
@@ -90,12 +90,46 @@ Referências entre crases são verificadas pelo teste da matriz: `arquivo` preci
 
 ## 5. Evidências produzidas
 
-Preenchido após a execução, em [`docs/evidence/f1-aceite-automatizado-2026-11-08/`](evidence/f1-aceite-automatizado-2026-11-08/) (relatório do runner hermético, resultados da suíte de navegador com capturas, saída dos testes novos). Nada ali foi executado no Arch: ver §6.
+Em [`docs/evidence/f1-aceite-automatizado-2026-11-08/`](evidence/f1-aceite-automatizado-2026-11-08/), todas **executadas automaticamente nesta VM de desenvolvimento (Debian, Bun 1.4.4, Chromium, modo mock)**, no commit `4717946` com a árvore limpa:
+
+| Evidência | Resultado |
+| --- | --- |
+| `hermetic/report.md` (`./scripts/cockpit f1-accept hermetic`, 2 min 10 s) | **PASS**: typecheck limpo; **363 pass / 0 fail** (345 anteriores + 18 novos); drill E4 PASS; `visual-check` 23/23; `brand-visual-check` 23/23; `f1-visual-check` 12/12; **`f1-browser-acceptance` 52/52**; `artifact --check` PASS |
+| `hermetic/f1-browser-acceptance/` | `results.json` e capturas: pergunta do Claude, aprovar e rejeitar, login após `kill -9`, run não confirmado, aviso de sessão, expiração, quase no teto |
+| `new-tests.txt` | os 3 arquivos novos: 18 pass (tier real somente leitura, prova F1-P1 e smoke ponta a ponta com simuladores, matriz) |
+| `real-readonly-debian-vm/` | `real-readonly` rodado **nesta VM**, que não tem systemd de usuário: resultado **NOT_VERIFIED** (`systemd_user_manager_unavailable`, exit 2), como projetado. Prova que o runner não inventa PASS; **não** é evidência sobre o serviço do Arch |
+
+A suíte de navegador completa passou **4 vezes seguidas** (3 no desenvolvimento e 1 dentro do runner final) depois de duas correções do próprio script: um teste lia o contador `runs_dispatched` cedo demais (ele é incrementado quando a escrita ao provedor retorna, o que num turno simulado muito rápido pode ocorrer depois de o turno acabar; agora espera estabilizar), e dois Cockpits mock no mesmo perfil de navegador sobrescreviam o cookie um do outro (o cookie `cockpit_session` **não é isolado por porta**; os cenários usam um navegador por Cockpit).
 
 ## 6. O que **não** foi executado (honestidade)
 
-PENDENTE_RESULTADOS
+- **Nada rodou no Arch.** O `real-readonly` contra o serviço instalado, o `--with-login`, o smoke F1-D e a **prova F1-P1** foram escritos e testados **só com simuladores** (gerenciador systemd falso, `msb` falso, serviço HTTP falso, processos `sleep` no lugar dos filhos `msb`). Esses testes provam a lógica do runner (sequência, recusas, limpeza, que só comandos de leitura são emitidos, que o login cria e revoga uma única sessão). **Não provam** que um filho `msb` real sobrevive a um SIGKILL real sob o systemd, nem o formato exato de `systemctl show` no systemd do Arch.
+- **Provedores simulados.** Codex e Claude falsos reproduzem o contrato, não o comportamento real. As formas `UNVERIFIED` de `src/claude-protocol.ts` continuam atestadas só pelo operador. O App Server falso guarda as threads na memória do processo, então o histórico **do provedor** não pode ser provado após reinício em modo hermético.
+- **Timers em escala.** A vida da sessão em navegador usa 30 s ociosa / 50 s de teto (a produção não tem variável para isso, de propósito). As constantes reais (30 min, 12 h) são verificadas por testes HTTP com relógio injetado. A janela de aviso (5 min) está sempre ativa no cenário reduzido.
+- **Só Chromium.** Firefox, também citado na F1, não é coberto.
+- **Revisão independente:** o código novo **não** passou por revisão independente (só autoverificação e testes). Ele é de teste e de leitura, mas o modo F1-P1 envia um prompt real quando confirmado: vale uma leitura antes da primeira execução.
+- Execuções interrompidas durante o desenvolvimento deixaram diretórios temporários `cockpit-chromium-*`, `cockpit-accept-*` e `cockpit-mock-inproc-*` em `/tmp` desta VM. Uma varredura foi negada pelo ambiente e **não** foi feita. São inofensivos (sem credencial real, sem processo vivo).
 
-## 7. Parecer
+### Lacunas que ainda exigem um humano
 
-PENDENTE_PARECER
+| Item | Por quê não dá para automatizar | O que o runner já ajuda a fazer |
+| --- | --- | --- |
+| F1-26 um dia de uso real em ≥ 2 projetos, sem terminal | é a definição de "uso real" (§7 F1, §8.1) | ao fim do dia, `COCKPIT_F1_ACCEPT_CONFIRMED=yes ./scripts/cockpit f1-accept real-readonly --with-login` confere contadores, órfãos e journal em um comando |
+| F1-16/F1-27 órfãos reais (F1-P1) | exige o Arch, o systemd real, um `msb` real e **1 prompt real** (quota) | `f1-systemd-smoke` com `COCKPIT_SMOKE_ORPHAN_PROOF=yes COCKPIT_SMOKE_QUOTA_CONFIRMED=yes`, **só** na unit isolada. Decisão do operador |
+| F1-27 queda com **Claude real** | é a F2 (L8), fora da F1 | — |
+| F1-30 revisão da política de sessão pelo Codex | o Codex CLI não está logado | existe a revisão do Claude (`docs/evidence/f1-review-claude.md`) |
+| F1-31 trocar o Cockpit do terminal pelo serviço sobre o `data/` em uso (§6 C) | altera o serviço de uso diário e exige a cópia do `data/` | `real-readonly` confere o resultado depois |
+| F1-34 `enable`/linger (sobe com a sessão) | exige reiniciar a sessão do usuário | o `doctor` já informa `habilitado` e linger |
+| F1-35 rotação da credencial do serviço real | muda a credencial em uso | hermético coberto |
+| F1-32 arquivar o registro em `docs/evidence/f1-arch.md` | decisão e atestado do operador | `report.json` traz commit, árvore e resultado por passo |
+
+## 7. Parecer GO / NO-GO para o aceite automatizado da F1
+
+**GO condicional.**
+
+- **Camada hermética: GO.** Executada e verde no commit `4717946`: tudo o que o aceite F1 pede e que não depende do host real passou, incluindo o que antes só o operador via no navegador (pergunta do Claude, aprovar e rejeitar, `kill -9` do Cockpit com a interface aberta, run não confirmado sem reenvio, expiração e teto da sessão com timers reais). Dos 35 itens da matriz, 28 têm estado `AUTO` (executados aqui; em 4 deles, F1-10, F1-11, F1-25 e F1-28, falta a confirmação no serviço instalado do Arch pelo `real-readonly`), 1 é `AUTO+ARCH` (F1-16, a prova de órfãos), 1 é `ATESTADO` (F1-15, o smoke já aceito), 1 está pendente (F1-27) e 4 dependem de um humano ou de terceiros (F1-26, F1-30, F1-31, F1-34).
+- **Camada real: NO-GO até a primeira execução no Arch.** Não declare o aceite automatizado concluído antes de `./scripts/cockpit f1-accept real-readonly` retornar **PASS** no Arch com o serviço instalado (sem autorização especial, não altera nada) e de `hermetic` retornar PASS no checkout do Arch.
+- **F1-P1 continua aberto** e é decisão do operador (1 prompt real, VM de teste). Sem ela, o risco residual já aceito pelo Tech Lead excepcionalmente permanece como está.
+- **Fora do aceite automatizado, por natureza:** o dia de uso real (F1-26), a revisão do Codex (F1-30), a troca do serviço sobre o `data/` em uso (F1-31) e `enable`/linger (F1-34).
+
+**Condições para virar GO pleno:** (1) `hermetic` PASS no Arch; (2) `real-readonly` PASS no Arch; (3) leitura independente do modo F1-P1 antes de autorizá-lo; (4) F1-P1 executada, ou o risco residual reaceito por escrito; (5) o dia de uso e o registro em `docs/evidence/f1-arch.md`.

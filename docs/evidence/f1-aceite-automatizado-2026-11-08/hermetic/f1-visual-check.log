@@ -1,0 +1,12 @@
+PASS login com a credencial do arquivo 0600
+PASS L6: VM reservada (COCKPIT_RESERVED_VMS) = Sem suporte, com o motivo
+PASS L6: provider sem suporte (opencode) = Sem suporte
+PASS L5: após recarregar o histórico durante o stream, o texto já exibido continua no início — antes 13 caracteres, depois 94
+PASS L5: resposta final única e começando pelo texto do stream — 177 caracteres
+PASS nova aba reaproveita a sessão (sem novo login)
+PASS nova aba usa a mesma prova, só em sessionStorage
+PASS sem erros de JavaScript/CSP no console até o logout
+PASS logout numa aba devolve a outra aba ao login
+PASS credencial fora do DOM e do storage
+PASS após o logout, só as respostas 401 esperadas no console — Failed to load resource: the server responded with a status of 401 (Unauthorized)
+PASS logs sem credencial nem prompts

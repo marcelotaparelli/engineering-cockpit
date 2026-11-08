@@ -1,0 +1,8 @@
+F1 acceptance — REAL host, READ-ONLY tier
+It reads the installed service (systemctl show, /proc, journal, its loopback port). It starts, stops, signals and writes nothing there (only its own report, under .cache/).
+
+NOT_VERIFIED preconditions                systemd_user_manager_unavailable
+
+overall: NOT_VERIFIED; state changed: none
+report: /worktrees/cockpit-f1-accept/docs/evidence/f1-aceite-automatizado-2026-11-08/real-readonly-debian-vm/report.json
+exit=2

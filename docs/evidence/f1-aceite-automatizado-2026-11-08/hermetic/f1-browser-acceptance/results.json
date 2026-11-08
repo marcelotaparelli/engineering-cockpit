@@ -1,0 +1,351 @@
+{
+  "at": "2026-11-08T23:35:32.050Z",
+  "mode": "hermetic-browser",
+  "chromium": "chromium",
+  "overall": "PASS",
+  "passed": 52,
+  "failed": 0,
+  "results": [
+    {
+      "id": "A1",
+      "matrix": "F1-10",
+      "check": "login com a credencial lida de arquivo 0600",
+      "pass": true
+    },
+    {
+      "id": "A2",
+      "matrix": "F1-22",
+      "check": "VM Claude (claude-demo) é operável: sessão nova disponível",
+      "pass": true
+    },
+    {
+      "id": "A3",
+      "matrix": "F1-23",
+      "check": "AskUserQuestion aparece como pergunta com as opções, sem nenhuma pré-selecionada",
+      "pass": true
+    },
+    {
+      "id": "A4",
+      "matrix": "F1-23",
+      "check": "responder sem escolher é recusado na interface e a pergunta continua aberta",
+      "pass": true
+    },
+    {
+      "id": "A5",
+      "matrix": "F1-23",
+      "check": "a resposta volta ao agente: o turno conclui com a resposta do agente",
+      "pass": true
+    },
+    {
+      "id": "A6",
+      "matrix": "F1-22",
+      "check": "ferramenta Bash pede aprovação com o comando visível",
+      "pass": true
+    },
+    {
+      "id": "A7",
+      "matrix": "F1-25",
+      "check": "sem ação do operador a aprovação não se resolve sozinha (1,5 s depois ainda aberta e o run aguardando)",
+      "pass": true
+    },
+    {
+      "id": "A8",
+      "matrix": "F1-22",
+      "check": "aprovar: o turno conclui e o agente informa a execução",
+      "pass": true
+    },
+    {
+      "id": "A9",
+      "matrix": "F1-22",
+      "check": "rejeitar: o turno conclui e o agente informa a recusa",
+      "pass": true
+    },
+    {
+      "id": "A10",
+      "matrix": "F1-24",
+      "check": "interromper o Claude pelo botão",
+      "pass": true
+    },
+    {
+      "id": "A11",
+      "matrix": "F1-22",
+      "check": "a sessão continua depois da interrupção e preserva o contexto",
+      "pass": true
+    },
+    {
+      "id": "A12",
+      "matrix": "F1-25",
+      "check": "runs enviados = prompts digitados (6), nenhum duplicado",
+      "pass": true,
+      "detail": "runs_dispatched=6"
+    },
+    {
+      "id": "A13",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade dispatch_failed = 0",
+      "pass": true,
+      "detail": "dispatch_failed=0"
+    },
+    {
+      "id": "A14",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade dispatch_unconfirmed = 0",
+      "pass": true,
+      "detail": "dispatch_unconfirmed=0"
+    },
+    {
+      "id": "A15",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade dispatch_blocked_orphan = 0",
+      "pass": true,
+      "detail": "dispatch_blocked_orphan=0"
+    },
+    {
+      "id": "A16",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade transport_lost = 0",
+      "pass": true,
+      "detail": "transport_lost=0"
+    },
+    {
+      "id": "A17",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade provider_session_lost = 0",
+      "pass": true,
+      "detail": "provider_session_lost=0"
+    },
+    {
+      "id": "A18",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade vm_stopped = 0",
+      "pass": true,
+      "detail": "vm_stopped=0"
+    },
+    {
+      "id": "A19",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade approval_delivery_unconfirmed = 0",
+      "pass": true,
+      "detail": "approval_delivery_unconfirmed=0"
+    },
+    {
+      "id": "A20",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade transitions_rejected = 0",
+      "pass": true,
+      "detail": "transitions_rejected=0"
+    },
+    {
+      "id": "A21",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade transcript_write_failed = 0",
+      "pass": true,
+      "detail": "transcript_write_failed=0"
+    },
+    {
+      "id": "A22",
+      "matrix": "F1-25",
+      "check": "contador de confiabilidade reconcile_unconfirmed = 0",
+      "pass": true,
+      "detail": "reconcile_unconfirmed=0"
+    },
+    {
+      "id": "A23",
+      "matrix": "F1-25",
+      "check": "sem processo órfão, sem run ativo e sem aprovação pendente ao fim",
+      "pass": true,
+      "detail": "orphans=0 active=0 handles=0 attention=0"
+    },
+    {
+      "id": "A24",
+      "matrix": "F1-25",
+      "check": "o histórico persistido tem cada prompt exatamente uma vez",
+      "pass": true,
+      "detail": "user_message=6"
+    },
+    {
+      "id": "A25",
+      "matrix": "F1-28",
+      "check": "sem erros de JavaScript/CSP no console durante os fluxos",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "id": "A26",
+      "matrix": "F1-28",
+      "check": "logs do Cockpit sem credencial nem prompts",
+      "pass": true
+    },
+    {
+      "id": "C1",
+      "matrix": "F1-22",
+      "check": "Claude: execução concluída",
+      "pass": true
+    },
+    {
+      "id": "C2",
+      "matrix": "F1-24",
+      "check": "Claude: resposta parcial já chegou à tela quando o Cockpit cai",
+      "pass": true
+    },
+    {
+      "id": "C3",
+      "matrix": "F1-08",
+      "check": "kill -9 do Cockpit (processo real): encerrado por sinal",
+      "pass": true,
+      "detail": "signal=SIGKILL"
+    },
+    {
+      "id": "C4",
+      "matrix": "F1-08",
+      "check": "a aba aberta volta ao login (sessões revogadas no reinício)",
+      "pass": true
+    },
+    {
+      "id": "C5",
+      "matrix": "F1-08",
+      "check": "a credencial não fica na tela nem no storage após a queda",
+      "pass": true
+    },
+    {
+      "id": "C6",
+      "matrix": "F1-22",
+      "check": "histórico persistido: o prompt anterior à queda aparece uma única vez",
+      "pass": true,
+      "detail": "ocorrências=1"
+    },
+    {
+      "id": "C7",
+      "matrix": "F1-24",
+      "check": "o run cortado pela queda aparece como Não confirmado, com a resposta parcial preservada e marcada",
+      "pass": true,
+      "detail": " lento lento lento lento lento lento lento lento lento lento lento lento lento lento lento lento leResposta incompleta: a execução terminou antes de concluí-la."
+    },
+    {
+      "id": "C8",
+      "matrix": "F1-24",
+      "check": "reconciliar sem evidência explica por que continua não confirmado",
+      "pass": true,
+      "detail": "Reconciliação sem evidência: Este agente só confirma uma execução pelo processo que a executava, e esse processo não existe mais (queda ou r"
+    },
+    {
+      "id": "C9",
+      "matrix": "F1-24",
+      "check": "o estado não foi promovido a sucesso nem falha sem evidência",
+      "pass": true
+    },
+    {
+      "id": "C10",
+      "matrix": "F1-24",
+      "check": "nada foi reenviado: a sessão tem exatamente 2 runs (concluído + cortado)",
+      "pass": true,
+      "detail": "runs=2"
+    },
+    {
+      "id": "C11",
+      "matrix": "F1-24",
+      "check": "Codex: o run em voo na queda é unknown depois do reinício",
+      "pass": true,
+      "detail": "status=unknown"
+    },
+    {
+      "id": "C12",
+      "matrix": "F1-24",
+      "check": "Codex: o run Não confirmado aparece em 'Precisa de você' e a interface o mostra",
+      "pass": true
+    },
+    {
+      "id": "C13",
+      "matrix": "F1-24",
+      "check": "Codex: 'Abrir e reconciliar' abre a sessão do run com o botão Reconciliar",
+      "pass": true
+    },
+    {
+      "id": "C14",
+      "matrix": "F1-13",
+      "check": "SIGTERM: saída ordenada com status 0",
+      "pass": true,
+      "detail": "code=0"
+    },
+    {
+      "id": "C15",
+      "matrix": "F1-28",
+      "check": "logs de todas as vidas do Cockpit sem credencial nem prompts",
+      "pass": true
+    },
+    {
+      "id": "D1",
+      "matrix": "F1-04",
+      "check": "o aviso de expiração aparece (faltam menos de 5 min) e diz que é por inatividade",
+      "pass": true,
+      "detail": "Sessão expira em 1 min sem atividade"
+    },
+    {
+      "id": "D2",
+      "matrix": "F1-03",
+      "check": "leituras (polling) não deslocam o prazo de ociosidade",
+      "pass": true,
+      "detail": "2026-11-08T23:35:02.354Z → 2026-11-08T23:35:02.354Z"
+    },
+    {
+      "id": "D3",
+      "matrix": "F1-03",
+      "check": "entrada real do operador (tecla) renova o prazo no servidor",
+      "pass": true,
+      "detail": "2026-11-08T23:35:02.354Z → 2026-11-08T23:35:05.701Z"
+    },
+    {
+      "id": "D4",
+      "matrix": "F1-03",
+      "check": "depois do prazo original, a sessão renovada continua ativa",
+      "pass": true
+    },
+    {
+      "id": "D5",
+      "matrix": "F1-01",
+      "check": "sem atividade, a aba volta ao login depois do prazo renovado (a página consulta a cada 15 s)",
+      "pass": true,
+      "detail": "46 s após o login; prazo 34 s"
+    },
+    {
+      "id": "D6",
+      "matrix": "F1-05",
+      "check": "ao expirar, o stream ao vivo fecha e o painel é limpo",
+      "pass": true
+    },
+    {
+      "id": "D7",
+      "matrix": "F1-05",
+      "check": "o servidor recusa a prova expirada (401)",
+      "pass": true
+    },
+    {
+      "id": "D8",
+      "matrix": "F1-02",
+      "check": "com atividade contínua (6 mutações e teclas) a sessão segue ativa antes do teto",
+      "pass": true,
+      "detail": "49 s"
+    },
+    {
+      "id": "D9",
+      "matrix": "F1-02",
+      "check": "o prazo efetivo nunca passa do teto absoluto",
+      "pass": true,
+      "detail": "2026-11-08T23:35:22.302Z ≤ 2026-11-08T23:35:22.302Z"
+    },
+    {
+      "id": "D10",
+      "matrix": "F1-02",
+      "check": "no teto absoluto a sessão termina mesmo com atividade recente, e a página volta ao login",
+      "pass": true,
+      "detail": "60 s (teto 50 s)"
+    },
+    {
+      "id": "D11",
+      "matrix": "F1-28",
+      "check": "sem erros de JavaScript inesperados (só 401 de sessão encerrada)",
+      "pass": true,
+      "detail": "Failed to load resource: the server responded with a status of 401 (Unauthorized) | Failed to load resource: the server responded with a status of 401 (Unauthorized) | Failed to load resource: the ser"
+    }
+  ]
+}

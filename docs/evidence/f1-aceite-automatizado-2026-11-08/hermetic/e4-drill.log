@@ -1,0 +1,109 @@
+{
+  "milestone": "E4-homologation",
+  "source": "host",
+  "timestamp": "2026-11-08T23:34:14.342Z",
+  "overall": "PASS",
+  "reason": null,
+  "checks": [
+    {
+      "id": "runtime",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "platform": "linux"
+      }
+    },
+    {
+      "id": "start",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "runtime_ownership": "exclusive",
+        "mode": "mock"
+      }
+    },
+    {
+      "id": "stream_partial",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "persisted_chars": 60
+      }
+    },
+    {
+      "id": "second_instance_refused",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "exit_code": 78,
+        "first_instance_run": "running"
+      }
+    },
+    {
+      "id": "crash_restart",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "status": "unknown",
+        "reason": "process_restarted"
+      }
+    },
+    {
+      "id": "partial_preserved",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "chars_seen_before_kill": 117,
+        "chars_after_restart": 117,
+        "incomplete": true
+      }
+    },
+    {
+      "id": "no_resend",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "prompts_in_history": 1,
+        "runs_in_session": 1,
+        "retry_replayed": true
+      }
+    },
+    {
+      "id": "reconcile_conservative",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "status": "unknown",
+        "reason": "provider_cannot_confirm"
+      }
+    },
+    {
+      "id": "attention_visible",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "kind": "unknown_run",
+        "reason": "process_restarted"
+      }
+    },
+    {
+      "id": "orderly_shutdown",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "exit_code": 0,
+        "second_signal_logged": false
+      }
+    },
+    {
+      "id": "orphan_ledger",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "orphans_detected": 1,
+        "blocked_while_alive": true,
+        "cleared_after_exit": true
+      }
+    }
+  ]
+}

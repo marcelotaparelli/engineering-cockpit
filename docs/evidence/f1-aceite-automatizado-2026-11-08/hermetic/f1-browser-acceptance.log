@@ -1,0 +1,55 @@
+{"event":"provider.connected","outcome":"0.164.0"}
+PASS [A1/F1-10] login com a credencial lida de arquivo 0600
+PASS [A2/F1-22] VM Claude (claude-demo) é operável: sessão nova disponível
+PASS [A3/F1-23] AskUserQuestion aparece como pergunta com as opções, sem nenhuma pré-selecionada
+PASS [A4/F1-23] responder sem escolher é recusado na interface e a pergunta continua aberta
+PASS [A5/F1-23] a resposta volta ao agente: o turno conclui com a resposta do agente
+PASS [A6/F1-22] ferramenta Bash pede aprovação com o comando visível
+PASS [A7/F1-25] sem ação do operador a aprovação não se resolve sozinha (1,5 s depois ainda aberta e o run aguardando)
+PASS [A8/F1-22] aprovar: o turno conclui e o agente informa a execução
+PASS [A9/F1-22] rejeitar: o turno conclui e o agente informa a recusa
+PASS [A10/F1-24] interromper o Claude pelo botão
+PASS [A11/F1-22] a sessão continua depois da interrupção e preserva o contexto
+PASS [A12/F1-25] runs enviados = prompts digitados (6), nenhum duplicado — runs_dispatched=6
+PASS [A13/F1-25] contador de confiabilidade dispatch_failed = 0 — dispatch_failed=0
+PASS [A14/F1-25] contador de confiabilidade dispatch_unconfirmed = 0 — dispatch_unconfirmed=0
+PASS [A15/F1-25] contador de confiabilidade dispatch_blocked_orphan = 0 — dispatch_blocked_orphan=0
+PASS [A16/F1-25] contador de confiabilidade transport_lost = 0 — transport_lost=0
+PASS [A17/F1-25] contador de confiabilidade provider_session_lost = 0 — provider_session_lost=0
+PASS [A18/F1-25] contador de confiabilidade vm_stopped = 0 — vm_stopped=0
+PASS [A19/F1-25] contador de confiabilidade approval_delivery_unconfirmed = 0 — approval_delivery_unconfirmed=0
+PASS [A20/F1-25] contador de confiabilidade transitions_rejected = 0 — transitions_rejected=0
+PASS [A21/F1-25] contador de confiabilidade transcript_write_failed = 0 — transcript_write_failed=0
+PASS [A22/F1-25] contador de confiabilidade reconcile_unconfirmed = 0 — reconcile_unconfirmed=0
+PASS [A23/F1-25] sem processo órfão, sem run ativo e sem aprovação pendente ao fim — orphans=0 active=0 handles=0 attention=0
+PASS [A24/F1-25] o histórico persistido tem cada prompt exatamente uma vez — user_message=6
+PASS [A25/F1-28] sem erros de JavaScript/CSP no console durante os fluxos
+PASS [A26/F1-28] logs do Cockpit sem credencial nem prompts
+PASS [C1/F1-22] Claude: execução concluída
+PASS [C2/F1-24] Claude: resposta parcial já chegou à tela quando o Cockpit cai
+PASS [C3/F1-08] kill -9 do Cockpit (processo real): encerrado por sinal — signal=SIGKILL
+PASS [C4/F1-08] a aba aberta volta ao login (sessões revogadas no reinício)
+PASS [C5/F1-08] a credencial não fica na tela nem no storage após a queda
+PASS [C6/F1-22] histórico persistido: o prompt anterior à queda aparece uma única vez — ocorrências=1
+PASS [C7/F1-24] o run cortado pela queda aparece como Não confirmado, com a resposta parcial preservada e marcada —  lento lento lento lento lento lento lento lento lento lento lento lento lento lento lento lento leResposta incompleta: a execução terminou antes de concluí-la.
+PASS [C8/F1-24] reconciliar sem evidência explica por que continua não confirmado — Reconciliação sem evidência: Este agente só confirma uma execução pelo processo que a executava, e esse processo não existe mais (queda ou r
+PASS [C9/F1-24] o estado não foi promovido a sucesso nem falha sem evidência
+PASS [C10/F1-24] nada foi reenviado: a sessão tem exatamente 2 runs (concluído + cortado) — runs=2
+PASS [C11/F1-24] Codex: o run em voo na queda é unknown depois do reinício — status=unknown
+PASS [C12/F1-24] Codex: o run Não confirmado aparece em 'Precisa de você' e a interface o mostra
+PASS [C13/F1-24] Codex: 'Abrir e reconciliar' abre a sessão do run com o botão Reconciliar
+PASS [C14/F1-13] SIGTERM: saída ordenada com status 0 — code=0
+PASS [C15/F1-28] logs de todas as vidas do Cockpit sem credencial nem prompts
+PASS [D1/F1-04] o aviso de expiração aparece (faltam menos de 5 min) e diz que é por inatividade — Sessão expira em 1 min sem atividade
+PASS [D2/F1-03] leituras (polling) não deslocam o prazo de ociosidade — 2026-11-08T23:35:02.354Z → 2026-11-08T23:35:02.354Z
+PASS [D3/F1-03] entrada real do operador (tecla) renova o prazo no servidor — 2026-11-08T23:35:02.354Z → 2026-11-08T23:35:05.701Z
+PASS [D4/F1-03] depois do prazo original, a sessão renovada continua ativa
+PASS [D5/F1-01] sem atividade, a aba volta ao login depois do prazo renovado (a página consulta a cada 15 s) — 46 s após o login; prazo 34 s
+PASS [D6/F1-05] ao expirar, o stream ao vivo fecha e o painel é limpo
+PASS [D7/F1-05] o servidor recusa a prova expirada (401)
+PASS [D8/F1-02] com atividade contínua (6 mutações e teclas) a sessão segue ativa antes do teto — 49 s
+PASS [D9/F1-02] o prazo efetivo nunca passa do teto absoluto — 2026-11-08T23:35:22.302Z ≤ 2026-11-08T23:35:22.302Z
+PASS [D10/F1-02] no teto absoluto a sessão termina mesmo com atividade recente, e a página volta ao login — 60 s (teto 50 s)
+PASS [D11/F1-28] sem erros de JavaScript inesperados (só 401 de sessão encerrada) — Failed to load resource: the server responded with a status of 401 (Unauthorized) | Failed to load resource: the server responded with a status of 401 (Unauthorized) | Failed to load resource: the ser
+
+52/52 checks

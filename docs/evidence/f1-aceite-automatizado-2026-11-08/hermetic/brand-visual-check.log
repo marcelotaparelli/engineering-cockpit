@@ -1,0 +1,23 @@
+PASS marca: logos metálicos carregados no login 1440px
+PASS login 1440px sem overflow horizontal
+PASS marca: logos metálicos carregados no login 390px
+PASS login 390px sem overflow horizontal
+PASS favicon e app icon declarados
+PASS AskUserQuestion aparece no formulário da sessão
+PASS inbox não duplica o formulário da sessão selecionada (só ponteiro; contagem global mantida)
+PASS teclado: Enter no ponteiro foca a pergunta da sessão
+PASS foco visível com anel azul
+PASS pergunta respondida e execução concluída
+PASS aprovação de ferramenta com entrada completa
+PASS rejeição pela inbox
+PASS streaming ao vivo
+PASS interrompido
+PASS resposta parcial marcada como incompleta
+PASS processo do agente cai: execução não confirmada
+PASS 1024px sem overflow horizontal
+PASS 768px sem overflow horizontal
+PASS 390px sem overflow horizontal
+PASS 390px: badges do cabeçalho sem truncamento
+PASS 390px: cabeçalho em até 2 linhas (≤ 96px)
+PASS 390px: Reconciliar visível e tocável
+PASS sem erros de JavaScript/CSP no console

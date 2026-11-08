@@ -1,0 +1,58 @@
+{
+  "at": "2026-11-08T23:34:31.105Z",
+  "mode": "mock",
+  "results": [
+    {
+      "check": "login com a credencial do arquivo 0600",
+      "pass": true
+    },
+    {
+      "check": "L6: VM reservada (COCKPIT_RESERVED_VMS) = Sem suporte, com o motivo",
+      "pass": true
+    },
+    {
+      "check": "L6: provider sem suporte (opencode) = Sem suporte",
+      "pass": true
+    },
+    {
+      "check": "L5: após recarregar o histórico durante o stream, o texto já exibido continua no início",
+      "pass": true,
+      "detail": "antes 13 caracteres, depois 94"
+    },
+    {
+      "check": "L5: resposta final única e começando pelo texto do stream",
+      "pass": true,
+      "detail": "177 caracteres"
+    },
+    {
+      "check": "nova aba reaproveita a sessão (sem novo login)",
+      "pass": true
+    },
+    {
+      "check": "nova aba usa a mesma prova, só em sessionStorage",
+      "pass": true
+    },
+    {
+      "check": "sem erros de JavaScript/CSP no console até o logout",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "logout numa aba devolve a outra aba ao login",
+      "pass": true
+    },
+    {
+      "check": "credencial fora do DOM e do storage",
+      "pass": true
+    },
+    {
+      "check": "após o logout, só as respostas 401 esperadas no console",
+      "pass": true,
+      "detail": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "check": "logs sem credencial nem prompts",
+      "pass": true
+    }
+  ]
+}

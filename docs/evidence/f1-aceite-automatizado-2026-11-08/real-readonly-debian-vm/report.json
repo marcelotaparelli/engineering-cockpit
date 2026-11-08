@@ -1,0 +1,14 @@
+{
+  "milestone": "F1-acceptance-real-readonly",
+  "timestamp": "2026-11-08T23:35:46.369Z",
+  "overall": "NOT_VERIFIED",
+  "state_changed": "none",
+  "checks": [
+    {
+      "id": "preconditions",
+      "status": "NOT_VERIFIED",
+      "reason": "systemd_user_manager_unavailable"
+    }
+  ],
+  "commit": "4717946"
+}

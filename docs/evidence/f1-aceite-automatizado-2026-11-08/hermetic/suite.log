@@ -1,0 +1,472 @@
+bun test v1.4.4 (38afee6c8)
+
+tests/m0b-transport.test.ts:
+(pass) incremental JSONL parser > accepts split UTF-8, CRLF, and only object frames [0.49ms]
+(pass) incremental JSONL parser > fixtures reproduce malformed, oversized, invalid UTF-8 and partial EOF [0.77ms]
+(pass) isolated MSB stdio transport > uses exact argv, pipe IO, minimal environment and full-duplex correlation [2.93ms]
+(pass) isolated MSB stdio transport > rejects invalid targets before spawn [0.07ms]
+(pass) isolated MSB stdio transport > deadline retires the ID and a late response fails closed without resolving a newer request [16.88ms]
+(pass) isolated MSB stdio transport > outbound frames use the same byte limit [10.69ms]
+(pass) isolated MSB stdio transport > EOF rejects pending requests and malformed correlation fails closed [23.34ms]
+(pass) isolated MSB stdio transport > stderr is bounded and raw secret never enters the safe error [12.00ms]
+(pass) isolated MSB stdio transport > an unconsumed notification flood is bounded and fails the transport closed [11.93ms]
+(pass) isolated MSB stdio transport > concurrent close is idempotent and bounded when writes and child stall [15.76ms]
+(pass) isolated MSB stdio transport > real sanitized initialize envelope and async notifications interoperate with the adapter [14.66ms]
+(pass) isolated MSB stdio transport > real-shaped 0.164.0 initialize and thread/list interoperate through MSB transport [13.40ms]
+(pass) isolated MSB stdio transport > rejects legacy jsonrpc and ambiguous or malformed Codex envelopes [116.52ms]
+
+tests/host.test.ts:
+(pass) host gate requires opt-in and exact Arch identity, not ID_LIKE [0.32ms]
+(pass) native adapter fails closed here before reaching any msb process [0.56ms]
+
+tests/e3-claude-execution.test.ts:
+(pass) E3: Claude Code on the shared Cockpit infrastructure > dashboard lists Claude next to Codex with capabilities; the reserved dev VM is never runnable; other projects stay hidden [6.90ms]
+(pass) E3: Claude Code on the shared Cockpit infrastructure > open → prompt exactly once (idempotent retry) → streamed → completed with per-run tokens → persisted history [25.00ms]
+(pass) E3: Claude Code on the shared Cockpit infrastructure > tool approval through the shared inbox: approve sends the exact input once; a second decision conflicts [32.05ms]
+(pass) E3: Claude Code on the shared Cockpit infrastructure > agent question answered through the same approval record; approve without answers is refused [32.10ms]
+(pass) E3: Claude Code on the shared Cockpit infrastructure > interrupt through the API ends the run as interrupted and the session keeps working [73.67ms]
+(pass) E3: Claude Code on the shared Cockpit infrastructure > usage limit is shown as a classified failure [15.17ms]
+(pass) E3: Claude Code on the shared Cockpit infrastructure > process death mid-turn → unknown, approvals expired, reconcile cannot confirm, same key never resends [98.62ms]
+(pass) E3: Claude Code on the shared Cockpit infrastructure > a stopped VM is revalidated before every operation: nothing is spawned or sent [1.86ms]
+(pass) E3: Claude Code on the shared Cockpit infrastructure > execution logs carry codes and ids only, never prompts or responses [0.07ms]
+(pass) E3: boundary regressions > answers that do not match the pending questions are refused before any state change [41.03ms]
+(pass) an adapter refusal raised before writing (session handle gone) fails the run instead of leaving it unknown [21.23ms]
+
+tests/e3-homologation.test.ts:
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > ready: ACL is exactly the test project, own port/data/token; running instance's token, port and ACL are not reused [1.75ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > a different ACL in the caller's environment is refused, never silently replaced [0.77ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > gate {
+  COCKPIT_E3_CONFIRMED: undefined,
+} refuses before touching anything (e3_confirmation_required) [0.16ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > gate {
+  COCKPIT_HOST_CONFIRMED: undefined,
+} refuses before touching anything (host_confirmation_required) [0.08ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > gate {
+  COCKPIT_E3_VM: "claude-engineering-cockpit",
+} refuses before touching anything (e2_target_forbidden) [0.08ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > gate {
+  COCKPIT_E3_VM: "codex-cockpit-e2-test",
+} refuses before touching anything (e2_target_not_claude) [0.06ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > gate {
+  COCKPIT_E3_VM: "claude-cockpit-e0-test",
+} refuses before touching anything (e3_target_not_isolated) [0.06ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > gate {
+  COCKPIT_E3_PORT: "8787",
+} refuses before touching anything (e3_port_reserved) [0.07ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > gate {
+  COCKPIT_E3_PORT: "80",
+} refuses before touching anything (e3_port_invalid) [0.06ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > gate {
+  COCKPIT_PROJECTS_BASE: "relative",
+} refuses before touching anything (host_projects_base_required) [0.08ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > non-Arch host is refused [0.18ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > missing project directory, stopped VM, logged-out CLI and busy port each stop the preparation [1.43ms]
+(pass) E3 homologation preparation (isolated Cockpit, explicit authorization) > a symlinked state directory and an invalid explicit token are refused [1.49ms]
+
+tests/f1-acceptance-real.test.ts:
+(pass) a healthy installed service passes, and the tier only ever issues read commands and unauthenticated GETs [14.41ms]
+(pass) each hardening regression it claims to detect is a FAIL; a service that is not running is NOT_VERIFIED, never PASS [56.38ms]
+(pass) preconditions: another platform or no user manager verify nothing [3.53ms]
+(pass) the opt-in login needs the operator's confirmation; with it, exactly one login, one dashboard read and one logout — no run, session or approval [5.45ms]
+(pass) with the login: a non-zero reliability counter, or the credential in the journal, fails the acceptance [10.89ms]
+(pass) listeners(): loopback IPv4/IPv6/v4-mapped, wildcard and foreign addresses are told apart; only LISTEN rows of the port count [0.14ms]
+
+tests/f1-config.test.ts:
+(pass) F1: the credential is read from a private 0600 file; the environment never carries it [0.50ms]
+(pass) F1: missing, insecure, linked, oversized or malformed credential files refuse startup with a code, never the value [1.70ms]
+(pass) F1: token in the environment AND a token file is ambiguous and refused [0.30ms]
+(pass) F1 (D8): COCKPIT_RESERVED_VMS only adds to the always-reserved development VM; invalid names refuse startup [0.21ms]
+(pass) F1 (L6/D8): an observed VM the Cockpit will not operate is `unsupported` with its reason, not `offline`; stopped VMs stay offline [7.86ms]
+(pass) F1 (D8): the configured list reaches the Claude argv guard; the development VM stays refused whatever the list [1.37ms]
+
+tests/e2e-execution.test.ts:
+(pass) MVP vertical flow over HTTP > select VM → open session → send prompt once → stream → completed → history [87.96ms]
+(pass) MVP vertical flow over HTTP > approval inbox: exact request, CSRF, CAS replay no-op, conflict, then turn continues [105.28ms]
+(pass) MVP vertical flow over HTTP > rejecting an approval declines only that request [91.11ms]
+(pass) MVP vertical flow over HTTP > interrupt ends as interrupted only after provider confirmation; one writer per project [6.02ms]
+(pass) MVP vertical flow over HTTP > failed turn is reported as failed with a safe reason [13.53ms]
+(pass) MVP vertical flow over HTTP > E1: unsupported provider request marks the run blocked, shows once in attention, and clears on interrupt [19.75ms]
+(pass) MVP vertical flow over HTTP > structured provider errors keep a specific safe reason code and never persist the raw message [28.97ms]
+(pass) MVP vertical flow over HTTP > transport loss mid-turn becomes unknown, is never resent, and reconcile resolves it [1207.52ms]
+(pass) MVP vertical flow over HTTP > VM revalidation at dispatch: a stopped VM yields zero turns [1.23ms]
+(pass) MVP vertical flow over HTTP > resources of ungranted projects are indistinguishable from missing ones [102.74ms]
+(pass) MVP vertical flow over HTTP > mutations require session, CSRF, idempotency key and exact bodies [3.14ms]
+(pass) MVP vertical flow over HTTP > resume an existing provider thread binds to the same Cockpit session [2.93ms]
+(pass) restart recovery > in-flight runs become unknown and prepared runs fail without dispatch [14.50ms]
+(pass) review regressions > retry with a known key while the VM is down returns the original run (no nudge to re-send) [78.31ms]
+(pass) review regressions > reconcile cannot revive an unknown run while another run is active in the project [7.63ms]
+
+tests/startup.test.ts:
+(pass) real launcher starts and reopens SQLite with no global Bun, no /tmp runtime, foreign CWD and no dotenv loading [136.31ms]
+
+tests/host-check.test.ts:
+(pass) host checker on non-Arch skips every msb and database operation [9.59ms]
+(pass) synthetic end-to-end host check separates automated PASS from manual NOT_VERIFIED [16.25ms]
+(pass) MSB 0.6.8 six-record JSON passes parser, discovery, SQLite reopen and HTTP checks synthetically [12.87ms]
+(pass) observed parse or subprocess failure is FAIL, never NOT_VERIFIED or fabricated empty VMs [15.74ms]
+
+tests/e4-recovery.test.ts:
+(pass) E4: partial responses are durable while the stream pauses > the tail streamed just before a pause is persisted without waiting for another delta [117.14ms]
+(pass) E4: partial responses are durable while the stream pauses > abrupt end of the Cockpit (no orderly close): the restarted store shows the full streamed text as incomplete, run unknown [74.56ms]
+(pass) E4: partial responses are durable while the stream pauses > the trailing write never resurrects a partial after the final message or after the run ended [170.09ms]
+(pass) E4: why a run is unknown (connection, process, VM) > process death while the VM is still running stays provider_session_lost [19.75ms]
+(pass) E4: why a run is unknown (connection, process, VM) > the VM found stopped right after the loss turns the reason into vm_stopped; the status stays unknown [20.41ms]
+(pass) E4: why a run is unknown (connection, process, VM) > a VM that disappeared from discovery is also vm_stopped; a failed discovery changes nothing and is logged [38.82ms]
+(pass) E4: why a run is unknown (connection, process, VM) > refineUnknownReason only sharpens listed reasons of unknown runs [19.47ms]
+(pass) E4: conservative reconciliation > Claude after its process died: unconfirmed (provider_cannot_confirm) without contacting the VM [19.44ms]
+(pass) E4: conservative reconciliation > after a Cockpit restart nothing is spawned to reconcile, nothing is resent, and the run stays unknown [21.76ms]
+(pass) E4: conservative reconciliation > a run whose prompt may have been sent but never got a provider id cannot be looked up: provider_run_unbound [8.20ms]
+(pass) E4: a human decision is never reused or applied to another execution > an approval of an interrupted turn cannot reach the next turn's request in the same process [32.85ms]
+(pass) E4: a human decision is never reused or applied to another execution > approvals do not survive the process that asked: after its death, or after a restart, a decision is refused and nothing is written [43.28ms]
+(pass) E4: a human decision is never reused or applied to another execution > a replayed decision (double click, retried request) is delivered exactly once [20.21ms]
+(pass) E4: logs and metrics never carry content or secrets > a full turn with a secret in the prompt, an approval and a loss leaves only codes, ids and counts in the logs [27.16ms]
+
+tests/m0b1a-smoke.test.ts:
+(pass) M0b.1a Arch smoke > missing consent stops before inventory and transport [1.04ms]
+(pass) M0b.1a Arch smoke > non-Arch and guest facts stop before inventory and transport [0.23ms]
+(pass) M0b.1a Arch smoke > absent and stopped exact targets never create the transport [0.25ms]
+(pass) M0b.1a Arch smoke > success performs only initialize, initialized and bounded thread/list, then closes once [0.48ms]
+(pass) M0b.1a Arch smoke > 0.164.0 passes the same read-only smoke contract and reports the observed version [0.26ms]
+(pass) M0b.1a Arch smoke > session overflow, unsupported version and transport errors fail safely and close [0.47ms]
+(pass) M0b.1a Arch smoke > invalid initialize diagnostics are structured and do not expose UA, path or IDs [0.19ms]
+
+tests/f1-session-http.test.ts:
+(pass) cookie lives up to the 12 h ceiling; session info states both deadlines [2.04ms]
+(pass) polling only (no operator activity): the session ends after 30 min, even with a request every minute [7.14ms]
+(pass) the explicit activity signal renews; any other header value does not [0.81ms]
+(pass) a CSRF-verified mutation renews; a forged or replayed one does not [0.89ms]
+(pass) activity cannot push past the 12 h ceiling [4.43ms]
+(pass) logout revokes at once; a cookie the server never minted (fixation) is refused and login always mints a new one [0.88ms]
+(pass) the live stream does not renew the session and is closed when the idle deadline passes [21.39ms]
+(pass) F1-A over HTTP: 1 250 concurrent mutations (with duplicates) across an epoch boundary — no 429, no double acceptance, critical action still possible, replays refused [145.96ms]
+
+tests/claude-protocol.test.ts:
+(pass) E2 claude protocol (pure) > version parsing is strict [0.05ms]
+(pass) E2 claude protocol (pure) > capability probe reports missing flags by name only [0.15ms]
+(pass) E2 claude protocol (pure) > argv targets only claude VMs, never the dev VM, never bypasses permissions, validates session ids [0.29ms]
+(pass) E2 claude protocol (pure) > outbound frames [0.12ms]
+(pass) E2 claude protocol (pure) > inbound classification: init, deltas, permission, question, result; raw error text never classifies [0.24ms]
+(pass) E2 claude protocol (pure) > local permission denials are parsed structurally (tool, id, reason tag) without message text [0.10ms]
+
+tests/e2-claude-spike.test.ts:
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > read-only stage without the prompt consent spawns only version/help/auth and never a stream session [1.95ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > full real-prompt stage: streaming, same-process turns, interrupt, deny, answer, clean exit, resume [72.00ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > E2 Arch regression: the spike argv routes prompts over stdio; a local CLI deny is a routing FAIL with structural diagnosis [148.40ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > a process that ignores stdin close is killed and the check fails, never left running [471.75ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > missing capability fails by flag name and no prompt is sent [0.78ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > logged-out auth fails before any prompt [0.44ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > refuses without touching anything: {} [0.28ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > refuses without touching anything: {} [0.06ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > refuses without touching anything: {} [0.11ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > refuses without touching anything: {"COCKPIT_E2_VM":"claude-engineering-cockpit"} [0.05ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > refuses without touching anything: {"COCKPIT_E2_VM":"codex-cockpit-e2-test"} [0.06ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > refuses without touching anything: {"COCKPIT_E2_VM":"claude-other-project"} [0.04ms]
+(pass) E2 spike runner against the fake Claude CLI (no quota, no real process) > non-Arch host, absent and stopped target are NOT_VERIFIED without spawning [0.32ms]
+(pass) ClaudeStreamProcess against the fake CLI > quota exhaustion is a classified failed result; stderr content is drained but never surfaced [3.62ms]
+(pass) ClaudeStreamProcess against the fake CLI > a permission request is never auto-answered: the turn waits for an explicit decision [118.10ms]
+(pass) ClaudeStreamProcess against the fake CLI > interrupt during a blocked permission request ends the turn and the process stays usable [60.94ms]
+(pass) ClaudeStreamProcess against the fake CLI > a crashed child ends the stream instead of hanging, and writes then fail safely [50.68ms]
+
+tests/e4-runtime-lease.test.ts:
+(pass) E4: exclusive runtime database > a second instance refuses to start while another process holds the database; the live state is left untouched [21.91ms]
+(pass) E4: exclusive runtime database > once the holder is gone, the next start takes over and recovers exactly once [29.72ms]
+(pass) E4: exclusive runtime database > the Cockpit's own children never count as holders (SQLite descriptors are close-on-exec) [75.09ms]
+(pass) E4: exclusive runtime database > a platform that cannot tell is reported as not verified instead of silently claiming exclusivity [8.50ms]
+
+tests/f1-acceptance-matrix.test.ts:
+(pass) the matrix lists F1-01..F1-35 once each, in order, with six columns [0.18ms]
+(pass) every reference resolves: the file exists and, with #excerpt, contains it [2.72ms]
+(pass) a row whose state is automatic has references; every other state says why in words [0.19ms]
+(pass) every matrix id tagged in the browser acceptance script exists in the matrix, and every browser reference is tagged there [0.29ms]
+(pass) the F1 checklist sources are the ones the matrix cites: the master plan F1 acceptance and the V1 criteria exist [0.13ms]
+
+tests/f1-orphan-proof.test.ts:
+(pass) end to end without the proof: every check passes except the orphan ledger, which is NOT_VERIFIED when no msb child survives the crash [1712.72ms]
+(pass) end to end, a surviving child without the proof: the ledger lists it and the smoke ends it [1808.09ms]
+(pass) F1-P1 proof: refuses to run without BOTH confirmations, and creates nothing [0.73ms]
+(pass) F1-P1 proof: one real turn is started, the crash leaves an orphan, the ledger lists it, a send is refused, ending it releases the block [2411.42ms]
+(pass) F1-P1 proof: a send accepted while an orphan is alive is a FAIL (the block is the whole point) [811.30ms]
+(pass) F1-P1 proof: when no msb child survives, the orphan checks are NOT_VERIFIED (never PASS) and the run is still left unknown [2012.49ms]
+(pass) cleanup is complete after every end-to-end run: no unit file, no work directory, no process left in the cgroup [2427.76ms]
+
+tests/m0a1-security.test.ts:
+(pass) M0a.1 H1: exact consent and Arch identity plus known guest gate [0.23ms]
+(pass) M0a.1 H1 regression: Firecracker and absent/empty DMI are rejected before native spawn [0.61ms]
+(pass) M0a.1 H2: preflight NOT_VERIFIED and parse FAIL neither write inventory nor disclose input [25.86ms]
+(pass) M0a.1 H2: successful override report remains synthetic with fake HTTP and no inventory leaks [14.61ms]
+(pass) M0a.1 H3: copied launcher fixes CWD and runtime precedence, refuses runtime mismatch [14.84ms]
+
+tests/execution-binding.test.ts:
+(pass) events of another turn are never attributed to a run whose turn id is not yet known; bad frames do not drop the VM [73.30ms]
+
+tests/e4-process-ledger.test.ts:
+(pass) E4: process ledger > argv classification: Codex app-server, Claude session (with its id), one-shot Claude command; anything else is ignored [0.41ms]
+(pass) E4: process ledger > a child that exits normally is forgotten; one that outlives its crashed owner becomes an orphan [25.34ms]
+(pass) E4: process ledger > a reused PID (different kernel start time) is never taken for the orphan; a live owner's children are left alone [13.26ms]
+(pass) E4: process ledger > a Codex app-server orphan blocks its whole VM; a one-shot probe orphan blocks nothing [13.36ms]
+(pass) E4: process ledger > in-process doubles (no PID) and ledger write failures never break a spawn [9.32ms]
+(pass) E4: process ledger > an exact v4 database migrates to v5 additively; rows are preserved [21.02ms]
+(pass) E4: a run never starts beside an orphan of its session > refused before anything is created or sent; allowed again once the orphan is gone; visible in the dashboard [34.60ms]
+
+tests/e31-transcript.test.ts:
+(pass) E3.1 sanitization (what is stored) > known credential shapes and secret assignments are redacted; ordinary text is untouched [0.11ms]
+(pass) E3.1 sanitization (what is stored) > tool output is never stored; inputs are reduced to command line and paths, bounded [1081.70ms]
+(pass) E3.1 RuntimeStore transcript > an exact v3 database migrates to v4 additively in one transaction; rows are preserved; altered schemas stay refused [24.02ms]
+(pass) E3.1 RuntimeStore transcript > same item id updates in place (position kept); a completed item is never downgraded by a late partial [7.74ms]
+(pass) E3.1 RuntimeStore transcript > partials of ended or restarted runs read as incomplete; approvals show the approvals table's status [14.92ms]
+(pass) E3.1 RuntimeStore transcript > paging is newest-first with an opaque cursor; bad cursors and limits are refused [8.90ms]
+(pass) E3.1 RuntimeStore transcript > retention: per-session cap, global cap and age limit drop the oldest items only [20.74ms]
+(pass) E3.1 RuntimeStore transcript > a corrupt stored body is reported as corruption, never rendered [6.71ms]
+
+tests/f1-service.test.ts:
+(pass) unit: user service, token never on the command line, conservative restart and kill policy [0.64ms]
+(pass) unit: the restart policy the tests drive (restartsAfter) is the one written in the unit [0.07ms]
+(pass) unit: systemd-analyze verify accepts the rendered unit [33.92ms]
+(pass) install: private files (0700/0600), token only in its file, unit + daemon-reload, never enable or start [5.83ms]
+(pass) install: the operator's current credential can be imported from the environment (never from argv) [5.57ms]
+(pass) install: invalid or unsafe settings are refused before anything is written [7.19ms]
+(pass) settings file: only allowlisted keys; a credential in it is refused [0.16ms]
+(pass) doctor: green after install; flags bad permissions, a credential in the manager, a foreign database owner and a busy port — never the token [49.81ms]
+(pass) rotate-token replaces the credential atomically (0600); uninstall refuses while active and keeps settings, token and data [2.95ms]
+(pass) F1-B: rotate-token rotates the file named in cockpit.env (custom path), never the default one [2.64ms]
+(pass) F1-B: no rotation without a valid, private configuration and credential file — and nothing is created or changed [16.39ms]
+(pass) F1-B: a failed or unverifiable write is rolled back to the previous credential and reported as failed [29.22ms]
+(pass) F1-B: the message about when the rotated credential applies never claims a stopped service when the state is unknown [0.09ms]
+(pass) runtime resolution: PATH wins when it reports the pinned version; otherwise the project-local runtime, also only at the pinned version and executable [7.83ms]
+(pass) a candidate bun that hangs is bounded by a deadline and refused, not waited for [5026.01ms]
+(pass) regression (Arch): a project-local runtime that exists but is the wrong version or not executable is NOT accepted — install, doctor and the launcher agree [4.27ms]
+(pass) a good project-local runtime is accepted without PATH (as on Arch); the unit PATH does not include it; the launcher resolves it [3.57ms]
+(pass) doctor: the bun check FAILs for a service whose only runtime is a project-local one of the wrong version [4.65ms]
+(pass) the real launcher (scripts/cockpit) and resolvePinnedRuntime agree on the same roots — no checkout can pass install yet fail to start [16.49ms]
+
+tests/server.test.ts:
+(pass) binds loopback; public health and assets expose no inventory [1.05ms]
+(pass) explicit login, cookie flags, grants and local project/VM reads [1.69ms]
+(pass) run IDOR is uniform and unknown is read without dispatch [0.96ms]
+(pass) cookie from one tab and proof from another cannot be mixed [0.68ms]
+(pass) logout requires CSRF, unique nonce and revokes only the authenticated session [0.96ms]
+(pass) origin, content type, credential failures and methods fail closed [1.01ms]
+(pass) discovery failure yields 503 without stale inventory [0.37ms]
+(pass) execution routes require CSRF; arbitrary command routes do not exist [1.24ms]
+(pass) brand images: a fixed PNG allowlist served like the page itself; same-origin images only; nothing else under /brand [4.18ms]
+
+tests/claude-adapter.test.ts:
+(pass) Claude Code adapter: connection and process boundary > refuses non-Claude, mismatched and reserved targets before spawning anything [0.19ms]
+(pass) Claude Code adapter: connection and process boundary > initialize is read-only (version, help, auth status), drops identity fields and refuses unsafe CLIs [1.30ms]
+(pass) Claude Code adapter: connection and process boundary > a new session is one gated stream-json process: --session-id, permission-mode default, host prompts, no bypass, minimal env [0.50ms]
+(pass) Claude Code adapter: turns > prompt written exactly once; deltas, final message, per-run usage, completed; transcript kept in memory [72.64ms]
+(pass) Claude Code adapter: turns > Bash approval: the human sees command and full input; approve echoes the exact input once; refs are correlated [31.79ms]
+(pass) Claude Code adapter: turns > file edits and generic tools are classified (file_change / tool) and rejection is a deny [58.00ms]
+(pass) Claude Code adapter: turns > AskUserQuestion: every question must be answered; the answer goes back with the original input [27.24ms]
+(pass) Claude Code adapter: turns > interrupt ends only the current turn as interrupted; the process stays usable [87.74ms]
+(pass) Claude Code adapter: turns > usage limit and errors are classified from structured codes only [6.03ms]
+(pass) Claude Code adapter: turns > thinking is surfaced as reasoning items [16.13ms]
+(pass) Claude Code adapter: fail-closed protocol handling and recovery > an unknown control request gets an error (never success) and the turn continues [16.28ms]
+(pass) Claude Code adapter: fail-closed protocol handling and recovery > a permission request outside any Cockpit turn is denied and never surfaced as an approval [6.14ms]
+(pass) Claude Code adapter: fail-closed protocol handling and recovery > a process that dies mid-turn yields session.lost; the turn is only ever unknown, never replayed [21.01ms]
+(pass) Claude Code adapter: fail-closed protocol handling and recovery > a CLI that reports a non-default permission mode is shut down before any content is trusted [67.21ms]
+(pass) Claude Code adapter: fail-closed protocol handling and recovery > resume hints: never-run sessions reopen by --session-id, sessions with runs by --resume [0.92ms]
+(pass) Claude Code adapter: fail-closed protocol handling and recovery > session limit: an idle process is reaped to make room; a working one never is [100.97ms]
+(pass) Claude Code adapter: fail-closed protocol handling and recovery > turn time limit: interrupt first, then the process is killed if the turn does not end [31.84ms]
+(pass) Claude Code adapter: fail-closed protocol handling and recovery > idle sessions are closed by the reaper and reported, without touching working ones [41.34ms]
+(pass) Claude Code adapter: permission routing (E2 Arch INCONCLUSIVE regression) > the session argv routes prompts to the host over stdio, so Bash and AskUserQuestion reach the operator [37.70ms]
+(pass) Claude Code adapter: permission routing (E2 Arch INCONCLUSIVE regression) > without the stdio route the CLI denies locally: no approval, the tool item is flagged auto_denied, nothing is approved [21.44ms]
+(pass) Claude Code adapter: permission routing (E2 Arch INCONCLUSIVE regression) > a sensitive tool that runs without any Cockpit approval (VM allow rule) is flagged unapproved_execution [26.38ms]
+
+tests/frontend.test.ts:
+(pass) without a session proof the login form is shown and nothing is fetched [70.94ms]
+(pass) dashboard shows agents, simulation label, and opens the live stream at the dashboard cursor [51.17ms]
+(pass) select VM → history → send prompt once with CSRF and idempotency key → live delta renders [174.71ms]
+(pass) an unconfirmed send survives refresh and is confirmed with the SAME key (no duplicate) [260.63ms]
+(pass) attention inbox decides an approval with its exact expected version; content is text only [88.24ms]
+(pass) unknown run shows reconcile, never a resend; interrupt targets the active run [88.30ms]
+(pass) failed logout 401 does not claim the browser session was revoked [86.77ms]
+(pass) failed logout 403 does not claim the browser session was revoked [86.04ms]
+(pass) discovery failure keeps known sessions visible and says so [46.09ms]
+(pass) hidden UI can never be resurrected by author CSS (login stayed visible after auth on Arch) [46.54ms]
+(pass) no visible agent: the panel explains why with counts only and points to the local report [52.21ms]
+(pass) agents are grouped by project and filterable without losing the selection [97.27ms]
+(pass) failed-run notification opens the correct session and shows the classified cause [335.82ms]
+(pass) interrupted run: empty reasoning is not 'Raciocinando…', history is kept, and the end is stated (also after refresh) [87.64ms]
+(pass) running run still shows 'Raciocinando…'; concurrent live events after the interrupt cannot resurrect it [870.01ms]
+(pass) E1: a blocked agent is flagged in the list and in the inbox with cause and action, not as 'working' [170.45ms]
+(pass) E3: a Claude question is answered from the inbox by option or free text; nothing is pre-selected; markup stays text [131.01ms]
+(pass) E3: a Claude tool approval shows the tool name and its full input; truncation is warned [87.61ms]
+(pass) E3: a Claude VM offers only Cockpit sessions (no thread listing call), states Cockpit-recorded history and per-run tokens [89.15ms]
+(pass) E3: a tool the agent denied by itself, or ran without Cockpit approval, is flagged in the conversation [87.93ms]
+(pass) E3.1: persisted history after a restart — approvals, answers and incomplete answers are shown; live events and reloads never duplicate [251.09ms]
+(pass) E4: an orphaned process is shown with its PID, what it blocks and that only the operator ends it; a blocked send says why [127.88ms]
+(pass) E4: an unknown run says what failed (VM stopped) and a reconcile without evidence says why it stays unconfirmed [126.46ms]
+(pass) brand: the page's only images are the approved brand rasters, with text alternatives where they carry the name [0.33ms]
+(pass) brand: design tokens in CSS match the documented token file (palette of the approved board) [0.68ms]
+(pass) v1.1: a question already open in the selected session is not duplicated in the inbox; other sessions keep the full form [128.74ms]
+(pass) v1.1: state chips carry a shape cue and the simulation badge a dashed outline, not only colour [0.51ms]
+(pass) F1 (L5): a history reload in the middle of a streamed answer keeps its first characters (item not yet in history) [210.07ms]
+(pass) F1 (L5): deltas that arrive while the history request is in flight are not lost; the persisted prefix is merged, never duplicated [289.53ms]
+(pass) F1 (L5): a page opened mid-answer joins the persisted prefix with the overlapping live text; completion replaces it once [209.75ms]
+(pass) F1 (L5): deltas of another session are kept, so switching back mid-answer loses nothing [290.50ms]
+(pass) F1: only real input sends the activity signal (throttled); stream events, refreshes and polling never do [527.14ms]
+(pass) F1: the session badge stays hidden until 5 minutes before expiry and says which limit applies [138.69ms]
+(pass) F1: a new tab reuses the open tab's session over the same-origin channel; without an open tab it asks for login [1140.61ms]
+(pass) F1: logging out in one tab returns the other tabs of that session to the login form [796.27ms]
+(pass) F1 (L6): a VM the Cockpit does not operate reads 'Sem suporte' with its reason, not 'Offline'/'VM parada' [47.50ms]
+(pass) F1 (L5, review): overlap is merged only with real evidence; a history read before completion never replaces the completed text [209.57ms]
+(pass) F1 (L5, review): a delta arriving after its run ended does not resurrect a fragment [735.06ms]
+(pass) F1-A: a closed CSRF epoch costs one token re-read and one resend with a NEW nonce — never a second retry [391.87ms]
+
+tests/discovery.test.ts:
+(pass) synthetic parser contract (installed msb remains not_verified) > legacy table and schema-shaped JSON fixtures agree [0.52ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > documented empty inventories [0.06ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > MSB 0.6.8 JSON contract normalizes Running/Stopped across six schema records [0.29ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory  [0.08ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory  
+ [0.01ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory No VMs found [0.01ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory NAME OTHER
+codex-demo running [0.01ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory NAME STATUS IMAGE
+codex-demo running [0.02ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory NAME STATUS
+codex-demo running extra [0.01ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory NAME STATUS
+codex-demo running
+
+claude-demo stopped [0.01ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory NAME STATUS
+codex-demo running
+codex-demo stopped [0.02ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"created_at":"2026-10-25T13:54:12.860454803+00:00","image":"node:22-bookworm-slim","name":"codex-demo","status":"Running"},{"created_at":"2026-10-25T13:54:13.000000000+00:00","image":"node:22-bookworm-slim","name":"codex-demo","status":"Stopped"}] [0.02ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory {}
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [invalid] [0.01ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"name":"codex-demo"}] [0.01ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"name":"codex-demo","status":""}] [0.01ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"name":"other-demo","status":"running"}]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory NAME STATUS
+codex-demo paused [0.02ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory NAME STATUS
+codex-demo RUNNING [0.02ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"created_at":"2026-10-25T13:54:12Z","image":"node:22","name":"codex-demo","status":"Paused"}] [0.02ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"created_at":"2026-10-25T13:54:12Z","image":"node:22","name":"codex-demo","status":"running"}] [0.01ms]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"created_at":"invalid","image":"node:22","name":"codex-demo","status":"Running"}]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"created_at":"2026-99-88T13:54:12Z","image":"node:22","name":"codex-demo","status":"Running"}]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"created_at":"2026-10-25T13:54:12Z","image":"","name":"codex-demo","status":"Running"}]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"created_at":"2026-10-25T13:54:12Z","image":"node:22","name":"codex-demo","status":"Running","extra":true}]
+(pass) synthetic parser contract (installed msb remains not_verified) > rejects malformed/unknown inventory [{"created_at":"2026-10-25T13:54:12Z","name":"codex-demo","status":"Running"}] [0.01ms]
+(pass) conservative names [0.16ms]
+(pass) project discovery lists only direct real directories, never content or symlinks [1.12ms]
+(pass) sqlite snapshot persists, transaction rolls back, empty replaces previous, reopen works [2.80ms]
+(pass) SQLite v1 migrates in place and v2 persists orphan status without fictional projects [2.52ms]
+(pass) sqlite rejects symlinks and unrelated database without modifying it [1.11ms]
+(pass) SQLite read fails closed on semantically tampered VM rows [0.98ms]
+(pass) discovery keeps valid orphan VMs without inventing projects and preserves storage after failure [1.73ms]
+(pass) concurrent discovery requests share one complete observation and retry after failure [3.39ms]
+(pass) mock is default, host needs explicit dual opt-in and absolute project base; ports validated [0.31ms]
+(pass) E1: cached() spares MSB for display reads but refresh() always observes and errors are never cached [2.74ms]
+
+tests/m0b-runtime.test.ts:
+(pass) separate runtime SQLite > idempotency stores only a scoped key hash and returns one execution [10.83ms]
+(pass) separate runtime SQLite > prepared survives restart while possibly dispatched work becomes unknown without replay [21.11ms]
+(pass) separate runtime SQLite > CAS lifecycle and transport loss preserve conservative state [11.14ms]
+(pass) separate runtime SQLite > the reproduced crash with an empty rollout is persisted as unknown [11.04ms]
+(pass) separate runtime SQLite > journal is canonical, monotonic, replayable and rejects content fields [10.35ms]
+(pass) separate runtime SQLite > database, hardlinks and sidecar symlinks fail closed [0.84ms]
+(pass) separate runtime SQLite > runtime database requires a private parent directory [0.33ms]
+(pass) runtime schema v2 > an exact v1 database migrates additively; altered schemas stay refused [30.85ms]
+(pass) runtime schema v2 > an exact v2 database migrates to v3 preserving approvals and metrics; tool/question approvals and per-run tokens fit [33.74ms]
+(pass) runtime schema v2 > approvals: content-free journal, CAS, identical replay no-op, expiry [12.07ms]
+
+tests/f1-service-process.test.ts:
+(pass) service process: duplicate refused (78, no restart), crash restarted without resending, use resumes, orderly stop; token never logged [3804.33ms]
+
+tests/e0-recovery.test.ts:
+(pass) E0 D7 recovery test (fake process/provider) > happy path: active → SIGKILL only the cockpit → restart → unknown(process_restarted) → reconcile, prompt sent once, no secrets [3054.77ms]
+(pass) E0 D7 recovery test (fake process/provider) > refuses without exact consent, with loose token file or without a listening cockpit — and kills nothing [12.68ms]
+(pass) E0 D7 recovery test (fake process/provider) > refuses to touch a process that is not the identified e0 cockpit (different command) [9.62ms]
+(pass) E0 D7 recovery test (fake process/provider) > refuses to touch a process that is not the identified e0 cockpit (different cwd) [11.71ms]
+(pass) E0 D7 recovery test (fake process/provider) > refuses to touch a process that is not the identified e0 cockpit (not host mode) [9.04ms]
+(pass) E0 D7 recovery test (fake process/provider) > refuses to touch a process that is not the identified e0 cockpit (more projects granted) [11.43ms]
+(pass) E0 D7 recovery test (fake process/provider) > refuses to touch a process that is not the identified e0 cockpit (token differs from file) [9.12ms]
+(pass) E0 D7 recovery test (fake process/provider) > refuses when other VMs are runnable, the target VM is not running, or a run is already active [24.43ms]
+(pass) E0 D7 recovery test (fake process/provider) > a run that already ended is not killed over (never a fake PASS) [16.20ms]
+(pass) E0 D7 recovery test (fake process/provider) > other VM changing during the test fails integrity; restart that fails is attempted again and reported [3059.71ms]
+
+tests/f1-systemd-smoke.test.ts:
+(pass) F1-D smoke: preconditions refuse with NOT_VERIFIED (exit 2) and create nothing [3.88ms]
+(pass) F1-D smoke: the leftover of an interrupted smoke (systemd loads exactly this runtime file) is stopped, its cgroup ended and removed before a new run [304.03ms]
+(pass) F1-D smoke: an interrupt (SIGINT/SIGTERM/SIGHUP) runs the same cleanup once; the unit file and work dir are gone [2107.01ms]
+(pass) F1-D smoke: cleanup is PASS only when the unit is inactive/failed and its cgroup is empty [606.42ms]
+(pass) F1-D smoke: the runtime unit is the real service template; a failed start is cleaned up and nothing is ever enabled [303.87ms]
+(pass) F1-D smoke: a unit systemd does not load from the runtime dir (other XDG_RUNTIME_DIR) fails and is cleaned up [2.06ms]
+(pass) F1-D smoke: a signal only reaches msb processes that are members of the smoke unit's own cgroup at that moment [3020.54ms]
+(pass) F1-D smoke: precondition order is bun, then msb — a good project-local runtime (Arch checkout) moves the refusal to msb; a bad one stays a bun refusal [3.49ms]
+
+tests/e4-homologation.test.ts:
+(pass) the recovery drill passes every check and its report carries no secret, content, id or path [3051.56ms]
+
+tests/protocol-diagnose.test.ts:
+(pass) E0 protocol diagnostic > 0.166.0 real-shaped responses: pinned, additive fields are non-blocking, only read-only methods [0.88ms]
+(pass) E0 protocol diagnostic > unpinned version with identical shape fails as version_not_pinned [0.17ms]
+(pass) E0 protocol diagnostic > structural drift is reported by field name only [0.24ms]
+(pass) E0 protocol diagnostic > unsafe field names are masked [0.05ms]
+(pass) E0 protocol diagnostic > missing consent, wrong provider, absent or stopped VM never create a transport [0.24ms]
+(pass) E0 protocol diagnostic > adapter accepts the 0.166.0 fixture and still rejects 0.165.0 and 0.167.0 [0.36ms]
+(pass) codexErrorInfo is classified from structured codes only, never from message text [0.05ms]
+
+tests/local-security.test.ts:
+(pass) credential failure budget cannot lock out correct local operator [0.18ms]
+(pass) valid login evicts oldest at capacity and a verified rotation works [0.36ms]
+(pass) same CSRF nonce is accepted once even under concurrent calls [0.20ms]
+(pass) F1: authenticated reads alone (polling, SSE re-checks) never extend the session; it ends 30 min after the last activity [0.21ms]
+(pass) F1: operator activity (touch or a CSRF-verified mutation) slides the idle deadline; the 12 h ceiling never moves [0.36ms]
+(pass) F1: a failed CSRF check is not activity; logout and a credential re-login still revoke a slid session [0.16ms]
+(pass) F1: limits are validated [0.20ms]
+(pass) F1-A: 12 000 mutations in one session never hit a capacity error; memory stays bounded by one epoch [27.14ms]
+(pass) F1-A: every request of a closed epoch is refused on replay (exact headers, or the old token with a new nonce) [0.45ms]
+(pass) F1-A: within an epoch a nonce is single-use, also under concurrent submission of the same nonce [0.29ms]
+(pass) F1-A: epochs change nothing about revocation, expiry, the 12 h ceiling or sessions of other tabs/logins [0.29ms]
+
+tests/adversarial.test.ts:
+(pass) adversarial H1: rejected authorities, origins, methods, queries and paths never reach discovery [0.62ms]
+(pass) adversarial H2: directory and SQLite symlinks plus foreign schemas are rejected without sentinel mutation [2.19ms]
+(pass) adversarial H2: main database hardlinks and sidecar symlinks are refused [1.02ms]
+(pass) adversarial H2 probe: journal hardlink must not modify a synthetic outside sentinel [1.37ms]
+(pass) adversarial H3: shell and markup names are rejected and raw subprocess errors stay out of logs [0.96ms]
+(pass) adversarial H3: timeout kills only the fake child and cancels both fake streams [5.26ms]
+
+tests/adapter.test.ts:
+(pass) adapter has fixed argv and ignored stdin without a shell [0.25ms]
+(pass) stderr/nonzero sanitized; no raw output in errors [0.19ms]
+(pass) stdout byte limit kills owned child [1.23ms]
+(pass) stderr byte limit kills owned child [1.11ms]
+(pass) timeout force kills and cancels pipes even when process ignores termination [30.53ms]
+(pass) spawn failures contain safe code only [0.16ms]
+
+tests/m0b-provider.test.ts:
+(pass) typed provider contract and supported Codex mapping > handshake, sessions, runs, history, interrupt, approval and reconcile stay behind normalized types [1.15ms]
+(pass) typed provider contract and supported Codex mapping > events expose a closed normalized union and ignore unknown provider notifications [0.42ms]
+(pass) typed provider contract and supported Codex mapping > unsupported capabilities and raw transport failures produce stable safe errors [0.22ms]
+(pass) typed provider contract and supported Codex mapping > 0.164.0 identity and real-shaped thread/list are mapped from the observed token and fields [0.29ms]
+(pass) typed provider contract and supported Codex mapping > target confusion is denied before transport creation [0.09ms]
+(pass) typed provider contract and supported Codex mapping > initialize validates the pinned real response without leaking rejected values [0.80ms]
+(pass) typed provider contract and supported Codex mapping > thread/list maps the v2 status object and Unix-second timestamp narrowly [0.25ms]
+(pass) typed provider contract and supported Codex mapping > thread/list rejects malformed status and timestamps without exposing thread data [0.58ms]
+(pass) typed provider contract and supported Codex mapping > a non-Codex fake uses only the provider-neutral contract [0.14ms]
+
+tests/discovery-regression.test.ts:
+(pass) a foreign sandbox no longer fails the inventory; agent VMs are kept, the rest only counted [2.44ms]
+(pass) list-level contract stays fail-closed [0.15ms]
+(pass) MSB → discovery → grants → /api/dashboard shows the authorized VM and only counts the rest [1.63ms]
+(pass) operator discovery report explains every record without unsafe terminal output [0.34ms]
+(pass) COCKPIT_DATA_DIR must be absolute and without traversal [0.24ms]
+
+tests/e31-history-restart.test.ts:
+(pass) E3.1: persisted conversation across a complete Cockpit restart > multi-turn conversation with approval, question and interruption is recorded in order, sanitized, without duplicates [195.33ms]
+(pass) E3.1: persisted conversation across a complete Cockpit restart > a turn in flight at shutdown: complete shutdown, restart on the same SQLite, history reappears with the partial marked incomplete [176.63ms]
+(pass) E3.1: persisted conversation across a complete Cockpit restart > after the restart the session resumes with context; new turns append once, nothing is duplicated [26.02ms]
+(pass) E3.1: persisted conversation across a complete Cockpit restart > pagination walks the whole conversation newest-first without gaps or repeats; malformed queries are refused [4.59ms]
+(pass) E3.1: persisted conversation across a complete Cockpit restart > history needs neither the VM nor Claude: a stopped VM still shows the whole conversation [1.01ms]
+
+ 363 pass
+ 0 fail
+ 2750 expect() calls
+Ran 363 tests across 38 files. [51.99s]
