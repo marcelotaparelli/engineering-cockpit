@@ -48,3 +48,11 @@
 | B3 | info | Falha entre `open` e `rename` pode deixar `token.tmp-*` (0600) no diretório privado; sem fsync do diretório | aceito (diretório 0700 do próprio usuário) |
 
 **Veredito atualizado: CONDITIONAL GO**, com **uma única condição restante, fora do código**: executar `./scripts/cockpit f1-systemd-smoke` no Arch (F1-D) com PASS, ou com FAIL analisado e justificado antes de qualquer afrouxamento da unit. Suíte: 338/338.
+
+## Condição F1-D: cumprida com ressalva (2026-11-08)
+
+O smoke foi executado no Arch (commit `842cecf`, VM `codex-cockpit-e0-test`; atestado do operador, JSON não consta neste workspace). **`msb list` e `msb exec` reais passaram sob o systemd com `NoNewPrivileges=yes`**, antes e depois de um reinício por SIGKILL: a suspeita F1-D (helper setuid do `msb` bloqueado) está **refutada** para este host, e `NoNewPrivileges=yes` **permanece**. Os demais itens passaram (unit, credencial, parada ordenada, 78 sem reinício, journal, limpeza). `orphan_ledger` ficou **NOT_VERIFIED** (nenhum filho `msb` sobreviveu), o resultado geral foi `NOT_VERIFIED` (exit 2) e o smoke **não foi alterado** para fabricar PASS.
+
+O Tech Lead aceitou o resultado excepcionalmente para **integrar** a F1 ao `develop`. Isso **não comprova** a recuperação de órfãos reais; o risco é rastreado como **F1-P1** (aberto). Detalhes, termos e critério de aceite da pendência: [f1-systemd-smoke-arch.md](f1-systemd-smoke-arch.md).
+
+**Veredito para o merge: GO**, com o risco residual F1-P1 aceito e aberto, e o dia de uso real ainda por fazer.

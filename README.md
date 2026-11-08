@@ -4,7 +4,7 @@ Painel local (127.0.0.1) para operar agentes Codex e Claude Code em micro-VMs Mi
 
 **Planejamento:** a fonte única é o [master plan v2](docs/master-plan.md), com a V1 = operação diária e as fases F0–F6. O [kickoff M0](engineering-cockpit-M0-kickoff.md) fica preservado como registro. Para operar e recuperar, veja o [runbook](docs/runbook.md).
 
-**Estado (2026-11-08, F0 concluída; F1 implementada na branch `feat/f1-daily-ops`, aguardando homologação no Arch):** o `develop` integra o E4 e a identidade visual v1.1. A F1 acrescenta serviço systemd de usuário, sessão deslizante, nova aba sem novo login, stream sem perda ao recarregar o histórico e VMs reservadas por configuração ([docs/f1-operacao-diaria.md](docs/f1-operacao-diaria.md)). A classificação dos aceites no Arch segue a regra do master plan: **H** = executado no Arch, **A** = atestado pelo operador, **T** = só testes ou simulação.
+**Estado (2026-11-08, F0 concluída; F1 implementada na branch `feat/f1-daily-ops`; smoke real do systemd no Arch atestado com `orphan_ledger` NOT_VERIFIED e aceito excepcionalmente para integração; dia de uso real e recuperação de órfãos reais, F1-P1, pendentes):** o `develop` integra o E4 e a identidade visual v1.1. A F1 acrescenta serviço systemd de usuário, sessão deslizante, nova aba sem novo login, stream sem perda ao recarregar o histórico e VMs reservadas por configuração ([docs/f1-operacao-diaria.md](docs/f1-operacao-diaria.md)). A classificação dos aceites no Arch segue a regra do master plan: **H** = executado no Arch, **A** = atestado pelo operador, **T** = só testes ou simulação.
 
 | Marco | Situação | Classificação | Registro |
 | --- | --- | --- | --- |

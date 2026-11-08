@@ -1,7 +1,7 @@
 # F1 — Operar todo dia
 
 **Branch:** `feat/f1-daily-ops`, a partir do `develop` `60644bd`. **Escopo:** §7 do [master plan v2](master-plan.md), lacunas L2, L3, L5 e L6. **Decisões:** [ADR-0003](adr-0003-f1-sessao-deslizante-e-servico.md).
-**Estado:** implementada e verificada **nesta VM (Debian, modo mock)**. A homologação no Arch (um dia de uso real) está **pendente**, sem nenhum atestado registrado. Nada foi instalado nem iniciado no Arch.
+**Estado (2026-11-08):** implementada e verificada **nesta VM (Debian, modo mock)**. O **smoke real do systemd no Arch** foi executado pelo operador e atestado: 11 verificações PASS e `orphan_ledger` `NOT_VERIFIED` (nenhum filho `msb` sobreviveu à queda), resultado geral `NOT_VERIFIED`. O Tech Lead aceitou o resultado **excepcionalmente para integrar** a F1. Registro e termos: [docs/evidence/f1-systemd-smoke-arch.md](evidence/f1-systemd-smoke-arch.md). O **dia de uso real** e a **recuperação de órfãos reais (F1-P1)** continuam **pendentes**.
 
 ## 1. Previsto × implementado
 
@@ -16,6 +16,8 @@
 | D8 `COCKPIT_RESERVED_VMS` | sim, só para **acrescentar** VMs reservadas; a VM de desenvolvimento fica sempre reservada. A D8 continua do Tech Lead | `src/config.ts`, `src/execution.ts`, `src/claude-adapter.ts`, `src/claude-protocol.ts` |
 | Testes `local-security`, `server`, `frontend`, unit file gerado | sim, mais o teste de processo do serviço | `tests/f1-*.test.ts`, `tests/local-security.test.ts`, `tests/frontend.test.ts` |
 | Revisão independente da política de sessão (Codex) | **não**: houve revisão independente por outro agente (Claude), §4. A do Codex continua pendente | — |
+| Smoke real do systemd (F1-D) | **executado no Arch, atestado**: 11 PASS, `orphan_ledger` NOT_VERIFIED, overall NOT_VERIFIED (exit 2); aceito excepcionalmente pelo Tech Lead para integração | [evidência](evidence/f1-systemd-smoke-arch.md) |
+| Recuperação de órfãos reais sob o systemd (**F1-P1**) | **pendente, risco residual aberto**: nenhum filho `msb` sobreviveu à queda no smoke. Teste controlado definido na evidência; coincide com o drill manual da F2 | [evidência](evidence/f1-systemd-smoke-arch.md) §Pendência |
 | Aceite no Arch: um dia de uso real sem terminal | **pendente** (operador) | §6 |
 
 **Fora do escopo, não feito:** F2 (L4/L8), F3 (CI), F4 (tiles, "ciente"), persistência de sessões HTTP entre reinícios (o ADR-0002 mantém a revogação no restart), novas telas e novas métricas.
