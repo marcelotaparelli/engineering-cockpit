@@ -13,7 +13,7 @@ Painel local (127.0.0.1) para operar agentes Codex e Claude Code em micro-VMs Mi
 | E2 (spike Claude Code) | parcial | H parcial: 2 itens INCONCLUSIVE antes da correção | [evidência](docs/evidence/e2-claude-spike-arch.json) |
 | E3 (Claude Code pelo navegador) | aceito | A | [docs/evidence/e3-browser-arch.md](docs/evidence/e3-browser-arch.md) |
 | E3.1 (histórico após reinício) | aceito | A. Parcial após queda abrupta com o Claude real: não homologada | [docs/evidence/e31-historico-arch.md](docs/evidence/e31-historico-arch.md) |
-| E4 (confiabilidade, 278 testes + drill 11/11) | aceito | A no Arch, com Cockpit real e agentes simulados. Queda com providers reais: pendente (F2) | [docs/evidence/e4-arch.md](docs/evidence/e4-arch.md) |
+| E4 (confiabilidade, 278 testes + drill 11/11) | aceito | H para o Cockpit: drill executado pelo operador no Arch, resultado atestado. T para os providers: queda com providers reais pendente (F2) | [docs/evidence/e4-arch.md](docs/evidence/e4-arch.md) |
 | Identidade visual v1.1 | aprovada e integrada | aprovação visual do operador | [docs/design-system.md](docs/design-system.md) |
 
 Garantias de execução: [docs/m0b-fatia3.md](docs/m0b-fatia3.md) e [docs/e4-confiabilidade.md](docs/e4-confiabilidade.md).
