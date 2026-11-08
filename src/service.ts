@@ -235,11 +235,24 @@ export async function rotateToken(env: Record<string, string | undefined> = proc
     await deps.write(tokenFile, `${next}\n`);
     if (deps.read(tokenFile) !== next) throw new SafeError("credential_rotation_unverified");
   } catch {
+    // Rollback only if the file really changed (a write that failed before its rename left it intact).
     let restored = false;
-    try { await writePrivate(tokenFile, `${previous}\n`); restored = readLocalCredentialFile(tokenFile) === previous; } catch { /* reported below */ }
+    try { restored = readLocalCredentialFile(tokenFile) === previous; } catch { /* unreadable: restore below */ }
+    if (!restored) { try { await writePrivate(tokenFile, `${previous}\n`); restored = readLocalCredentialFile(tokenFile) === previous; } catch { /* reported below */ } }
     throw new SafeError(restored ? "credential_rotation_failed" : "credential_rotation_rollback_failed");
   }
   return { tokenFile };
+}
+
+/** When a freshly rotated credential takes effect, from the user manager's answer; honest about an unknown state. */
+export function rotationEffectMessage(state: Pick<ServiceState, "active">): string {
+  if (state.active === "active" || state.active === "activating" || state.active === "reloading") {
+    return "O serviço em execução ainda aceita a credencial ANTERIOR. A nova passa a valer em: ./scripts/cockpit service restart (revoga todas as sessões do navegador).";
+  }
+  if (state.active === "inactive" || state.active === "failed" || state.active === "deactivating") {
+    return "O serviço não está em execução: a nova credencial vale a partir do próximo ./scripts/cockpit service start.";
+  }
+  return "Estado do serviço desconhecido (systemd do usuário não respondeu): qualquer Cockpit que use este arquivo continua com a credencial ANTERIOR até ser reiniciado (./scripts/cockpit service restart, ou o processo do terminal).";
 }
 
 export async function uninstall(options: { env: Record<string, string | undefined>; run: Runner }): Promise<ServicePaths> {

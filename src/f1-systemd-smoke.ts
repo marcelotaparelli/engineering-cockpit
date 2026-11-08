@@ -30,6 +30,8 @@ export interface SmokeOptions {
   run?: Runner;
   root?: string;
   timeoutsMs?: { start: number; restart: number; settle: number };
+  /** Registers the interrupt handler (SIGINT/SIGTERM/SIGHUP); returns the unregister function. Injectable for tests. */
+  onInterrupt?: (handler: () => Promise<void>) => () => void;
   /** Reads /proc and cgroup files; injectable for tests. */
   proc?: { mainNoNewPrivs(pid: number): boolean | null; cgroupPids(controlGroup: string): number[]; isMsb(pid: number): boolean; alive(pid: number): boolean;
     /** True only if the process is, right now, a member of exactly this cgroup (cgroup v2 `0::<path>`). */
@@ -53,8 +55,17 @@ const realProc: NonNullable<SmokeOptions["proc"]> = {
   },
 };
 
+const realOnInterrupt: NonNullable<SmokeOptions["onInterrupt"]> = handler => {
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  let fired = false;
+  const listener = () => { if (fired) return; fired = true; void handler().finally(() => process.exit(130)); };
+  for (const signal of signals) process.on(signal, listener);
+  return () => { for (const signal of signals) process.off(signal, listener); };
+};
+
 export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<SmokeReport> {
   const env = options.env ?? process.env;
+  const onInterrupt = options.onInterrupt ?? realOnInterrupt;
   const run = options.run ?? defaultRunner();
   const root = options.root ?? repoRoot();
   const proc = options.proc ?? realProc;
@@ -90,11 +101,23 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     if ((await systemctl("show-environment")).code !== 0) throw new SafeError("systemd_user_manager_unavailable");
     path = servicePath(env, "host", root); // pinned Bun and msb from this shell, as `service install` would
     unitFile = join(runtimeDir, "systemd/user", SMOKE_UNIT);
-    if (existsSync(unitFile) || isLink(unitFile)) throw new SafeError("smoke_unit_already_present");
+    let leftoverCleaned = false;
+    if (existsSync(unitFile) || isLink(unitFile)) {
+      // A unit with our name is already there. If systemd loads exactly THIS runtime file, it is the leftover of an interrupted
+      // smoke (nothing else writes that name there): stop it, end its cgroup, remove it. Anything else is not ours: refuse.
+      const loadedPath = (await systemctl("show", SMOKE_UNIT, "--property=FragmentPath")).stdout.split("\n").find(line => line.startsWith("FragmentPath="))?.slice("FragmentPath=".length) ?? "";
+      if (isLink(unitFile) || loadedPath !== unitFile) throw new SafeError("smoke_unit_already_present");
+      await systemctl("stop", SMOKE_UNIT);
+      await systemctl("kill", "--kill-whom=all", "--signal=SIGKILL", SMOKE_UNIT);
+      await systemctl("reset-failed", SMOKE_UNIT);
+      rmSync(unitFile, { force: true });
+      if ((await systemctl("daemon-reload")).code !== 0) throw new SafeError("daemon_reload_failed");
+      leftoverCleaned = true;
+    }
     port = 0;
     for (let attempt = 0; attempt < 20 && port === 0; attempt++) { const candidate = 21000 + Math.floor(Math.random() * 8000); if (!(await portBusy(candidate))) port = candidate; }
     if (port === 0) throw new SafeError("no_free_port");
-    set("preconditions", "PASS", null, { vm, port });
+    set("preconditions", "PASS", null, { vm, port, leftover_cleaned: leftoverCleaned });
   } catch (error) {
     set("preconditions", "NOT_VERIFIED", safeCode(error));
     report.overall = "NOT_VERIFIED";
@@ -103,6 +126,26 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
 
   const token = newToken();
   let current: CheckId = "unit_loaded";
+  let cleaned = false;
+  /** Idempotent. Stops the unit, ends everything in ITS cgroup (systemd addresses the cgroup, never a PID), verifies, removes files. */
+  const cleanup = async (): Promise<void> => {
+    if (cleaned) return;
+    cleaned = true;
+    const problems: string[] = [];
+    if (created) {
+      if ((await systemctl("stop", SMOKE_UNIT)).code !== 0) problems.push("stop");
+      await systemctl("kill", "--kill-whom=all", "--signal=SIGKILL", SMOKE_UNIT);
+      await systemctl("reset-failed", SMOKE_UNIT);
+      const state = (await show("ActiveState")).ActiveState ?? "unknown";
+      if (state !== "inactive" && state !== "failed") problems.push(`unit_${state}`);
+      if (unitGroup && proc.cgroupPids(unitGroup).length) problems.push("cgroup_not_empty");
+      try { rmSync(unitFile!, { force: true }); } catch { problems.push("unit_file"); }
+      if ((await systemctl("daemon-reload")).code !== 0) problems.push("daemon_reload");
+    }
+    if (workDir) { try { rmSync(workDir, { recursive: true, force: true }); } catch { problems.push("work_dir"); } }
+    set("cleanup", problems.length ? "FAIL" : "PASS", problems.join(",") || null);
+  };
+  const unregister = onInterrupt(async () => { set(current, "FAIL", "interrupted"); await cleanup(); });
   try {
     // ---------------------------------------------------------------- isolated state + runtime unit from the real template
     const base = join(root, ".cache", "f1-systemd-smoke");
@@ -183,8 +226,8 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     if (missing.length) throw new SafeError("orphan_not_in_ledger");
     // Only our own unit's leftovers, now that the ledger was checked: the operator protocol (check, then kill) on a smoke child.
     await terminate(survivors, proc, unitGroup);
-    set("orphan_ledger", "PASS", null, { surviving_msb_children: survivors.length, listed_as_orphans: survivors.length,
-      note: survivors.length ? "survivors were listed (blocking) and then ended by the smoke" : "msb exec ended together with the killed Cockpit" });
+    if (survivors.length === 0) set("orphan_ledger", "NOT_VERIFIED", "no_surviving_msb_child", { note: "msb exec ended together with the killed Cockpit: the ledger could not be exercised under systemd" });
+    else set("orphan_ledger", "PASS", null, { surviving_msb_children: survivors.length, listed_as_orphans: survivors.length, note: "survivors were listed (blocking) and then ended by the smoke" });
 
     current = "msb_exec_after_restart";
     const again = await threads();
@@ -226,17 +269,9 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
   } catch (error) {
     if (report.checks.find(check => check.id === current)!.status === "NOT_VERIFIED") set(current, current === "msb_list" && safeCode(error) === "smoke_vm_not_running" ? "NOT_VERIFIED" : "FAIL", safeCode(error));
   } finally {
-    // ---------------------------------------------------------------- cleanup, always
-    const problems: string[] = [];
-    if (created) {
-      await systemctl("stop", SMOKE_UNIT);
-      await systemctl("reset-failed", SMOKE_UNIT);
-      await terminate([...ours].filter(pid => proc.alive(pid) && proc.isMsb(pid)), proc, unitGroup);
-      try { rmSync(unitFile!, { force: true }); } catch { problems.push("unit_file"); }
-      if ((await systemctl("daemon-reload")).code !== 0) problems.push("daemon_reload");
-    }
-    if (workDir) { try { rmSync(workDir, { recursive: true, force: true }); } catch { problems.push("work_dir"); } }
-    set("cleanup", problems.length ? "FAIL" : "PASS", problems.join(",") || null);
+    // ---------------------------------------------------------------- cleanup, always (also on SIGINT/SIGTERM/SIGHUP, above)
+    await cleanup();
+    unregister();
   }
   const statuses = report.checks.map(check => check.status);
   report.overall = statuses.includes("FAIL") ? "FAIL" : statuses.every(status => status === "PASS") ? "PASS" : "NOT_VERIFIED";

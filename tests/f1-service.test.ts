@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { configuredTokenFile, doctor, install, parseEnvFile, renderEnvFile, renderUnit, repoRoot, restartsAfter, rotateToken, servicePaths, uninstall, type Runner } from "../src/service.ts";
+import { configuredTokenFile, doctor, install, parseEnvFile, renderEnvFile, renderUnit, repoRoot, restartsAfter, rotateToken, rotationEffectMessage, servicePaths, uninstall, type Runner } from "../src/service.ts";
 import { RuntimeStore, procDatabaseHolders } from "../src/runtime-store.ts";
 
 /**
@@ -302,6 +302,15 @@ test("F1-B: a failed or unverifiable write is rolled back to the previous creden
     expect(await mode(ctx.custom)).toBe(0o600);
     expect((await readdir(ctx.vault)).sort()).toEqual(["cockpit-secret"]);
   }
+  // 1b. A write that failed before its rename left the file intact: no rollback rewrite happens (same inode, same mtime).
+  {
+    const ctx = await customSetup();
+    const before = await stat(ctx.custom);
+    await Bun.sleep(20);
+    await expect(rotateToken({ XDG_CONFIG_HOME: ctx.configHome }, { write: async () => { throw new Error("ENOSPC"); }, read: realRead, generate: () => "ef".repeat(32) })).rejects.toThrow("credential_rotation_failed");
+    const after = await stat(ctx.custom);
+    expect([after.ino, after.mtimeMs]).toEqual([before.ino, before.mtimeMs]);
+  }
   // 2. The write "succeeds" but the file does not hold the new value: restored, reported, never claimed as rotated.
   {
     const ctx = await customSetup();
@@ -320,5 +329,15 @@ test("F1-B: a failed or unverifiable write is rolled back to the previous creden
       await expect(rotateToken({ XDG_CONFIG_HOME: ctx.configHome }, { write: async () => { throw new Error("must not write"); }, read: realRead, generate })).rejects.toThrow("credential_rotation_failed");
     }
     expect((await readFile(ctx.custom, "utf8")).trim()).toBe(ctx.original);
+  }
+});
+
+test("F1-B: the message about when the rotated credential applies never claims a stopped service when the state is unknown", () => {
+  expect(rotationEffectMessage({ active: "active" })).toContain("ANTERIOR");
+  expect(rotationEffectMessage({ active: "inactive" })).toContain("próximo ./scripts/cockpit service start");
+  for (const active of ["unknown", "", "weird"]) {
+    const message = rotationEffectMessage({ active });
+    expect(message).toContain("desconhecido");
+    expect(message).not.toContain("não está em execução");
   }
 });

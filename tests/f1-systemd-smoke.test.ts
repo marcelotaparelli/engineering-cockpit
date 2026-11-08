@@ -24,7 +24,7 @@ const baseEnv = (xdg: string, extra: Record<string, string> = {}) => ({ COCKPIT_
 const noProc = { mainNoNewPrivs: () => null, cgroupPids: () => [], isMsb: () => false, alive: () => false, inGroup: () => false };
 
 /** A user manager stand-in: records every call; `loaded` decides what FragmentPath systemd reports. */
-function manager(options: { available?: boolean; loaded?: (unitFile: string) => string } = {}) {
+function manager(options: { available?: boolean; loaded?: (unitFile: string) => string; activeState?: () => string } = {}) {
   const calls: string[][] = [];
   const unitSnapshots: string[] = [];
   const run: Runner = async argv => {
@@ -33,7 +33,7 @@ function manager(options: { available?: boolean; loaded?: (unitFile: string) => 
     if (argv.includes("show")) {
       const file = join(currentXdg, "systemd/user", SMOKE_UNIT);
       if (existsSync(file)) unitSnapshots.push(readFileSync(file, "utf8"));
-      return { code: 0, stdout: `FragmentPath=${options.loaded ? options.loaded(file) : file}\nActiveState=inactive\nMainPID=0\nNRestarts=0\nNoNewPrivileges=yes\nKillMode=process\n` };
+      return { code: 0, stdout: `FragmentPath=${options.loaded ? options.loaded(file) : file}\nActiveState=${options.activeState ? options.activeState() : "inactive"}\nMainPID=0\nNRestarts=0\nNoNewPrivileges=yes\nKillMode=process\n` };
     }
     return { code: 0, stdout: "" };
   };
@@ -59,13 +59,61 @@ test("F1-D smoke: preconditions refuse with NOT_VERIFIED (exit 2) and create not
     expect(await readdir(xdg)).toEqual([]);
     expect(fake.calls.filter(argv => !argv.includes("show-environment"))).toEqual([]);
   }
-  // An existing smoke unit (another smoke running) is never overwritten.
+  // A unit with our name that systemd does NOT load from this runtime path is not ours: refused, untouched.
   const xdg = await runtimeDir(); currentXdg = xdg;
   await mkdir(join(xdg, "systemd/user"), { recursive: true });
   await writeFile(join(xdg, "systemd/user", SMOKE_UNIT), "# another run\n");
-  const report = await runSystemdSmoke({ env: baseEnv(xdg), run: manager().run, proc: noProc });
+  const foreign = manager({ loaded: () => "/home/other/.config/systemd/user/engineering-cockpit-f1-smoke.service" });
+  const report = await runSystemdSmoke({ env: baseEnv(xdg), run: foreign.run, proc: noProc });
   expect(report.checks[0]).toMatchObject({ status: "NOT_VERIFIED", reason: "smoke_unit_already_present" });
   expect(readFileSync(join(xdg, "systemd/user", SMOKE_UNIT), "utf8")).toBe("# another run\n");
+  expect(foreign.calls.filter(argv => argv.includes("stop") || argv.includes("kill"))).toEqual([]);
+});
+
+test("F1-D smoke: the leftover of an interrupted smoke (systemd loads exactly this runtime file) is stopped, its cgroup ended and removed before a new run", async () => {
+  const xdg = await runtimeDir(); currentXdg = xdg;
+  await mkdir(join(xdg, "systemd/user"), { recursive: true });
+  await writeFile(join(xdg, "systemd/user", SMOKE_UNIT), "# leftover\n");
+  const fake = manager();
+  const report = await runSystemdSmoke({ env: baseEnv(xdg), run: fake.run, proc: noProc, timeoutsMs: { start: 100, restart: 100, settle: 10 } });
+  expect(report.checks[0]).toMatchObject({ status: "PASS", evidence: { leftover_cleaned: true } });
+  const verbs = fake.calls.map(argv => argv.slice(2).join(" "));
+  const firstStart = verbs.findIndex(v => v.startsWith("start "));
+  expect(verbs.slice(0, firstStart)).toEqual(expect.arrayContaining([`stop ${SMOKE_UNIT}`, `kill --kill-whom=all --signal=SIGKILL ${SMOKE_UNIT}`, `reset-failed ${SMOKE_UNIT}`, "daemon-reload"]));
+  expect(fake.unitSnapshots.at(-1)).toContain("NoNewPrivileges=yes"); // the new run wrote the real template over the leftover
+  expect(existsSync(join(xdg, "systemd/user", SMOKE_UNIT))).toBe(false);
+});
+
+test("F1-D smoke: an interrupt (SIGINT/SIGTERM/SIGHUP) runs the same cleanup once; the unit file and work dir are gone", async () => {
+  const xdg = await runtimeDir(); currentXdg = xdg;
+  let handler: (() => Promise<void>) | null = null;
+  let unregistered = 0;
+  const fake = manager();
+  // Fire the interrupt while the smoke waits for health (the Cockpit never answers in this test).
+  const run: Runner = async argv => { const r = await fake.run(argv); if (argv.includes("start") && handler) setTimeout(() => { void handler!(); }, 20); return r; };
+  const report = await runSystemdSmoke({ env: baseEnv(xdg), run, proc: noProc, timeoutsMs: { start: 2000, restart: 100, settle: 10 },
+    onInterrupt: h => { handler = h; return () => { unregistered++; }; } });
+  expect(report.checks.find(check => check.id === "start")).toMatchObject({ status: "FAIL", reason: "interrupted" });
+  expect(report.checks.find(check => check.id === "cleanup")!.status).toBe("PASS");
+  expect(unregistered).toBe(1);
+  expect(existsSync(join(xdg, "systemd/user", SMOKE_UNIT))).toBe(false);
+  const verbs = fake.calls.map(argv => argv.slice(2).join(" "));
+  expect(verbs.filter(v => v === `stop ${SMOKE_UNIT}`)).toHaveLength(1); // cleanup ran once, not twice (interrupt + finally)
+  expect(verbs).toContain(`kill --kill-whom=all --signal=SIGKILL ${SMOKE_UNIT}`);
+});
+
+test("F1-D smoke: cleanup is PASS only when the unit is inactive/failed and its cgroup is empty", async () => {
+  const xdg = await runtimeDir(); currentXdg = xdg;
+  const stillActive = await runSystemdSmoke({ env: baseEnv(xdg), run: manager({ activeState: () => "active" }).run, proc: noProc, timeoutsMs: { start: 100, restart: 100, settle: 10 } });
+  expect(stillActive.checks.find(check => check.id === "cleanup")).toMatchObject({ status: "FAIL", reason: expect.stringContaining("unit_active") });
+  const xdg2 = await runtimeDir(); currentXdg = xdg2;
+  const group = `/user.slice/user-1000.slice/user@1000.service/app.slice/${SMOKE_UNIT}`;
+  const busy = { ...noProc, cgroupPids: (g: string) => g === group ? [4242] : [] };
+  const fake = manager(); const run: Runner = async argv => { const r = await fake.run(argv); if (argv.includes("show") && argv.some(a => a.includes("ControlGroup"))) return { code: 0, stdout: `ControlGroup=${group}\n` }; return r; };
+  // ControlGroup is only queried after a healthy start; drive the state check directly through the same code path by a start that fails:
+  const report = await runSystemdSmoke({ env: baseEnv(xdg2), run, proc: busy, timeoutsMs: { start: 100, restart: 100, settle: 10 } });
+  expect(report.checks.find(check => check.id === "cleanup")!.status).toBe("PASS"); // group unknown before start → nothing to verify beyond the unit state
+  expect(report.overall).toBe("FAIL");
 });
 
 test("F1-D smoke: the runtime unit is the real service template; a failed start is cleaned up and nothing is ever enabled", async () => {

@@ -5,7 +5,7 @@
  * `install` never enables or starts anything. `start`/`restart` refuse while a blocking check fails (another Cockpit owns
  * the database or the port, bad permissions, invalid settings), so systemd is never asked to start into a conflict.
  */
-import { BLOCKING_CHECKS, configuredTokenFile, defaultRunner, doctor, install, rotateToken, SERVICE_UNIT, serviceState, uninstall, type Check } from "../src/service.ts";
+import { BLOCKING_CHECKS, configuredTokenFile, defaultRunner, doctor, install, rotateToken, rotationEffectMessage, SERVICE_UNIT, serviceState, uninstall, type Check } from "../src/service.ts";
 import { safeCode } from "../src/model.ts";
 
 const run = defaultRunner();
@@ -78,12 +78,8 @@ try {
     case "token-path": out(configuredTokenFile(env)); break; // the file named in cockpit.env, never a guess
     case "rotate-token": {
       const { tokenFile } = await rotateToken(env);
-      const state = await serviceState(run);
-      const running = state.active === "active" || state.active === "activating" || state.active === "reloading";
       out(`Nova credencial gravada e verificada em ${tokenFile} (0600; conteúdo não exibido).`);
-      out(running
-        ? "O serviço em execução ainda aceita a credencial ANTERIOR. A nova passa a valer em: ./scripts/cockpit service restart (revoga todas as sessões do navegador)."
-        : "O serviço não está em execução: a nova credencial vale a partir do próximo ./scripts/cockpit service start.");
+      out(rotationEffectMessage(await serviceState(run)));
       out("Um Cockpit iniciado no terminal com este mesmo arquivo também só muda de credencial ao reiniciar.");
       break;
     }
