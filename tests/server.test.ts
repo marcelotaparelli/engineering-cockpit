@@ -143,3 +143,25 @@ test("execution routes require CSRF; arbitrary command routes do not exist", asy
   }
   expect(runtime.getRun("run-private-project")?.status).toBe("unknown");
 });
+
+test("brand images: a fixed PNG allowlist served like the page itself; same-origin images only; nothing else under /brand", async () => {
+  for (const name of ["emblem", "mark", "lockup", "wordmark", "app-icon", "app-icon-180", "favicon"]) {
+    const response = await fetch(`${base}brand/${name}.png`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    expect([...bytes.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); // PNG signature
+    expect(bytes).toEqual(new Uint8Array(await Bun.file(new URL(`../public/brand/${name}.png`, import.meta.url)).arrayBuffer()));
+  }
+  const page = await fetch(base);
+  const csp = page.headers.get("content-security-policy")!;
+  expect(csp).toContain("default-src 'none'");
+  expect(csp).toContain("img-src 'self'");
+  expect(csp).not.toMatch(/img-src[^;]*(data:|https?:|\*)/);
+  for (const path of ["brand/other.png", "brand/emblem.png.bak", "brand/../src/server.ts", "brand/%2e%2e/src/server.ts", "brand/tokens.json", "brand/"]) {
+    expect((await fetch(base + path)).status).toBe(404);
+  }
+  expect((await fetch(base + "brand/emblem.png?x=1")).status).toBe(400);
+  expect((await fetch(base + "brand/emblem.png", { method: "POST", headers: { Origin: origin } })).status).toBe(405);
+});

@@ -26,7 +26,7 @@ export interface ServerOptions {
   log?: (entry: RequestLog) => void;
   heartbeatMs?: number;
 }
-const assets: Record<string, { body: string; type: string }> = {};
+const assets: Record<string, { body: string | ArrayBuffer; type: string }> = {};
 for (const [path, file, type] of [
   ["/", "index.html", "text/html; charset=utf-8"],
   ["/app.js", "app.js", "text/javascript; charset=utf-8"],
@@ -34,10 +34,16 @@ for (const [path, file, type] of [
 ] as const) {
   assets[path] = { body: await Bun.file(new URL(`../public/${file}`, import.meta.url)).text(), type };
 }
+// Brand images (raster crops of the approved board, see assets/reference/README.md): a fixed allowlist, loaded once,
+// public like the page itself (the login screen shows them). No path parameter, so no traversal surface.
+const BRAND_IMAGES = ["emblem", "mark", "lockup", "wordmark", "app-icon", "app-icon-180", "favicon"] as const;
+for (const name of BRAND_IMAGES) {
+  assets[`/brand/${name}.png`] = { body: await Bun.file(new URL(`../public/brand/${name}.png`, import.meta.url)).arrayBuffer(), type: "image/png" };
+}
 
 const ID = "([A-Za-z0-9][A-Za-z0-9._:-]{0,127})";
 type RouteName =
-  | "/" | "/app.js" | "/style.css" | "/api/health" | "/api/auth/login" | "/api/auth/logout" | "/api/auth/session"
+  | "/" | "/app.js" | "/style.css" | "/brand/:image" | "/api/health" | "/api/auth/login" | "/api/auth/logout" | "/api/auth/session"
   | "/api/vms" | "/api/projects" | "/api/vms/:id" | "/api/projects/:id" | "/api/vms/:id/threads" | "/api/dashboard" | "/api/events"
   | "/api/sessions" | "/api/sessions/:id" | "/api/sessions/:id/history" | "/api/sessions/:id/runs"
   | "/api/runs/:id" | "/api/runs/:id/interrupt" | "/api/runs/:id/reconcile" | "/api/approvals" | "/api/approvals/:id/decision";
@@ -45,6 +51,7 @@ const ROUTES: ReadonlyArray<{ name: RouteName; method: "GET" | "POST"; pattern: 
   { name: "/", method: "GET", pattern: /^\/$/ },
   { name: "/app.js", method: "GET", pattern: /^\/app\.js$/ },
   { name: "/style.css", method: "GET", pattern: /^\/style\.css$/ },
+  { name: "/brand/:image", method: "GET", pattern: new RegExp(`^/brand/(${BRAND_IMAGES.join("|")})\\.png$`) },
   { name: "/api/health", method: "GET", pattern: /^\/api\/health$/ },
   { name: "/api/auth/login", method: "POST", pattern: /^\/api\/auth\/login$/ },
   { name: "/api/auth/logout", method: "POST", pattern: /^\/api\/auth\/logout$/ },
@@ -66,9 +73,9 @@ const ROUTES: ReadonlyArray<{ name: RouteName; method: "GET" | "POST"; pattern: 
   { name: "/api/approvals", method: "GET", pattern: /^\/api\/approvals$/ },
   { name: "/api/approvals/:id/decision", method: "POST", pattern: new RegExp(`^/api/approvals/${ID}/decision$`) },
 ];
-const staticRoutes = new Set<RouteName>(["/", "/app.js", "/style.css"]);
+const staticRoutes = new Set<RouteName>(["/", "/app.js", "/style.css", "/brand/:image"]);
 const securityHeaders = {
-  "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+  "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
   "Cache-Control": "no-store",
@@ -266,7 +273,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           return json({ csrf: session.csrf, proof: session.proof });
         }
         if (staticRoutes.has(route)) {
-          const asset = assets[route]!;
+          const asset = assets[route === "/brand/:image" ? url.pathname : route]!;
           headers.set("Content-Type", asset.type);
           return new Response(asset.body, { status, headers });
         }
