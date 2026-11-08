@@ -1,10 +1,11 @@
 import { afterAll, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { bareRoot, fakeBun, pinnedVersion } from "./support/runtime.ts";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { configuredTokenFile, doctor, install, parseEnvFile, renderEnvFile, renderUnit, repoRoot, restartsAfter, rotateToken, rotationEffectMessage, servicePaths, uninstall, type Runner } from "../src/service.ts";
+import { configuredTokenFile, doctor, install, parseEnvFile, renderEnvFile, renderUnit, repoRoot, resolvePinnedRuntime, restartsAfter, rotateToken, rotationEffectMessage, servicePaths, uninstall, type Runner } from "../src/service.ts";
 import { RuntimeStore, procDatabaseHolders } from "../src/runtime-store.ts";
 
 /**
@@ -15,10 +16,9 @@ import { RuntimeStore, procDatabaseHolders } from "../src/runtime-store.ts";
 const root = repoRoot();
 const work = await mkdtemp(join(tmpdir(), "cockpit-f1-service-"));
 afterAll(async () => { await rm(work, { recursive: true, force: true }); });
-// A directory with the pinned runtime named `bun`, as on the operator's PATH.
+// A directory with a `bun` reporting the pinned version, as on the operator's PATH (hermetic: see tests/support/runtime.ts).
 const bunDir = join(work, "bin");
-await mkdir(bunDir);
-await symlink(process.execPath, join(bunDir, "bun"));
+await fakeBun(bunDir);
 
 function recorder(state: { active?: string; mainPid?: number; environment?: string; fragment?: string } = {}): { run: Runner; calls: string[][] } {
   const calls: string[][] = [];
@@ -144,10 +144,11 @@ test("install: invalid or unsafe settings are refused before anything is written
     [{ COCKPIT_MODE: "staging" }, "invalid_mode"],
     [{ PATH: "/nonexistent" }, "service_bun_unavailable"],
   ];
+  const isolated = await bareRoot(join(work, "root-isolated"), "none"); // no project-local runtime, whatever the checkout has
   for (const [extra, code] of cases) {
     const configHome = await home();
     let message = "";
-    try { await install({ env: mockEnv(configHome, extra), run: recorder().run }); } catch (error) { message = (error as Error).message; }
+    try { await install({ env: mockEnv(configHome, extra), run: recorder().run, root: isolated }); } catch (error) { message = (error as Error).message; }
     expect(`${JSON.stringify(extra)} → ${message}`).toBe(`${JSON.stringify(extra)} → ${code}`);
     expect(await Bun.file(servicePaths({ XDG_CONFIG_HOME: configHome }).tokenFile).exists()).toBe(false);
   }
@@ -339,5 +340,95 @@ test("F1-B: the message about when the rotated credential applies never claims a
     const message = rotationEffectMessage({ active });
     expect(message).toContain("desconhecido");
     expect(message).not.toContain("não está em execução");
+  }
+});
+
+// ---------------------------------------------------------------- runtime resolution = what scripts/cockpit would start
+let roots = 0;
+const newRoot = (local?: Parameters<typeof bareRoot>[1]) => bareRoot(join(work, `root-${++roots}`), local);
+const binWith = async (version?: string, mode?: number) => { const dir = join(work, `bin-${++roots}`); await fakeBun(dir, version, mode); return dir; };
+
+test("runtime resolution: PATH wins when it reports the pinned version; otherwise the project-local runtime, also only at the pinned version and executable", async () => {
+  const good = await binWith();
+  const wrong = await binWith("0.0.1");
+  const notExecutable = await binWith(pinnedVersion, 0o644);
+  expect(resolvePinnedRuntime(good, await newRoot("none"))).toEqual({ source: "path", dir: good });
+  expect(resolvePinnedRuntime(`${wrong}:${good}`, await newRoot("none"))).toEqual({ source: "path", dir: good }); // first PATH entry at the right version
+  expect(resolvePinnedRuntime(good, await newRoot({}))).toEqual({ source: "path", dir: good });                    // PATH before local, like the launcher
+  expect(resolvePinnedRuntime("/nonexistent", await newRoot({}))).toEqual({ source: "local" });
+  expect(resolvePinnedRuntime(wrong, await newRoot({}))).toEqual({ source: "local" });                             // wrong PATH bun falls back to a good local one
+  expect(resolvePinnedRuntime(undefined, await newRoot({}))).toEqual({ source: "local" });
+  // Nothing usable: absent, wrong version, not executable, relative PATH entries.
+  expect(resolvePinnedRuntime("/nonexistent", await newRoot("none"))).toBeNull();
+  expect(resolvePinnedRuntime(wrong, await newRoot("none"))).toBeNull();
+  expect(resolvePinnedRuntime(notExecutable, await newRoot("none"))).toBeNull();
+  expect(resolvePinnedRuntime(`relative/bin:.`, await newRoot("none"))).toBeNull();
+});
+
+test("a candidate bun that hangs is bounded by a deadline and refused, not waited for", async () => {
+  const dir = join(work, `bin-hang-${++roots}`);
+  await mkdir(dir);
+  await writeFile(join(dir, "bun"), "#!/bin/sh\nexec sleep 60\n", { mode: 0o755 });
+  const started = Date.now();
+  expect(resolvePinnedRuntime(dir, await newRoot("none"))).toBeNull();
+  expect(Date.now() - started).toBeLessThan(15_000);
+}, 20_000);
+
+test("regression (Arch): a project-local runtime that exists but is the wrong version or not executable is NOT accepted — install, doctor and the launcher agree", async () => {
+  for (const local of [{ version: "0.0.1" }, { mode: 0o644 }] as const) {
+    const configHome = await home();
+    const rootWithBadLocal = await newRoot(local);
+    await expect(install({ env: mockEnv(configHome, { PATH: "/nonexistent" }), run: recorder().run, root: rootWithBadLocal })).rejects.toThrow("service_bun_unavailable");
+    expect(await Bun.file(servicePaths({ XDG_CONFIG_HOME: configHome }).tokenFile).exists()).toBe(false); // nothing written
+  }
+});
+
+test("a good project-local runtime is accepted without PATH (as on Arch); the unit PATH does not include it; the launcher resolves it", async () => {
+  const configHome = await home();
+  const withLocal = await newRoot({});
+  await install({ env: mockEnv(configHome, { PATH: "/nonexistent" }), run: recorder().run, root: withLocal });
+  const paths = servicePaths({ XDG_CONFIG_HOME: configHome });
+  const values = parseEnvFile(await readFile(paths.envFile, "utf8"));
+  expect(values.PATH).toBe("/usr/local/bin:/usr/bin:/bin");
+  const report = await doctor({ env: mockEnv(configHome, { PATH: "/nonexistent" }), run: recorder({ fragment: paths.unitFile }).run, root: withLocal });
+  expect(report.checks.find(check => check.id === "bun")).toMatchObject({ status: "PASS" });
+  expect(report.checks.find(check => check.id === "bun")!.detail).toContain("runtime local");
+});
+
+test("doctor: the bun check FAILs for a service whose only runtime is a project-local one of the wrong version", async () => {
+  const configHome = await home();
+  const good = await newRoot({});
+  await install({ env: mockEnv(configHome, { PATH: "/nonexistent" }), run: recorder().run, root: good });
+  const paths = servicePaths({ XDG_CONFIG_HOME: configHome });
+  const broken = await newRoot({ version: "0.0.1" }); // the checkout's runtime was replaced by another version afterwards
+  const report = await doctor({ env: mockEnv(configHome, { PATH: "/nonexistent" }), run: recorder({ fragment: paths.unitFile }).run, root: broken });
+  expect(report.checks.find(check => check.id === "bun")).toMatchObject({ status: "FAIL" });
+});
+
+test("the real launcher (scripts/cockpit) and resolvePinnedRuntime agree on the same roots — no checkout can pass install yet fail to start", async () => {
+  // A PATH with only the utilities the launcher needs (no bun anywhere), so the machine's own Bun never decides the outcome.
+  const tools = join(work, "launcher-path");
+  await mkdir(tools);
+  for (const name of ["dirname", "cat", "mkdir"]) { const found = Bun.which(name); if (found) await symlink(found, join(tools, name)); }
+  const launch = async (root: string) => {
+    await mkdir(join(root, "scripts"), { recursive: true });
+    await Bun.write(join(root, "scripts/cockpit"), Bun.file(join(repoRoot(), "scripts/cockpit")));
+    await chmod(join(root, "scripts/cockpit"), 0o755);
+    const child = Bun.spawn([join(root, "scripts/cockpit"), "host-check"], { cwd: root, env: { PATH: tools }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { code: await child.exited, stdout: stdout.trim(), stderr: stderr.trim() };
+  };
+  const goodLocal = await newRoot({});
+  const wrongLocal = await newRoot({ version: "0.0.1" });
+  const noLocal = await newRoot("none");
+  const notExecutable = await newRoot({ mode: 0o644 });
+  // Launcher: runs the local runtime (the stand-in prints its version and exits 0) exactly when resolution says "local".
+  expect(resolvePinnedRuntime(tools, goodLocal)).toEqual({ source: "local" });
+  expect(await launch(goodLocal)).toMatchObject({ code: 0, stdout: pinnedVersion });
+  for (const root of [wrongLocal, noLocal, notExecutable]) {
+    expect(resolvePinnedRuntime(tools, root)).toBeNull();
+    const result = await launch(root);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/Bun (unavailable|version mismatch)/);
   }
 });

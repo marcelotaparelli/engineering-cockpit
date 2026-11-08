@@ -1,9 +1,10 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSystemdSmoke, SMOKE_UNIT, terminate } from "../src/f1-systemd-smoke.ts";
+import { bareRoot, fakeBun } from "./support/runtime.ts";
 import { renderUnit, repoRoot, type Runner } from "../src/service.ts";
 
 /**
@@ -14,8 +15,7 @@ const root = repoRoot();
 const work = await mkdtemp(join(tmpdir(), "cockpit-f1-smoke-"));
 afterAll(async () => { await rm(work, { recursive: true, force: true }); });
 const bin = join(work, "bin");
-await mkdir(bin);
-await symlink(process.execPath, join(bin, "bun"));
+await fakeBun(bin); // a `bun` reporting the pinned version: independent of the Bun running the suite (tests/support/runtime.ts)
 await writeFile(join(bin, "msb"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 let runs = 0;
 async function runtimeDir(): Promise<string> { const dir = join(work, `run-${++runs}`); await mkdir(dir, { mode: 0o700 }); return dir; }
@@ -42,6 +42,7 @@ function manager(options: { available?: boolean; loaded?: (unitFile: string) => 
 let currentXdg = "";
 
 test("F1-D smoke: preconditions refuse with NOT_VERIFIED (exit 2) and create nothing", async () => {
+  const isolated = await bareRoot(join(work, "root-isolated"), "none"); // never the real checkout: its tools/runtime (Arch) must not change the outcome
   const cases: Array<[Record<string, string>, string, boolean?]> = [
     [{ COCKPIT_F1_SMOKE_CONFIRMED: "" }, "confirmation_required"],
     [{ COCKPIT_SMOKE_VM: "claude-demo" }, "smoke_vm_must_be_codex"],
@@ -54,7 +55,7 @@ test("F1-D smoke: preconditions refuse with NOT_VERIFIED (exit 2) and create not
   for (const [extra, code, available] of cases) {
     const xdg = await runtimeDir(); currentXdg = xdg;
     const fake = manager({ available: available ?? true });
-    const report = await runSystemdSmoke({ env: baseEnv(xdg, extra), run: fake.run, proc: noProc });
+    const report = await runSystemdSmoke({ env: baseEnv(xdg, extra), run: fake.run, proc: noProc, root: isolated });
     expect(`${code} → ${report.overall} ${report.checks[0]!.reason}`).toBe(`${code} → NOT_VERIFIED ${code}`);
     expect(await readdir(xdg)).toEqual([]);
     expect(fake.calls.filter(argv => !argv.includes("show-environment"))).toEqual([]);
@@ -166,4 +167,19 @@ test("F1-D smoke: a signal only reaches msb processes that are members of the sm
     await terminate([bystander.pid], { ...proc, inGroup: () => true, isMsb: () => false }, group);
     expect(existsSync(`/proc/${bystander.pid}`)).toBe(true);
   } finally { for (const child of [bystander, ours]) { try { child.kill("SIGKILL"); } catch { /* gone */ } await child.exited; } }
+});
+
+test("F1-D smoke: precondition order is bun, then msb — a good project-local runtime (Arch checkout) moves the refusal to msb; a bad one stays a bun refusal", async () => {
+  const good = await bareRoot(join(work, "root-local-good"), {});
+  const bad = await bareRoot(join(work, "root-local-bad"), { version: "0.0.1" });
+  const none = await bareRoot(join(work, "root-local-none"), "none");
+  const outcome = async (root: string, path: string) => {
+    const xdg = await runtimeDir(); currentXdg = xdg;
+    const report = await runSystemdSmoke({ env: baseEnv(xdg, { PATH: path }), run: manager().run, proc: noProc, root });
+    expect(await readdir(xdg)).toEqual([]); // nothing created in any of them
+    return report.checks[0]!.reason;
+  };
+  expect(await outcome(none, "/nonexistent")).toBe("service_bun_unavailable");
+  expect(await outcome(bad, "/nonexistent")).toBe("service_bun_unavailable");  // exists but is not the pinned runtime
+  expect(await outcome(good, "/nonexistent")).toBe("service_msb_unavailable"); // runtime found through tools/runtime, msb is what is missing
 });

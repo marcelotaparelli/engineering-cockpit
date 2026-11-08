@@ -79,11 +79,9 @@ export function servicePath(env: Record<string, string | undefined>, mode: "mock
     }
     return null;
   };
-  const pinned = (readFileSync(join(root, ".bun-version"), "utf8")).trim();
-  const bunDir = find("bun");
-  const local = join(root, "tools/runtime/node_modules/.bin");
-  if (bunDir && bunVersion(join(bunDir, "bun")) === pinned) dirs.push(bunDir);
-  else if (!existsSync(join(local, "bun"))) throw new SafeError("service_bun_unavailable");
+  const runtime = resolvePinnedRuntime(env.PATH, root);
+  if (runtime === null) throw new SafeError("service_bun_unavailable");
+  if (runtime.source === "path") dirs.push(runtime.dir); // a project-local runtime is resolved by scripts/cockpit itself
   if (mode === "host") {
     const msbDir = find("msb");
     if (!msbDir) throw new SafeError("service_msb_unavailable");
@@ -94,9 +92,25 @@ export function servicePath(env: Record<string, string | undefined>, mode: "mock
   for (const dir of unique) if (!SAFE_PATH.test(dir)) throw new SafeError("service_path_unsafe");
   return unique.join(":");
 }
+/**
+ * The pinned Bun exactly as `scripts/cockpit` resolves it: the first `bun` on PATH whose `--version` equals `.bun-version`;
+ * otherwise the project-local `tools/runtime/node_modules/.bin/bun`, which must be executable AND report the pinned version.
+ * Existence alone proves nothing: a local file of another version, or one that does not run, makes the launcher refuse to
+ * start, so install/doctor/smoke must refuse it too (never report a service that cannot start as ready).
+ */
+export function resolvePinnedRuntime(pathVariable: string | undefined, root = repoRoot()): { source: "path"; dir: string } | { source: "local" } | null {
+  const pinned = readFileSync(join(root, ".bun-version"), "utf8").trim();
+  if (!pinned) return null;
+  for (const dir of (pathVariable ?? "").split(delimiter)) {
+    if (!dir.startsWith("/")) continue;
+    if (bunVersion(join(dir, "bun")) === pinned) return { source: "path", dir };
+  }
+  return bunVersion(join(root, "tools/runtime/node_modules/.bin/bun")) === pinned ? { source: "local" } : null;
+}
 function bunVersion(path: string): string | null {
   try {
-    const result = Bun.spawnSync([path, "--version"], { stdout: "pipe", stderr: "ignore", env: { PATH: "/usr/bin:/bin" } });
+    // Minimal environment and a deadline: a candidate that hangs must not hang install/doctor (the launcher only runs it as well).
+    const result = Bun.spawnSync([path, "--version"], { stdout: "pipe", stderr: "ignore", env: { PATH: "/usr/bin:/bin" }, timeout: 5000 });
     return result.exitCode === 0 ? result.stdout.toString().trim() : null;
   } catch { return null; }
 }
@@ -347,8 +361,9 @@ export async function doctor(options: { env: Record<string, string | undefined>;
     const dirs = (values.PATH ?? "").split(":");
     const has = (name: string) => dirs.some(dir => { try { return statSync(join(dir, name)).isFile(); } catch { return false; } });
     const pinned = readFileSync(join(root, ".bun-version"), "utf8").trim();
-    const bunOk = dirs.some(dir => { try { return statSync(join(dir, "bun")).isFile() && bunVersion(join(dir, "bun")) === pinned; } catch { return false; } }) || existsSync(join(root, "tools/runtime/node_modules/.bin/bun"));
-    add("bun", bunOk ? "PASS" : "FAIL", bunOk ? `Bun ${pinned} encontrado` : `Bun ${pinned} ausente do PATH do serviço (rode ./scripts/cockpit service install de um shell onde \`bun --version\` = ${pinned})`);
+    const runtime = resolvePinnedRuntime(values.PATH, root);
+    add("bun", runtime ? "PASS" : "FAIL", runtime ? `Bun ${pinned} ${runtime.source === "path" ? "no PATH do serviço" : "(runtime local do projeto, como o launcher)"}`
+      : `Bun ${pinned} ausente: nem no PATH do serviço nem em tools/runtime (existência não basta: precisa executar e informar ${pinned}). Rode ./scripts/cockpit service install de um shell onde \`bun --version\` = ${pinned}`);
     if (settings?.source === "host") add("msb", has("msb") ? "PASS" : "FAIL", has("msb") ? "msb no PATH do serviço" : "msb ausente do PATH do serviço");
   }
   const manager = await options.run(["systemctl", "--user", "show-environment"]);
