@@ -101,8 +101,19 @@ async function request(path, options = {}) {
 }
 const get = path => request(path);
 const post = async (path, body, extra = {}) => {
-  const result = await request(path, { method: 'POST', body: JSON.stringify(body),
+  const send = () => request(path, { method: 'POST', body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf || '', 'X-Request-Nonce': nonce(), ...extra } });
+  let result;
+  try { result = await send(); }
+  catch (error) {
+    if (error.status !== 403 || error.code !== 'csrf_denied') throw error;
+    // The server closed this CSRF epoch (bounded replay memory) after another request: nothing was executed, because CSRF is
+    // checked before any effect. Re-read the token ONCE and resend with a fresh nonce; a second refusal is reported as is.
+    const session = await get('/api/auth/session');
+    state.csrf = session.csrf;
+    applySessionInfo(session);
+    result = await send();
+  }
   noteServerRenewal(); // a CSRF-verified mutation is operator activity on the server too
   return result;
 };

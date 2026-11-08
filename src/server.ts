@@ -117,7 +117,7 @@ const CONFLICTS = new Set(["idempotency_key_conflict", "project_busy", "session_
   "run_not_interruptible", "target_unavailable", "invalid_run_transition", "orphan_process_alive"]);
 function errorStatus(code: string): number {
   if (code === "authentication_required" || code === "authentication_failed") return 401;
-  if (code === "auth_rate_limited" || code === "nonce_capacity_reached") return 429;
+  if (code === "auth_rate_limited") return 429;
   if (code === "resource_not_found" || code === "route_not_found") return 404;
   if (code === "method_not_allowed") return 405;
   if (code === "query_not_allowed" || code === "content_type_denied" || code === "invalid_body" || code === "invalid_prompt" ||

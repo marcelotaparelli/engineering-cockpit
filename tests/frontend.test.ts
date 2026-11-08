@@ -866,3 +866,40 @@ test("F1 (L5, review): a delta arriving after its run ended does not resurrect a
     expect(ui.document.querySelectorAll("#conversation .msg.agent").length).toBe(1);
   });
 });
+
+test("F1-A: a closed CSRF epoch costs one token re-read and one resend with a NEW nonce — never a second retry", async () => {
+  const posts: Call[] = [];
+  let refuse = 1;
+  let token = "csrf-synthetic";
+  const router = defaultRouter(call => {
+    if (call.method === "POST" && call.path === "/api/runs/run-i/interrupt") {
+      posts.push(call);
+      if (refuse-- > 0) { token = "csrf-epoch-2"; return { status: 403, body: { error: { code: "csrf_denied" } } }; }
+      return call.headers["X-CSRF-Token"] === token ? { status: 202, body: { ...runWith("running"), run_id: "run-i" } } : { status: 403, body: { error: { code: "csrf_denied" } } };
+    }
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([runWith("running")]) };
+    return undefined;
+  });
+  const previous = sessionReply;
+  sessionReply = () => ({ status: 200, body: { csrf: token, expires_at: new Date(Date.now() + 30 * 60_000).toISOString(), absolute_expires_at: new Date(Date.now() + 12 * 3_600_000).toISOString(), idle_timeout_seconds: 1800 } });
+  try {
+    await withUi(router, async ui => {
+      click(ui.document.querySelector(".agent"));
+      await settle();
+      click(ui.document.getElementById("interrupt"));
+      await settle(150);
+      expect(posts).toHaveLength(2);
+      expect(posts[0]!.headers["X-CSRF-Token"]).toBe("csrf-synthetic");
+      expect(posts[1]!.headers["X-CSRF-Token"]).toBe("csrf-epoch-2");
+      expect(posts[1]!.headers["X-Request-Nonce"]).not.toBe(posts[0]!.headers["X-Request-Nonce"]);
+      expect(ui.document.getElementById("composer-note")!.textContent).toContain("Interrupção solicitada");
+      // A refusal after the re-read is reported, not retried again.
+      refuse = 5; posts.length = 0;
+      (ui.document.getElementById("interrupt") as unknown as HTMLButtonElement).disabled = false; // stays disabled after a success
+      click(ui.document.getElementById("interrupt"));
+      await settle(150);
+      expect(posts).toHaveLength(2);
+      expect(ui.document.getElementById("error")!.textContent).toContain("Sessão desta aba inválida");
+    });
+  } finally { sessionReply = previous; }
+});

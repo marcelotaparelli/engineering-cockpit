@@ -10,8 +10,14 @@ import type { RuntimeStore, RunRecord, SessionRecord } from "./runtime-store.ts"
 export const SESSION_IDLE_MS = 30 * 60_000;
 export const SESSION_MAX_MS = 12 * 60 * 60_000;
 const MAX_SESSIONS = 32;
-/** Nonces are kept for the whole session (replay protection does not decay); sized for a 12 h working day of mutations. */
-const MAX_NONCES = 4096;
+/**
+ * Replay protection without a capacity dead end (F1-A). Nonces are remembered per CSRF *epoch*. When an epoch holds
+ * MAX_NONCES_PER_EPOCH nonces it is closed: the session gets a fresh CSRF token and an empty set. Every request of a closed
+ * epoch still carries the old token and is refused (`csrf_denied`), so a captured request can never be replayed, memory stays
+ * bounded (one set per session), and no mutation — interrupt included — is ever refused for capacity. The page re-reads the
+ * token once on `csrf_denied` (nothing was executed: CSRF is checked before any effect) and resends with a new nonce.
+ */
+export const MAX_NONCES_PER_EPOCH = 1024;
 const FAILURE_WINDOW_MS = 60_000;
 const MAX_FAILURES = 5;
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -24,6 +30,8 @@ interface LocalSession {
   id: string;
   proof: string;
   csrf: string;
+  /** Closed CSRF epochs so far (diagnostics/tests only). */
+  epoch: number;
   createdAt: number;
   lastActivityAt: number;
   nonces: Set<string>;
@@ -39,9 +47,10 @@ export class LocalSecurity {
   readonly #now: () => number;
   readonly #idleMs: number;
   readonly #maxMs: number;
+  readonly #maxNonces: number;
 
   constructor(credential: string, projects: readonly string[], now: () => number = Date.now,
-    limits: { idleMs?: number; maxMs?: number } = {}) {
+    limits: { idleMs?: number; maxMs?: number; maxNoncesPerEpoch?: number } = {}) {
     if (!tokenPattern.test(credential)) throw new SafeError("local_credential_required");
     if (projects.length === 0 || projects.some(project => !validProject(project)) || new Set(projects).size !== projects.length) {
       throw new SafeError("local_grants_required");
@@ -51,7 +60,10 @@ export class LocalSecurity {
     this.#now = now;
     this.#idleMs = limits.idleMs ?? SESSION_IDLE_MS;
     this.#maxMs = limits.maxMs ?? SESSION_MAX_MS;
-    if (!(this.#idleMs > 0 && this.#maxMs >= this.#idleMs)) throw new SafeError("invalid_session_limits");
+    this.#maxNonces = limits.maxNoncesPerEpoch ?? MAX_NONCES_PER_EPOCH;
+    if (!(this.#idleMs > 0 && this.#maxMs >= this.#idleMs) || !Number.isSafeInteger(this.#maxNonces) || this.#maxNonces < 1 || this.#maxNonces > 65_536) {
+      throw new SafeError("invalid_session_limits");
+    }
   }
 
   /** Cookie lifetime: the absolute ceiling (the server enforces the idle deadline itself). */
@@ -74,7 +86,7 @@ export class LocalSecurity {
     if (prior) this.#sessions.delete(prior.session.id);
     if (this.#sessions.size >= MAX_SESSIONS) this.#sessions.delete(this.#sessions.keys().next().value!);
     // Always a fresh identifier (no fixation): a cookie value is only ever accepted if this server minted it at login.
-    const session: LocalSession = { id: random(), proof: random(), csrf: random(), createdAt: now, lastActivityAt: now, nonces: new Set() };
+    const session: LocalSession = { id: random(), proof: random(), csrf: random(), epoch: 0, createdAt: now, lastActivityAt: now, nonces: new Set() };
     this.#sessions.set(session.id, session);
     return { cookie: session.id, proof: session.proof, csrf: session.csrf };
   }
@@ -97,9 +109,13 @@ export class LocalSecurity {
 
   csrf(principal: LocalPrincipal, token: string | null, nonce: string | null): void {
     if (!token || token.length > 128 || !nonce || !noncePattern.test(nonce) || !equal(digest(token), digest(principal.session.csrf))) throw new SafeError("csrf_denied");
-    if (principal.session.nonces.has(nonce)) throw new SafeError("replay_denied");
-    if (principal.session.nonces.size >= MAX_NONCES) throw new SafeError("nonce_capacity_reached");
-    principal.session.nonces.add(nonce);
+    // A session revoked or expired since `authenticate` accepts nothing (and its epoch can no longer move).
+    if (!this.isActive(principal)) throw new SafeError("authentication_required");
+    const session = principal.session;
+    if (session.nonces.has(nonce)) throw new SafeError("replay_denied");
+    session.nonces.add(nonce);
+    // Epoch full: close it AFTER accepting this request. Its token dies with it, so none of its requests can come back.
+    if (session.nonces.size >= this.#maxNonces) { session.csrf = random(); session.nonces = new Set(); session.epoch++; }
     // A CSRF-verified mutation is operator activity by construction (only the page's own script can send it).
     this.touch(principal);
   }

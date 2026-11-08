@@ -119,3 +119,32 @@ test("the live stream does not renew the session and is closed when the idle dea
   expect(JSON.stringify(logs)).not.toContain(s.proof);
   expect(JSON.stringify(logs)).not.toContain(credential);
 });
+
+test("F1-A over HTTP: 1 250 concurrent mutations (with duplicates) across an epoch boundary — no 429, no double acceptance, critical action still possible, replays refused", async () => {
+  const s = await login();
+  const post = (path: string, csrf: string, nonce: string) => fetch(base + path, { method: "POST", body: "{}", headers: auth(s, { Origin: origin,
+    "Content-Type": "application/json", "X-CSRF-Token": csrf, "X-Request-Nonce": nonce }) });
+  const nonces = Array.from({ length: 1200 }, (_, i) => `epoch-nonce-${String(i).padStart(12, "0")}`);
+  const burst = [...nonces, ...nonces.slice(0, 50)]; // 50 concurrent duplicates
+  const responses = await Promise.all(burst.map(async nonce => {
+    const response = await post("api/sessions", s.csrf, nonce);
+    const body = await response.json() as { error?: { code: string } };
+    return { nonce, status: response.status, code: body.error?.code ?? null };
+  }));
+  const accepted = responses.filter(r => r.status === 400 && r.code === "invalid_body"); // CSRF passed; the empty body is then refused
+  expect(responses.every(r => r.status === 400 || (r.status === 403 && (r.code === "replay_denied" || r.code === "csrf_denied")))).toBe(true);
+  expect(responses.some(r => r.status === 429)).toBe(false);
+  expect(accepted).toHaveLength(1024); // exactly one full epoch accepted with the original token
+  expect(new Set(accepted.map(r => r.nonce)).size).toBe(accepted.length); // no nonce accepted twice
+  // The operator's next critical action works after a single token re-read (what the page does on csrf_denied).
+  const nextCsrf = (await (await fetch(base + "api/auth/session", { headers: auth(s) })).json() as { csrf: string }).csrf;
+  expect(nextCsrf).not.toBe(s.csrf);
+  const interrupt = await post("api/runs/run-absent/interrupt", nextCsrf, "critical-interrupt-0000000001");
+  expect([404, 409]).toContain(interrupt.status); // CSRF accepted; the (absent) run is what refuses
+  // Every request of the closed epoch is refused on replay, accepted ones included.
+  const replays = await Promise.all(accepted.slice(0, 200).map(r => post("api/sessions", s.csrf, r.nonce).then(x => x.status)));
+  expect(replays.every(status => status === 403)).toBe(true);
+  // Revocation is unaffected.
+  expect((await post("api/auth/logout", nextCsrf, "logout-after-epoch-000000001")).status).toBe(200);
+  expect((await post("api/sessions", nextCsrf, "after-logout-0000000000001")).status).toBe(401);
+});
