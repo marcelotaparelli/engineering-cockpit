@@ -39,6 +39,8 @@ export interface ExecutionOptions {
   processes?: { blocking(vmName: string, providerSessionId: string): OrphanProcess | null; orphans(): OrphanProcess[] };
   /** Re-persist interval of streamed partial text (E3.1/E4). Default 1000 ms. */
   partialFlushMs?: number;
+  /** F1 (D8): VMs never operated, whatever the provider (`COCKPIT_RESERVED_VMS`). Adapters may refuse more on their own. */
+  reservedVms?: readonly string[];
 }
 
 export interface ApprovalView extends ApprovalRecord {
@@ -124,6 +126,7 @@ export class ExecutionService {
   readonly #log: (entry: ExecutionLog) => void;
   readonly #partialFlushMs: number;
   readonly #processes: ExecutionOptions["processes"];
+  readonly #reserved: ReadonlySet<string>;
   readonly #startedAt: string;
   readonly #stats: ReliabilityCounters = { runs_dispatched: 0, dispatch_failed: 0, dispatch_unconfirmed: 0, dispatch_blocked_orphan: 0, transport_lost: 0,
     provider_session_lost: 0, vm_stopped: 0, approval_delivery_unconfirmed: 0, transitions_rejected: 0, transcript_write_failed: 0, reconcile_confirmed: 0, reconcile_unconfirmed: 0 };
@@ -149,6 +152,7 @@ export class ExecutionService {
     this.#digestKey = options.digestKey ?? randomBytes(32);
     this.#log = options.log ?? (entry => console.log(JSON.stringify(entry)));
     this.#processes = options.processes;
+    this.#reserved = new Set(options.reservedVms ?? []);
     this.#startedAt = this.#now().toISOString();
     this.#partialFlushMs = options.partialFlushMs ?? PARTIAL_FLUSH_MS;
     if (!Number.isSafeInteger(this.#partialFlushMs) || this.#partialFlushMs < 1) throw new SafeError("invalid_partial_flush_interval");
@@ -158,10 +162,17 @@ export class ExecutionService {
     }
   }
 
-  /** True when a registered adapter can operate this VM (provider supported and the VM not reserved by the adapter). */
+  /** True when a registered adapter can operate this VM (provider supported and the VM not reserved by config or adapter). */
   supports(provider: Provider, vmName?: string): boolean {
     const adapter = this.#adapters.get(provider);
+    if (vmName !== undefined && this.#reserved.has(vmName)) return false;
     return Boolean(adapter && (vmName === undefined || !adapter.acceptsTarget || adapter.acceptsTarget(vmName)));
+  }
+
+  /** Why a VM is not operable, for display only: reserved by configuration/adapter, or a provider without adapter. */
+  unsupportedReason(provider: Provider, vmName: string): "reserved" | "provider" | null {
+    if (this.supports(provider, vmName)) return null;
+    return this.#adapters.has(provider) ? "reserved" : "provider";
   }
 
   capabilities(provider: Provider): ProviderCapabilities | null {

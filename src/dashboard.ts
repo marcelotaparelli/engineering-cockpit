@@ -4,7 +4,7 @@ import type { RunRecord, RuntimeStore } from "./runtime-store.ts";
 import type { ExecutionService } from "./execution.ts";
 import { vmIdentity } from "./model.ts";
 
-export type AgentState = "working" | "blocked" | "awaiting_approval" | "completed" | "failed" | "interrupted" | "unknown" | "idle" | "offline";
+export type AgentState = "working" | "blocked" | "awaiting_approval" | "completed" | "failed" | "interrupted" | "unknown" | "idle" | "offline" | "unsupported";
 
 const NEXT_STEP: Readonly<Record<AgentState, string>> = {
   working: "Acompanhar ou interromper",
@@ -16,7 +16,13 @@ const NEXT_STEP: Readonly<Record<AgentState, string>> = {
   unknown: "Reconciliar: estado não confirmado, nada foi reenviado",
   idle: "Abrir sessão e enviar prompt",
   offline: "VM parada ou ausente: iniciar pelo launcher",
+  unsupported: "Provider sem suporte no Cockpit",
 };
+/** F1 (L6): an observed VM the Cockpit will not operate is not "offline": say why, without implying it is stopped. */
+const UNSUPPORTED_STEP = {
+  provider: NEXT_STEP.unsupported,
+  reserved: "Reservada em COCKPIT_RESERVED_VMS",
+} as const;
 
 function vmProvider(vmName: string): string | null { return /^(codex|claude|opencode)-/.exec(vmName)?.[1] ?? null; }
 
@@ -65,11 +71,13 @@ export function buildDashboard(input: {
     // Without an ExecutionService (display-only server) the historical Codex-only rule applies.
     const supported = vm !== null && (input.execution ? input.execution.supports(vm.provider, vm.vm_name) : vm.provider === "codex");
     const runnable = vm !== null && supported && vm.state === "running" && !vm.orphaned;
+    const unsupported = vm !== null && !supported ? input.execution?.unsupportedReason(vm.provider, vm.vm_name) ?? "provider" : null;
     let state: AgentState = focus?.state ?? "idle";
-    if (!runnable && state === "idle") state = "offline";
+    if (!runnable && state === "idle") state = unsupported ? "unsupported" : "offline";
     return {
       vm_name: name, project: vm?.project ?? focus?.project ?? null, provider: vm?.provider ?? vmProvider(name), vm_state: vm?.state ?? "unknown",
-      orphaned: vm?.orphaned ?? false, runnable, capabilities: vm ? input.execution?.capabilities(vm.provider) ?? null : null, state, next_step: NEXT_STEP[state], session_id: focus?.session_id ?? null,
+      orphaned: vm?.orphaned ?? false, runnable, unsupported, capabilities: vm ? input.execution?.capabilities(vm.provider) ?? null : null, state,
+      next_step: state === "unsupported" && unsupported ? UNSUPPORTED_STEP[unsupported] : NEXT_STEP[state], session_id: focus?.session_id ?? null,
       run_id: focus?.latest_run?.run_id ?? null, last_activity: focus?.last_activity ?? null, sessions: forVm.length,
     };
   });

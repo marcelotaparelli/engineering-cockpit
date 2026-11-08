@@ -10,8 +10,9 @@ import type { JsonObject } from "./jsonl.ts";
  */
 
 export const CLAUDE_VM_PREFIX = "claude-";
-/** The development VM; it must never be a spike target. */
+/** The development VM; it must never be a spike target. It is also the default of `COCKPIT_RESERVED_VMS` (D8). */
 export const FORBIDDEN_E2_VMS: readonly string[] = Object.freeze(["claude-engineering-cockpit"]);
+export const DEFAULT_RESERVED_VMS: readonly string[] = FORBIDDEN_E2_VMS;
 
 /** Flags the spike needs. `--permission-prompts` (host) or the legacy `--permission-prompt-tool` must exist: at least one. */
 export const REQUIRED_FLAGS = Object.freeze(["--print", "--input-format", "--output-format", "--include-partial-messages", "--resume", "--session-id", "--permission-mode", "--replay-user-messages", "--verbose"] as const);
@@ -37,16 +38,17 @@ export function probeCapabilities(versionText: string, helpText: string): Capabi
 }
 
 /** The host-side `msb exec --stream` argv for a one-shot, non-interactive command in an exclusive Claude VM. */
-export function claudeExecArgv(vmName: string, command: readonly string[]): readonly string[] {
-  assertClaudeTarget(vmName);
+export function claudeExecArgv(vmName: string, command: readonly string[], reserved: readonly string[] = FORBIDDEN_E2_VMS): readonly string[] {
+  assertClaudeTarget(vmName, reserved);
   for (const part of command) if (typeof part !== "string" || part.includes("\0")) throw new SafeError("invalid_claude_argv");
   return Object.freeze(["msb", "exec", "--stream", vmName, "--", ...command]);
 }
 
-export function assertClaudeTarget(vmName: string): void {
+/** `reserved` defaults to the development VM; the Cockpit passes the configured `COCKPIT_RESERVED_VMS` list. */
+export function assertClaudeTarget(vmName: string, reserved: readonly string[] = FORBIDDEN_E2_VMS): void {
   const identity = vmIdentity(vmName);
   if (identity.provider !== "claude") throw new SafeError("e2_target_not_claude");
-  if (FORBIDDEN_E2_VMS.includes(vmName)) throw new SafeError("e2_target_forbidden");
+  if (reserved.includes(vmName)) throw new SafeError("e2_target_forbidden");
 }
 
 /** Routes permission prompts (and AskUserQuestion) to the host over stdio as `control_request`/`can_use_tool`. */
@@ -60,7 +62,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * `--permission-mode default` keeps every tool use gated; the human decides through control_request/response.
  * Never `--dangerously-skip-permissions`, never `bypassPermissions`.
  */
-export function claudeStreamArgv(vmName: string, options: TurnProcessOptions): readonly string[] {
+export function claudeStreamArgv(vmName: string, options: TurnProcessOptions, reserved: readonly string[] = FORBIDDEN_E2_VMS): readonly string[] {
   if (options.sessionId !== undefined && options.resume !== undefined) throw new SafeError("invalid_claude_argv");
   for (const id of [options.sessionId, options.resume]) if (id !== undefined && !UUID.test(id)) throw new SafeError("invalid_claude_session_id");
   // `--permission-prompts host` only says prompts are not auto-denied; the route to THIS process's stdio is the hidden
@@ -70,7 +72,7 @@ export function claudeStreamArgv(vmName: string, options: TurnProcessOptions): r
   const prompts = options.permissionPrompt === "host" ? ["--permission-prompts", "host", ...STDIO_PROMPT_TOOL] : [...STDIO_PROMPT_TOOL];
   return claudeExecArgv(vmName, ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     "--include-partial-messages", "--replay-user-messages", "--permission-mode", "default", ...prompts,
-    ...(options.sessionId ? ["--session-id", options.sessionId] : []), ...(options.resume ? ["--resume", options.resume] : [])]);
+    ...(options.sessionId ? ["--session-id", options.sessionId] : []), ...(options.resume ? ["--resume", options.resume] : [])], reserved);
 }
 
 // ------------------------------------------------------------------------------------ outbound (host → claude)

@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { config } from "./config.ts";
+import { config, EXIT_STARTUP_REFUSED } from "./config.ts";
 import { readHostVmList } from "./adapter.ts";
 import { Discovery, mockOutput } from "./discovery.ts";
 import { SnapshotStore } from "./store.ts";
@@ -41,14 +41,15 @@ try {
     : new FakeCodexTransport(fakeWorld(target.vmName)));
   // Claude Code: `msb exec --stream` + `claude -p` stream-json on the host; an in-process simulated CLI in mock mode.
   const claudeWorlds = new Map<string, FakeClaudeWorld>();
-  const claude = new ClaudeCodeAdapter(settings.source === "host" ? { spawn } : { spawn: (argv, options) => {
+  const claude = new ClaudeCodeAdapter(settings.source === "host" ? { spawn, reservedVms: settings.reservedVms } : { reservedVms: settings.reservedVms, spawn: (argv, options) => {
     const vm = argv[3] ?? "";
     let world = claudeWorlds.get(vm);
     if (!world) { world = newFakeWorld(); claudeWorlds.set(vm, world); }
     return fakeClaudeSpawn(world)(argv, options);
   } });
   const digestKey = loadDigestKey(join(dirname(settings.runtimeDatabasePath), "digest.key"));
-  const execution = new ExecutionService({ store: runtime, adapters: [adapter, claude], hub, refresh: () => discovery.refresh(), digestKey, processes });
+  const execution = new ExecutionService({ store: runtime, adapters: [adapter, claude], hub, refresh: () => discovery.refresh(), digestKey, processes,
+    reservedVms: settings.reservedVms });
   const server = startServer({ discovery, source: settings.source, port: settings.port, security, runtime, execution, hub });
   console.log(JSON.stringify({ event: "listening", url: server.url.toString(), source: settings.source, host_verification: "not_verified", runtime_ownership: runtime.ownership }));
   // Synchronously after `listening` (the first stdout line is a contract) and before any request can be served.
@@ -62,6 +63,8 @@ try {
     void (async () => { server.stop(true); await execution.close().catch(() => {}); runtime.close(); store.close(); process.exit(0); })();
   });
 } catch (error) {
-  console.error(JSON.stringify({ event: "startup_failed", error_code: safeCode(error) }));
-  process.exitCode = 1;
+  // F1: a refused startup (configuration, credential file, host, database owned by another instance, port) is not transient.
+  // A distinct status lets the systemd unit stop instead of restarting into the same conflict (RestartPreventExitStatus).
+  console.error(JSON.stringify({ event: "startup_failed", error_code: safeCode(error), exit_status: EXIT_STARTUP_REFUSED }));
+  process.exitCode = EXIT_STARTUP_REFUSED;
 }

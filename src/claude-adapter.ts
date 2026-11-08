@@ -37,6 +37,8 @@ export const MIN_CLAUDE_MAJOR = 2;
 
 export interface ClaudeAdapterOptions {
   spawn?: MsbSpawn;
+  /** Extra VMs never operated (`COCKPIT_RESERVED_VMS`), always on top of the development VM. Enforced again in every argv built. */
+  reservedVms?: readonly string[];
   /** Open `claude` processes per VM (one per loaded session). */
   maxSessions?: number;
   /** A process with no turn and no pending request is closed after this long; the next prompt resumes it. */
@@ -152,19 +154,19 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
   constructor(options: ClaudeAdapterOptions = {}) {
     this.#options = {
-      spawn: options.spawn ?? hostSpawn, maxSessions: options.maxSessions ?? 4, idleMs: options.idleMs ?? 20 * 60_000,
+      spawn: options.spawn ?? hostSpawn, reservedVms: Object.freeze([...new Set([...FORBIDDEN_E2_VMS, ...(options.reservedVms ?? [])])]), maxSessions: options.maxSessions ?? 4, idleMs: options.idleMs ?? 20 * 60_000,
       maxTurnMs: options.maxTurnMs ?? 2 * 60 * 60_000, turnKillGraceMs: options.turnKillGraceMs ?? 30_000,
       maxPendingPerSession: options.maxPendingPerSession ?? 8, probeTimeoutMs: options.probeTimeoutMs ?? 20_000,
       closeGraceMs: options.closeGraceMs ?? 3000, maxTranscriptItems: options.maxTranscriptItems ?? 500,
       maxTranscripts: options.maxTranscripts ?? 64, maxQueuedEvents: options.maxQueuedEvents ?? 20_000,
     };
     for (const [key, value] of Object.entries(this.#options)) {
-      if (key !== "spawn" && !(Number.isSafeInteger(value) && (value as number) > 0)) throw new SafeError("invalid_claude_limits");
+      if (key !== "spawn" && key !== "reservedVms" && !(Number.isSafeInteger(value) && (value as number) > 0)) throw new SafeError("invalid_claude_limits");
     }
   }
 
   acceptsTarget(vmName: string): boolean {
-    try { assertClaudeTarget(vmName); return true; } catch { return false; }
+    try { assertClaudeTarget(vmName, this.#options.reservedVms); return true; } catch { return false; }
   }
 
   async probe(): Promise<ProviderCapabilities> { return { ...this.capabilities }; }
@@ -172,7 +174,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   async connect(target: ExecutionTarget): Promise<ProviderConnection> {
     if (target.provider !== "claude" || !validProject(target.projectId) || !target.discoveryVersion) throw new SafeError("provider_target_invalid");
     const identity = vmIdentity(target.vmName);
-    if (identity.provider !== "claude" || identity.project !== target.projectId || FORBIDDEN_E2_VMS.includes(target.vmName)) throw new SafeError("provider_target_invalid");
+    if (identity.provider !== "claude" || identity.project !== target.projectId || this.#options.reservedVms.includes(target.vmName)) throw new SafeError("provider_target_invalid");
     return new ClaudeConnection(target.vmName, this.#options);
   }
 }
@@ -200,7 +202,7 @@ class ClaudeConnection implements ProviderConnection {
     if (this.#closed) throw new SafeError("provider_connection_closed");
     if (this.#permissionPrompt) throw new SafeError("provider_already_initialized");
     // Read-only probe inside the VM: version, flag surface and login state. No prompt, no quota, no credential is read.
-    const run = (command: string[]) => execClaudeOnce(this.#o.spawn, this.#vm, command, this.#o.probeTimeoutMs)
+    const run = (command: string[]) => execClaudeOnce(this.#o.spawn, this.#vm, command, this.#o.probeTimeoutMs, this.#o.reservedVms)
       .catch(error => { throw new SafeError(error instanceof SafeError && error.code === "claude_command_timeout" ? "provider_probe_timeout" : "provider_probe_failed"); });
     const version = await run(["claude", "--version"]);
     const help = await run(["claude", "--help"]);
@@ -337,7 +339,7 @@ class ClaudeConnection implements ProviderConnection {
     }
     let child: MsbChild;
     try {
-      child = this.#o.spawn(claudeStreamArgv(this.#vm, { ...mode, permissionPrompt: this.#permissionPrompt! }),
+      child = this.#o.spawn(claudeStreamArgv(this.#vm, { ...mode, permissionPrompt: this.#permissionPrompt! }, this.#o.reservedVms),
         { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: minimalChildEnv() });
     } catch (error) { throw error instanceof SafeError && error.code.startsWith("invalid_claude") ? new SafeError("provider_input_invalid") : new SafeError("provider_spawn_failed"); }
     const session: SessionProcess = { id, proc: new ClaudeStreamProcess(child), turn: null, pending: new Map(), lastActivity: Date.now(), closing: null, initSeen: false };

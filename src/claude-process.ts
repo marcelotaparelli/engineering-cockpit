@@ -120,8 +120,8 @@ export class ClaudeStreamProcess {
  * One short, read-only command inside a Claude VM (`claude --version`, `--help`, `auth status`): stdin closed at once,
  * stderr discarded, stdout bounded, hard deadline, child always killed. Never used to send prompts.
  */
-export async function execClaudeOnce(spawn: MsbSpawn, vm: string, command: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string }> {
-  const child = spawn(claudeExecArgv(vm, command), { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: minimalChildEnv() });
+export async function execClaudeOnce(spawn: MsbSpawn, vm: string, command: string[], timeoutMs: number, reserved?: readonly string[]): Promise<{ code: number | null; stdout: string }> {
+  const child = spawn(claudeExecArgv(vm, command, reserved), { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: minimalChildEnv() });
   try { await child.stdin.end(); } catch { /* not needed */ }
   void (async () => { const reader = child.stderr.getReader(); try { while (!(await reader.read()).done) { /* discard */ } } catch { /* ignored */ } })();
   let stdout = "";
