@@ -289,7 +289,7 @@ describe("MVP vertical flow over HTTP", () => {
     await Bun.sleep(1200);
     const reconciled = await post(auth, `api/runs/${run.run_id}/reconcile`, {});
     expect(reconciled.status).toBe(200);
-    expect(await reconciled.json()).toMatchObject({ status: "completed", reason_code: "reconciled" });
+    expect(await reconciled.json()).toMatchObject({ status: "completed", reason_code: "reconciled", reconciliation: { result: "confirmed", reason_code: "reconciled" } });
     expect(worlds.get("codex-alpha")!.turnStarts).toBe(before + 1);
   });
 

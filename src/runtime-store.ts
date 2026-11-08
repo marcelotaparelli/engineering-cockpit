@@ -445,6 +445,25 @@ export class RuntimeStore {
     })();
   }
 
+  /**
+   * E4: sharpen WHY a run is `unknown` when later evidence arrives (e.g. its VM was found stopped right after the loss).
+   * The status stays `unknown` — new evidence about the cause is never evidence about the outcome. Only from the listed reasons.
+   */
+  refineUnknownReason(runId: string, from: readonly string[], to: string, occurredAt: string): RunRecord | null {
+    requireId(runId); requireTime(occurredAt);
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(to)) throw new SafeError("invalid_reason_code");
+    return this.db.transaction(() => {
+      const current = this.#requireRun(runId);
+      if (current.status !== "unknown" || current.reasonCode === null || !from.includes(current.reasonCode)) return null;
+      const version = current.lifecycleVersion + 1;
+      const update = this.db.prepare("UPDATE runs SET lifecycle_version=?, reason_code=? WHERE run_id=? AND lifecycle_version=? AND status='unknown'")
+        .run(version, to, runId, current.lifecycleVersion);
+      if (update.changes !== 1) return null;
+      this.#insertJournal({ eventId: `${runId}:${version}`, runId, type: "run.status_changed", occurredAt, payload: { from: "unknown", to: "unknown", reasonCode: to } });
+      return this.#requireRun(runId);
+    })();
+  }
+
   appendJournal(input: JournalInput & { type: "operation.notice" }): JournalRecord {
     return this.db.transaction(() => this.#insertJournal(input))();
   }

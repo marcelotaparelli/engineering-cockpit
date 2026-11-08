@@ -24,6 +24,15 @@ const REASON = {
   provider_status_unknown: 'O agente retornou um estado não reconhecido.',
   provider_session_lost: 'O processo do agente na VM terminou durante a execução. Nada foi reenviado; confira o resultado na VM antes de repetir.',
   turn_time_limit: 'A execução passou do tempo máximo e foi encerrada pelo Cockpit. Nada foi reenviado.',
+  cockpit_shutdown: 'O Cockpit foi encerrado (Ctrl+C/SIGTERM) durante a execução. O que já tinha sido transmitido foi salvo; nada foi reenviado.',
+  vm_stopped: 'A VM parou ou deixou de existir durante a execução (verificado logo após a queda). Nada foi reenviado; o que já rodou dentro da VM não é conhecido.',
+  provider_handle_lost: 'O agente não está mais esperando por esta decisão (a conexão ou o processo terminou).',
+  run_ended: 'A execução terminou antes da decisão.',
+  ttl_elapsed: 'O prazo para decidir terminou.',
+  provider_resolved: 'O próprio agente encerrou o pedido.',
+  provider_run_unbound: 'O envio pode ter chegado ao agente, mas ele nunca devolveu um identificador da execução, então não há o que consultar. Confira na VM antes de repetir.',
+  provider_cannot_confirm: 'Este agente só confirma uma execução pelo processo que a executava, e esse processo não existe mais (queda ou reinício). O estado continua não confirmado; confira na VM antes de repetir.',
+  provider_reports_unknown: 'O agente não soube informar o estado desta execução. Ela continua não confirmada.',
 };
 const ERROR_TEXT = {
   project_busy: 'Já existe uma execução ativa neste projeto. Aguarde ou interrompa antes de enviar outra.',
@@ -618,7 +627,13 @@ $('interrupt').addEventListener('click', async () => {
 $('reconcile').addEventListener('click', async () => {
   if (!state.run) return;
   $('reconcile').disabled = true;
-  try { await post(`/api/runs/${encodeURIComponent(state.run.run_id)}/reconcile`, {}); await refreshAll(); await loadHistory(); }
+  try {
+    const result = await post(`/api/runs/${encodeURIComponent(state.run.run_id)}/reconcile`, {});
+    const outcome = result && result.reconciliation;
+    // Without provider evidence the run stays "não confirmado": say why, never imply success or failure.
+    await refreshAll(); await loadHistory();
+    if (outcome && outcome.result === 'unconfirmed') showError(`Reconciliação sem evidência: ${REASON[outcome.reason_code] || outcome.reason_code}`);
+  }
   catch (error) { showError(`Reconciliação indisponível: ${ERROR_TEXT[error.code] || error.code}`); }
   finally { $('reconcile').disabled = false; }
 });
@@ -672,7 +687,8 @@ async function refreshAll() {
 }
 function onJournal(event) {
   scheduleRefresh();
-  if (event.session_id === state.sessionId && event.payload && TERMINAL.has(event.payload.to)) {
+  // A run that ended — including one that became "não confirmado" — is redrawn from the persisted history (incomplete items).
+  if (event.session_id === state.sessionId && event.payload && (TERMINAL.has(event.payload.to) || event.payload.to === 'unknown')) {
     setTimeout(() => { if (state.sessionId === event.session_id) loadHistory(); }, 300);
   }
 }

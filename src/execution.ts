@@ -12,10 +12,14 @@ import type { OrphanProcess } from "./process-ledger.ts";
 import { activityEntry, approvalEntry, partialMessageEntry, userMessageEntry, type TranscriptEntry } from "./transcript.ts";
 
 export interface ExecutionLog {
-  event: "run.dispatched" | "run.dispatch_failed" | "run.dispatch_blocked" | "run.finished" | "run.transport_lost" | "approval.decided" | "provider.connected" | "provider.connect_failed" | "run.reconciled" | "transcript.write_failed";
+  event: "run.dispatched" | "run.dispatch_failed" | "run.dispatch_blocked" | "run.finished" | "run.transport_lost" | "approval.decided" | "provider.connected" | "provider.connect_failed" | "run.reconciled" | "transcript.write_failed"
+    | "run.loss_classified" | "run.transition_rejected";
   run_id?: string;
   outcome?: string;
   error_code?: string;
+  /** Closed vocabulary (`[a-z_]`); never provider text. */
+  reason_code?: string;
+  provider?: Provider;
   duration_ms?: number;
 }
 
@@ -43,6 +47,19 @@ export interface ApprovalView extends ApprovalRecord {
   vmName: string;
   summary: (ApprovalSummary & { files: string[] }) | null;
 }
+
+/** Result of an explicit reconciliation: `confirmed` means the provider gave evidence; anything else leaves the run `unknown`. */
+export interface ReconcileOutcome { result: "confirmed" | "unconfirmed" | "not_applicable"; reasonCode: string }
+/** Process-lifetime counters (E4). Codes and counts only. */
+export interface ReliabilityCounters {
+  runs_dispatched: number; dispatch_failed: number; dispatch_unconfirmed: number; dispatch_blocked_orphan: number; transport_lost: number;
+  provider_session_lost: number; vm_stopped: number; approval_delivery_unconfirmed: number; transitions_rejected: number;
+  transcript_write_failed: number; reconcile_confirmed: number; reconcile_unconfirmed: number;
+}
+/** Run `unknown` reasons that only say "the handle died": discovery may later show the VM itself was down. */
+const LOSS_REASONS: readonly string[] = ["transport_lost", "provider_session_lost"];
+/** File-change items remembered per connection to label approvals (Codex sends files on the item, not on the request). */
+const MAX_TRACKED_FILE_ITEMS = 500;
 
 export interface ThreadView { id: string; status: ProviderSessionSummary["status"]; updatedAt: string | null; sessionId: string | null }
 
@@ -107,6 +124,9 @@ export class ExecutionService {
   readonly #log: (entry: ExecutionLog) => void;
   readonly #partialFlushMs: number;
   readonly #processes: ExecutionOptions["processes"];
+  readonly #startedAt: string;
+  readonly #stats: ReliabilityCounters = { runs_dispatched: 0, dispatch_failed: 0, dispatch_unconfirmed: 0, dispatch_blocked_orphan: 0, transport_lost: 0,
+    provider_session_lost: 0, vm_stopped: 0, approval_delivery_unconfirmed: 0, transitions_rejected: 0, transcript_write_failed: 0, reconcile_confirmed: 0, reconcile_unconfirmed: 0 };
   readonly #connections = new Map<string, Promise<Live>>();
   readonly #lives = new Map<string, Live>();
   readonly #active = new Map<string, ActiveRun>(); // key: vm \0 providerSessionId
@@ -129,6 +149,7 @@ export class ExecutionService {
     this.#digestKey = options.digestKey ?? randomBytes(32);
     this.#log = options.log ?? (entry => console.log(JSON.stringify(entry)));
     this.#processes = options.processes;
+    this.#startedAt = this.#now().toISOString();
     this.#partialFlushMs = options.partialFlushMs ?? PARTIAL_FLUSH_MS;
     if (!Number.isSafeInteger(this.#partialFlushMs) || this.#partialFlushMs < 1) throw new SafeError("invalid_partial_flush_interval");
     // A prepared run whose prompt was lost with the previous process was never sent: fail it explicitly.
@@ -210,6 +231,7 @@ export class ExecutionService {
     // Starting another one beside it would be a second, unsupervised agent: refused until the orphan is gone. Nothing is sent.
     const orphan = this.#processes?.blocking(session.target.vmName, session.providerSessionId) ?? null;
     if (orphan) {
+      this.#stats.dispatch_blocked_orphan++;
       this.#log({ event: "run.dispatch_blocked", outcome: orphan.kind, error_code: "orphan_process_alive" });
       throw new SafeError("orphan_process_alive");
     }
@@ -239,12 +261,29 @@ export class ExecutionService {
     return this.#store.getRun(run.runId) ?? run;
   }
 
-  async reconcile(run: RunRecord, session: SessionRecord): Promise<RunRecord> {
-    if (run.status !== "unknown" || !run.providerRunId) return run;
+  /**
+   * Explicit, operator-triggered look at an `unknown` run. Only provider evidence moves it; otherwise it stays `unknown` and the
+   * outcome says why. Nothing is ever resent. Providers that can confirm a run only through its live process
+   * (`reconcile: "process"`, Claude Code) are not even contacted once that process is gone: a fresh connection knows nothing.
+   */
+  async reconcile(run: RunRecord, session: SessionRecord): Promise<{ run: RunRecord; outcome: ReconcileOutcome }> {
+    if (run.status !== "unknown") return { run, outcome: { result: "not_applicable", reasonCode: "run_not_unknown" } };
+    const unconfirmed = (reasonCode: string) => {
+      this.#stats.reconcile_unconfirmed++;
+      this.#log({ event: "run.reconciled", run_id: run.runId, outcome: "unconfirmed", reason_code: reasonCode, provider: session.target.provider });
+      return { run: this.#store.getRun(run.runId) ?? run, outcome: { result: "unconfirmed" as const, reasonCode } };
+    };
+    // The prompt may have reached the provider, but no run id ever came back: there is nothing to look up.
+    if (!run.providerRunId) return unconfirmed("provider_run_unbound");
+    const adapter = this.#adapters.get(session.target.provider);
+    const current = this.#lives.get(session.target.vmName);
+    if (adapter?.capabilities.reconcile === "process" && (!current || current.closed || !current.loaded.has(session.providerSessionId))) {
+      return unconfirmed("provider_cannot_confirm");
+    }
     const target = await this.revalidate(session.target.vmName, session.target.projectId);
     const live = await this.#ensure(target);
     const result = await live.connection.reconcile({ sessionId: session.providerSessionId, id: run.providerRunId });
-    this.#log({ event: "run.reconciled", run_id: run.runId, outcome: result.status });
+    this.#log({ event: "run.reconciled", run_id: run.runId, outcome: result.status, provider: session.target.provider });
     if (result.status === "running") {
       const key = this.#key(target.vmName, session.providerSessionId);
       const other = this.#store.activeRunForProject(session.target.projectId);
@@ -255,10 +294,18 @@ export class ExecutionService {
       }
       if (this.#active.has(key) || this.#store.activeRunForProject(session.target.projectId)) throw new SafeError("project_busy");
       this.#active.set(key, { runId: run.runId, session, live, providerRunId: run.providerRunId, buffer: [] });
-      return this.#move(run.runId, "running", { reasonCode: "reconciled" }) ?? run;
+      this.#stats.reconcile_confirmed++;
+      return { run: this.#move(run.runId, "running", { reasonCode: "reconciled" }) ?? run, outcome: { result: "confirmed", reasonCode: "reconciled" } };
     }
-    if (result.status === "unknown") return run;
-    return this.#move(run.runId, result.status, { reasonCode: "reconciled" }) ?? run;
+    if (result.status === "unknown") return unconfirmed("provider_reports_unknown");
+    this.#stats.reconcile_confirmed++;
+    return { run: this.#move(run.runId, result.status, { reasonCode: "reconciled" }) ?? run, outcome: { result: "confirmed", reasonCode: "reconciled" } };
+  }
+
+  /** Counters since this process started, plus current gauges. Codes and counts only (no ids, names or content). */
+  reliability(): Record<string, number | string> {
+    return { since: this.#startedAt, ...this.#stats, orphan_processes: this.orphanProcesses().length, provider_connections: this.#lives.size,
+      active_runs: this.#active.size, approval_handles: this.#approvals.size };
   }
 
   /** Unsupported provider requests currently holding this run, deduplicated by method. Empty when none. */
@@ -280,7 +327,10 @@ export class ExecutionService {
       summary: pending && !pending.live.closed ? pending.summary : null };
   }
 
-  async decide(approval: ApprovalRecord, decision: "approve" | "reject", expectedVersion: number, answers?: Record<string, string>): Promise<ApprovalRecord> {
+  async decide(given: ApprovalRecord, decision: "approve" | "reject", expectedVersion: number, answers?: Record<string, string>): Promise<ApprovalRecord> {
+    // Always the stored state, never the caller's copy: a replay with a stale record must see the decision already taken
+    // (identical replay = no-op, anything else = conflict) instead of being mistaken for a lost provider handle.
+    const approval = this.#store.getApproval(given.approvalId) ?? given;
     // Answers belong only to an approved question; a question is never "approved" without them.
     if (approval.actionType === "question" ? (decision === "approve") !== (answers !== undefined) : answers !== undefined) throw new SafeError("invalid_body");
     const pending = this.#approvals.get(approval.approvalId);
@@ -321,6 +371,7 @@ export class ExecutionService {
       await pending.live.connection.decideApproval(pending.ref, answers === undefined ? { decision } : { decision, answers });
       this.#log({ event: "approval.decided", run_id: pending.runId, outcome: resolved.status });
     } catch (error) {
+      this.#stats.approval_delivery_unconfirmed++;
       this.#log({ event: "approval.decided", run_id: pending.runId, outcome: "delivery_unconfirmed", error_code: safeCode(error) });
       this.#move(pending.runId, "unknown", { reasonCode: "approval_delivery_unconfirmed" });
       return resolved;
@@ -365,7 +416,8 @@ export class ExecutionService {
         const buffered = active.buffer.splice(0);
         for (const event of buffered) if (event.runId === ref.id) this.#onEvent(live, event);
       }
-      this.#log({ event: "run.dispatched", run_id: prepared.runId, outcome: "accepted", duration_ms: Math.round(performance.now() - started) });
+      this.#stats.runs_dispatched++;
+      this.#log({ event: "run.dispatched", run_id: prepared.runId, outcome: "accepted", provider: target.provider, duration_ms: Math.round(performance.now() - started) });
     } catch (error) {
       const code = safeCode(error);
       const current = this.#store.getRun(prepared.runId);
@@ -379,7 +431,9 @@ export class ExecutionService {
           this.#move(prepared.runId, "failed", { reasonCode: code.length <= 64 && /^[a-z][a-z0-9_]*$/.test(code) ? code : "dispatch_failed" });
         }
       }
-      this.#log({ event: "run.dispatch_failed", run_id: prepared.runId, outcome: sent && !NOT_SENT.has(code) ? "unknown" : "failed", error_code: code });
+      const unconfirmed = sent && !NOT_SENT.has(code);
+      if (unconfirmed) this.#stats.dispatch_unconfirmed++; else this.#stats.dispatch_failed++;
+      this.#log({ event: "run.dispatch_failed", run_id: prepared.runId, outcome: unconfirmed ? "unknown" : "failed", error_code: code, provider: target.provider });
     }
   }
 
@@ -426,19 +480,42 @@ export class ExecutionService {
       this.#lives.delete(live.vmName);
       this.#connections.delete(live.vmName);
     }
+    const uncertain: string[] = [];
     for (const [key, active] of this.#active) {
       if (active.live !== live) continue;
       this.#flushPartials(active);
       this.#active.delete(key);
       this.#blocked.delete(active.runId);
       const run = this.#store.getRun(active.runId);
-      if (run && UNCERTAIN.includes(run.status)) this.#move(run.runId, "unknown", { reasonCode });
+      if (run && UNCERTAIN.includes(run.status) && this.#move(run.runId, "unknown", { reasonCode })) uncertain.push(run.runId);
       this.#store.expireApprovals(active.runId, reasonCode, this.#iso());
-      this.#log({ event: "run.transport_lost", run_id: active.runId, outcome: "unknown" });
+      if (reasonCode === "transport_lost") this.#stats.transport_lost++;
+      this.#log({ event: "run.transport_lost", run_id: active.runId, outcome: "unknown", reason_code: reasonCode, provider: live.adapter.provider });
     }
     for (const [id, pending] of this.#approvals) if (pending.live === live) this.#approvals.delete(id);
     this.#hub.journal();
+    if (uncertain.length && LOSS_REASONS.includes(reasonCode)) void this.#classifyLoss(live.vmName, uncertain);
     await live.connection.close().catch(() => {});
+  }
+
+  /**
+   * E4: a lost connection/process says nothing about WHY. Discovery is asked once, right after the loss: a VM that is no
+   * longer running turns the reason into `vm_stopped`. A running VM, or a failed discovery, leaves the reason as it was.
+   */
+  async #classifyLoss(vmName: string, runIds: readonly string[]): Promise<void> {
+    let snapshot: Snapshot;
+    try { snapshot = await this.#refresh(); }
+    catch (error) { this.#log({ event: "run.loss_classified", outcome: "discovery_failed", error_code: safeCode(error) }); return; }
+    const vm = snapshot.vms.find(item => item.vm_name === vmName);
+    if (vm && vm.state === "running") { this.#log({ event: "run.loss_classified", outcome: "vm_running" }); return; }
+    for (const runId of runIds) {
+      try {
+        if (!this.#store.refineUnknownReason(runId, LOSS_REASONS, "vm_stopped", this.#iso())) continue;
+        this.#stats.vm_stopped++;
+        this.#log({ event: "run.loss_classified", run_id: runId, outcome: "vm_stopped", reason_code: "vm_stopped" });
+      } catch (error) { this.#log({ event: "run.loss_classified", run_id: runId, outcome: "not_recorded", error_code: safeCode(error) }); }
+    }
+    try { this.#hub.journal(); } catch { /* subscribers are isolated */ }
   }
 
   #onEvent(live: Live, event: ProviderEvent): void {
@@ -477,7 +554,11 @@ export class ExecutionService {
         if (this.#persistsHistory(live.adapter.provider)) this.#partial(active, event.itemId, event.delta);
         return;
       case "run.item":
-        if (event.item.kind === "file_change") live.files.set(event.item.id, event.item.files);
+        if (event.item.kind === "file_change") {
+          // Bounded: a long-lived connection must not remember every file change it ever saw.
+          if (!live.files.has(event.item.id) && live.files.size >= MAX_TRACKED_FILE_ITEMS) live.files.delete(live.files.keys().next().value!);
+          live.files.set(event.item.id, event.item.files);
+        }
         this.#hub.live({ ...base, kind: "item", data: { phase: event.phase, item: event.item } });
         if (this.#persistsHistory(live.adapter.provider)) {
           // Started agent messages/reasoning carry no content yet: their deltas or final form are recorded instead.
@@ -560,10 +641,13 @@ export class ExecutionService {
     const reasonCode = reason === "claude_turn_time_limit" ? "turn_time_limit" : "provider_session_lost";
     this.#store.expireApprovals(active.runId, reasonCode, this.#iso());
     const run = this.#store.getRun(active.runId);
-    if (run && UNCERTAIN.includes(run.status)) this.#move(run.runId, "unknown", { reasonCode });
+    const moved = run && UNCERTAIN.includes(run.status) ? this.#move(run.runId, "unknown", { reasonCode }) : null;
     this.#hub.journal();
     this.#hub.live({ projectId: active.session.target.projectId, sessionId: active.session.sessionId, runId: active.runId, kind: "status", data: { status: "unknown", errorMessage: null, reasonCode } });
-    this.#log({ event: "run.transport_lost", run_id: active.runId, outcome: "unknown", error_code: /^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "provider_session_lost" });
+    if (reasonCode === "provider_session_lost") this.#stats.provider_session_lost++;
+    this.#log({ event: "run.transport_lost", run_id: active.runId, outcome: "unknown", reason_code: reasonCode, provider: live.adapter.provider,
+      error_code: /^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "provider_session_lost" });
+    if (moved && LOSS_REASONS.includes(reasonCode)) void this.#classifyLoss(live.vmName, [active.runId]);
   }
 
   /** A transcript can exist on the provider only if some run of this session (other than `exclude`) may have reached it. */
@@ -580,7 +664,12 @@ export class ExecutionService {
       const updated = this.#store.transition(runId, current.lifecycleVersion, next, this.#iso(), options);
       this.#hub.journal();
       return updated;
-    } catch { return null; }
+    } catch (error) {
+      // Never silent: a refused transition (e.g. a late event for a run that already ended) is counted and logged.
+      this.#stats.transitions_rejected++;
+      this.#log({ event: "run.transition_rejected", run_id: runId, outcome: `${current.status}_to_${next}`, error_code: safeCode(error) });
+      return null;
+    }
   }
 
   #persistsHistory(provider: Provider): boolean { return this.#adapters.get(provider)?.capabilities.history === "cockpit"; }
@@ -588,7 +677,7 @@ export class ExecutionService {
   /** Transcript writes never change run, approval or idempotency state: a failure is logged and the conversation goes on. */
   #record(sessionId: string, runId: string, entry: TranscriptEntry, approvalId: string | null = null): void {
     try { this.#store.recordTranscript(sessionId, runId, entry, this.#iso(), approvalId); }
-    catch (error) { this.#log({ event: "transcript.write_failed", run_id: runId, error_code: safeCode(error) }); }
+    catch (error) { this.#stats.transcript_write_failed++; this.#log({ event: "transcript.write_failed", run_id: runId, error_code: safeCode(error) }); }
   }
 
   #partial(active: ActiveRun, itemId: string, delta: string): void {

@@ -500,3 +500,48 @@ test("E3.1: persisted history after a restart — approvals, answers and incompl
     expect(conversation().querySelectorAll(".msg.approval").length).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------- E4: failures and uncertainty are explicit
+test("E4: an orphaned process is shown with its PID, what it blocks and that only the operator ends it; a blocked send says why", async () => {
+  const orphan = { kind: "orphan_process", vm_name: "codex-demo", project: "demo", provider: "codex", process_kind: "codex_app_server", pid: 4242,
+    session_id: null, blocks: "vm", created_at: new Date().toISOString(), since: new Date().toISOString() };
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: dashboard({ attention: [orphan] }) };
+    if (call.method === "POST" && call.path === "/api/sessions/ses-1/runs") return { status: 409, body: { error: { code: "orphan_process_alive" } } };
+    return undefined;
+  });
+  await withUi(router, async (ui, calls) => {
+    const text = ui.document.getElementById("attention")!.textContent!;
+    expect(text).toContain("Processo órfão");
+    expect(text).toContain("pid 4242");
+    expect(text).toContain("kill 4242");
+    expect(text).toContain("bloqueados");
+    expect(text).toContain("nunca o encerra sozinho");
+    (ui.document.getElementById("prompt") as unknown as { value: string }).value = "nova tarefa";
+    click(ui.document.getElementById("send"));
+    await settle(80);
+    expect(calls.filter(call => call.method === "POST" && call.path === "/api/sessions/ses-1/runs")).toHaveLength(1);
+    expect(ui.document.getElementById("error")!.textContent).toContain("Nada foi enviado");
+  }, { cockpit_session_proof: "synthetic", cockpit_view: JSON.stringify({ vm: "codex-demo", sessionId: "ses-1" }) });
+});
+
+test("E4: an unknown run says what failed (VM stopped) and a reconcile without evidence says why it stays unconfirmed", async () => {
+  const unknownRun = { run_id: "run-u", session_id: "ses-1", status: "unknown", provider_bound: true, reason_code: "vm_stopped", lifecycle_version: 5,
+    created_at: new Date().toISOString(), ended_at: new Date().toISOString(), metrics: { inputTokens: null, durationMs: null } };
+  const router = defaultRouter(call => {
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([unknownRun]) };
+    if (call.method === "POST" && call.path === "/api/runs/run-u/reconcile") return { status: 200, body: { ...unknownRun, reconciliation: { result: "unconfirmed", reason_code: "provider_cannot_confirm" } } };
+    return undefined;
+  });
+  await withUi(router, async (ui, calls) => {
+    expect(ui.document.getElementById("run-status")!.textContent).toBe("Não confirmado");
+    expect(ui.document.getElementById("run-detail")!.textContent).toContain("A VM parou");
+    click(ui.document.getElementById("reconcile"));
+    await settle(80);
+    expect(calls.filter(call => call.path === "/api/runs/run-u/reconcile")).toHaveLength(1);
+    const error = ui.document.getElementById("error")!.textContent!;
+    expect(error).toContain("sem evidência");
+    expect(error).toContain("continua não confirmado");
+    expect(calls.some(call => call.method === "POST" && call.path.endsWith("/runs"))).toBe(false); // nothing resent
+  }, { cockpit_session_proof: "synthetic", cockpit_view: JSON.stringify({ vm: "codex-demo", sessionId: "ses-1" }) });
+});

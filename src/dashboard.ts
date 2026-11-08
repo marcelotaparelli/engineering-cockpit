@@ -118,5 +118,7 @@ export function buildDashboard(input: {
     counts: { working: count("working"), blocked: count("blocked"), awaiting_approval: approvals.length, completed: count("completed"), failed: count("failed"),
       unknown: count("unknown"), interrupted: count("interrupted") },
     cursor: store.lastSequence(),
+    // E4: what went wrong since this Cockpit started (codes and counts only).
+    reliability: input.execution?.reliability() ?? null,
   };
 }

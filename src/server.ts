@@ -301,8 +301,9 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           exact(body, []);
           const store = requireRuntime();
           const { run, session } = options.security.authorizeRun(store, principal, param);
-          const updated = route === "/api/runs/:id/interrupt" ? await requireExecution().interrupt(run, session) : await requireExecution().reconcile(run, session);
-          return json(runView(store, updated), route === "/api/runs/:id/interrupt" ? 202 : 200);
+          if (route === "/api/runs/:id/interrupt") return json(runView(store, await requireExecution().interrupt(run, session)), 202);
+          const { run: reconciled, outcome } = await requireExecution().reconcile(run, session);
+          return json({ ...runView(store, reconciled), reconciliation: { result: outcome.result, reason_code: outcome.reasonCode } });
         }
         if (route === "/api/sessions/:id") {
           const store = requireRuntime();

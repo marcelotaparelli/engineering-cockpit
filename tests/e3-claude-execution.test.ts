@@ -182,7 +182,10 @@ describe("E3: Claude Code on the shared Cockpit infrastructure", () => {
     expect(lost).toMatchObject({ status: "unknown", reason_code: "provider_session_lost" });
     const reconciled = await post(auth, `api/runs/${run.run_id}/reconcile`, {});
     expect(reconciled.status).toBe(200);
-    expect((await reconciled.json() as { status: string }).status).toBe("unknown");
+    const reconciledBody = await reconciled.json() as { status: string; reconciliation: unknown };
+    expect(reconciledBody.status).toBe("unknown");
+    // E4: the uncertainty is explained, never resolved without evidence.
+    expect(reconciledBody.reconciliation).toEqual({ result: "unconfirmed", reason_code: "provider_cannot_confirm" });
     const retry = await startRun(auth, sessionId, "crash please", key);
     expect((await retry.json() as { run_id: string; replayed: boolean })).toMatchObject({ run_id: run.run_id, replayed: true });
     expect(streams().flatMap(item => item.prompts).filter(prompt => prompt === "crash please")).toHaveLength(1);
