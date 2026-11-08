@@ -1,8 +1,22 @@
 # Engineering Cockpit — central local de agentes de engenharia
 
-Painel local (127.0.0.1) para operar agentes Codex em micro-VMs Microsandbox: selecionar VM, abrir ou retomar sessão, enviar prompt, acompanhar em streaming, interromper, decidir aprovações e ver numa única tela o que está trabalhando, o que terminou e o que depende de você. Bun 1.4.4, TypeScript strict, SQLite. O padrão é **mock**, com agente simulado e identificado como "SIMULAÇÃO".
+Painel local (127.0.0.1) para operar agentes Codex e Claude Code em micro-VMs Microsandbox: selecionar VM, abrir ou retomar sessão, enviar prompt, acompanhar em streaming, interromper, decidir aprovações e ver numa única tela o que está trabalhando, o que terminou e o que depende de você. Bun 1.4.4, TypeScript strict, SQLite. O padrão é **mock**, com agente simulado e identificado como "SIMULAÇÃO".
 
-**Estado (2026-11-08):** E0–E3 homologados no Arch, e o E3.1 aceito para o histórico após reinício ([registro](docs/evidence/e31-historico-arch.md)). O **E4 (confiabilidade e recuperação)** está implementado e testado localmente, com **aceite no Arch pendente**: `./scripts/cockpit e4-homologation` (veja [docs/e4-confiabilidade.md](docs/e4-confiabilidade.md)). Garantias de execução em [docs/m0b-fatia3.md](docs/m0b-fatia3.md).
+**Planejamento:** a fonte única é o [master plan v2](docs/master-plan.md), com a V1 = operação diária e as fases F0–F6. O [kickoff M0](engineering-cockpit-M0-kickoff.md) fica preservado como registro. Para operar e recuperar, veja o [runbook](docs/runbook.md).
+
+**Estado (2026-11-08, F0 concluída):** o `develop` integra o E4 e a identidade visual v1.1. A classificação dos aceites no Arch segue a regra do master plan: **H** = executado no Arch, **A** = atestado pelo operador, **T** = só testes ou simulação.
+
+| Marco | Situação | Classificação | Registro |
+| --- | --- | --- | --- |
+| E0 (Codex real, recuperação sem reenvio) | homologado | H | [docs/e0-homologacao.md](docs/e0-homologacao.md) |
+| E1 (agentes bloqueados) | implementado | T: `request.unsupported` real nunca observado | [docs/e1-blocked-agents.md](docs/e1-blocked-agents.md) |
+| E2 (spike Claude Code) | parcial | H parcial: 2 itens INCONCLUSIVE antes da correção | [evidência](docs/evidence/e2-claude-spike-arch.json) |
+| E3 (Claude Code pelo navegador) | aceito | A | [docs/evidence/e3-browser-arch.md](docs/evidence/e3-browser-arch.md) |
+| E3.1 (histórico após reinício) | aceito | A. Parcial após queda abrupta com o Claude real: não homologada | [docs/evidence/e31-historico-arch.md](docs/evidence/e31-historico-arch.md) |
+| E4 (confiabilidade, 278 testes + drill 11/11) | aceito | A no Arch, com Cockpit real e agentes simulados. Queda com providers reais: pendente (F2) | [docs/evidence/e4-arch.md](docs/evidence/e4-arch.md) |
+| Identidade visual v1.1 | aprovada e integrada | aprovação visual do operador | [docs/design-system.md](docs/design-system.md) |
+
+Garantias de execução: [docs/m0b-fatia3.md](docs/m0b-fatia3.md) e [docs/e4-confiabilidade.md](docs/e4-confiabilidade.md).
 
 ## Experimentar em modo mock
 
@@ -27,8 +41,10 @@ M0a e M0a.2 trouxeram a descoberta somente leitura. M0b.1a criou a fundação de
   - Uma VM parada é distinguida de uma queda de conexão ou de processo.
   - A reconciliação ganha resultado explícito.
   - Entram métricas e logs estruturados.
+- **Identidade visual v1.1**: design system sobre a interface existente, com imagens da marca servidas de uma allowlist fixa (CSP `img-src 'self'`).
+- **F0** (master plan v2): integração E4 + UI no `develop`, registro dos aceites E3 e E4 e runbook.
 
-## Homologação E4 (comando único, seguro)
+## Homologação E4 (comando único, seguro; aceito no Arch em 2026-11-08)
 
 ```sh
 ./scripts/cockpit e4-homologation
@@ -125,7 +141,9 @@ Se o check passar, use as mesmas variáveis e `./scripts/cockpit start` no host.
 - [Threat model M0b.1b](docs/m0b1b-threat-model.md), [ADR-0002](docs/adr-0002-m0b1b-local-http-security.md) e [Ownership Card](docs/m0b1b-ownership-card.md).
 - [Manifesto de código/locks/fixtures](docs/artifact.sha256): `./scripts/cockpit artifact --check`.
 - [Entrega histórica M0a](docs/m0a.md).
+- [Master plan v2](docs/master-plan.md), [runbook](docs/runbook.md) e [design system v1.1](docs/design-system.md).
+- Aceites no Arch: [E3](docs/evidence/e3-browser-arch.md), [E3.1](docs/evidence/e31-historico-arch.md) e [E4](docs/evidence/e4-arch.md).
 
-API: GET `/api/health` é público; todo o resto exige login local. Mutações: login/logout, sessões, runs (com `Idempotency-Key`), interrupt, reconcile e decisão de aprovação, todas com CSRF, nonce e `Origin` exato. Não existe rota de comando arbitrário. O conteúdo de prompts e respostas não é gravado; o histórico vem do Codex. Veja [docs/m0b-fatia3.md](docs/m0b-fatia3.md), o [threat model M0b.1b](docs/m0b1b-threat-model.md) e o [ADR-0002](docs/adr-0002-m0b1b-local-http-security.md).
+API: GET `/api/health` e os arquivos estáticos fixos (página, script, estilo e as imagens da marca em `/brand/*.png`, de uma allowlist) são públicos; todo o resto exige login local. Mutações: login/logout, sessões, runs (com `Idempotency-Key`), interrupt, reconcile e decisão de aprovação, todas com CSRF, nonce e `Origin` exato. Não existe rota de comando arbitrário. Codex: o histórico vem do provider e nada da conversa é gravado. Claude Code: o canal não lê transcripts, então o Cockpit grava o que observou (prompt, resposta, comando, caminhos, perguntas e respostas) com limites de tamanho e redação de melhor esforço, no SQLite 0600 (decisão D6 do master plan; veja [docs/e31-historico.md](docs/e31-historico.md)). Saída de ferramentas, stderr e credenciais nunca são gravados. Veja [docs/m0b-fatia3.md](docs/m0b-fatia3.md), o [threat model M0b.1b](docs/m0b1b-threat-model.md) e o [ADR-0002](docs/adr-0002-m0b1b-local-http-security.md).
 
 Conta/diretórios locais devem ser confiáveis; não exponha por proxy/túnel. A autenticação HTTP local não isola outro processo malicioso do mesmo UID. Exporter e alertas contínuos não estão configurados. Nenhuma alteração de VM, push ou deploy faz parte deste marco.

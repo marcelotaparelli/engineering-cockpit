@@ -1,6 +1,17 @@
 # E3 — Claude Code como provider operacional do Cockpit
 
-**Estado (2026-11-08):** implementado e testado com o Claude falso (Debian). O E2 real rodou no Arch (Claude Code 2.1.319). Aprovação e AskUserQuestion continuam **INCONCLUSIVAS**: a causa provável foi achada e corrigida, mas falta confirmar no Arch. **O aceite do E3 depende da homologação no Arch** (roteiro abaixo).
+**Estado (2026-11-08, F0):** **aceito no Arch por atestado do operador**. Pelo navegador, com o Claude real, funcionaram:
+- envio e resposta;
+- aprovação e rejeição de Bash;
+- AskUserQuestion;
+- interrupção, com continuidade da sessão;
+- retomada de contexto após reinício.
+
+Registro e limites: [`docs/evidence/e3-browser-arch.md`](evidence/e3-browser-arch.md). Não há saída bruta nem resultado do passo (e). O streaming incremental não foi informado em separado.
+
+O restante deste documento preserva a análise e o roteiro como foram escritos antes do aceite. Onde ele diz "INCONCLUSIVO" ou "não comprovado" sobre aprovação e AskUserQuestion, vale o atestado acima, mas só no nível funcional: os frames continuam sem registro.
+
+*Estado anterior (mantido para auditoria):* implementado e testado com o Claude falso (Debian). O E2 real rodou no Arch (Claude Code 2.1.319). Aprovação e AskUserQuestion continuam **INCONCLUSIVAS**: a causa provável foi achada e corrigida, mas falta confirmar no Arch. **O aceite do E3 depende da homologação no Arch** (roteiro abaixo).
 
 ## Evidência E2 real (`docs/evidence/e2-claude-spike-arch.json`)
 | Check | Arch | Leitura |
@@ -125,6 +136,14 @@ Nada abaixo cria, inicia ou altera VM, e nada mexe no Cockpit em execução (E0:
 3. Registre em `docs/evidence/e3-browser-arch.md` só os estados observados (PASS/FAIL por passo e qual aviso apareceu), sem conteúdo de prompt ou resposta. Ctrl+C encerra só a instância E3.
 
 ## Pendências para o aceite E3
+*Atualização F0 (2026-11-08):* as pendências 2a (envio e resposta), 2b, 2c, 2d e 2f foram atendidas por **atestado do operador** ([registro](evidence/e3-browser-arch.md)). Continuam em aberto:
+- o streaming *incremental*;
+- o passo 2e;
+- a versão mínima testada;
+- `ERROR_CLASS` real.
+
+A lista original segue abaixo, sem alteração.
+
 - Aprovação e AskUserQuestion **comprovadas no Arch** (passos 2b/2c). Até lá continuam INCONCLUSIVAS. A correção da rota stdio vem só de leitura estática do CLI.
 - Streaming incremental comprovado (2a). Recuperação e retomada pelo navegador (2e/2f).
 - Fixar versão mínima/testada do Claude Code após o passo 1 (hoje: major ≥ 2 + flags exigidas presentes).

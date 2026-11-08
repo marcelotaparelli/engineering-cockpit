@@ -1,6 +1,11 @@
 # E4 — Confiabilidade e recuperação
 
-**Estado (2026-11-08):** implementado e testado localmente: suíte determinística (278/278) e drill de recuperação com processos reais do Cockpit em modo simulado. **O aceite depende da homologação no Arch**, com o comando único do fim deste documento. O E5 não foi iniciado.
+**Estado (2026-11-08, F0):** **aceito no Arch por atestado do operador**: 278 testes e 11/11 verificações do drill PASS ([registro](evidence/e4-arch.md)).
+- O drill exercita o **Cockpit** real com agentes simulados. A queda com providers reais não faz parte deste aceite e está na F2 do [master plan](master-plan.md).
+- Integrado à identidade visual v1.1 no `develop` (`a11a1d9`). Na reexecução automatizada da integração: 283/283 testes e drill 11/11 PASS.
+- A numeração E5+ foi substituída pelas fases F0–F6 do master plan v2.
+
+*Estado anterior (mantido para auditoria):* implementado e testado localmente: suíte determinística (278/278) e drill de recuperação com processos reais do Cockpit em modo simulado. **O aceite depende da homologação no Arch**, com o comando único do fim deste documento. O E5 não foi iniciado.
 
 Princípio mantido: diante de uma falha, o Cockpit guarda o que sabe, não repete nada sozinho, não transforma `unknown` em sucesso ou falha sem evidência e diz claramente o que não sabe. Tudo reutiliza `ExecutionService`, `RuntimeStore`/SQLite e os adapters existentes. Não existe uma segunda plataforma.
 
