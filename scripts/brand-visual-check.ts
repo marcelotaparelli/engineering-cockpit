@@ -82,9 +82,16 @@ try {
   await until(`document.getElementById('session-select').value.startsWith('s:') && !document.getElementById('prompt').disabled`);
 
   await send("ask me which option");
-  check("AskUserQuestion aparece em Precisa de você", await until(`[...document.querySelectorAll('#attention .card')].some(c => c.querySelector('fieldset.question'))`));
+  check("AskUserQuestion aparece no formulário da sessão", await until(`!!document.querySelector('#session-approvals fieldset.question')`));
+  check("inbox não duplica o formulário da sessão selecionada (só ponteiro; contagem global mantida)", await until(`document.querySelectorAll('#attention fieldset.question').length === 0 && document.querySelectorAll('#attention .card.pointer').length === 1 && document.getElementById('attention-count').textContent === '1'`));
   await shot("03-ask-user-question-1440.png");
-  await js(`(() => { const card = [...document.querySelectorAll('#attention .card')].find(c => c.querySelector('fieldset.question')); card.querySelector('input[value="B"]').click(); [...card.querySelectorAll('button')].find(b => b.textContent === 'Responder').click(); return true; })()`);
+  // Keyboard: the inbox pointer moves focus into the question form.
+  await js(`[...document.querySelectorAll('#attention .card.pointer button')].find(b => b.textContent === 'Ir para a pergunta').focus(); true`);
+  await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+  await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  check("teclado: Enter no ponteiro foca a pergunta da sessão", await until(`!!document.activeElement && !!document.activeElement.closest('#session-approvals .card')`, 2000));
+  check("foco visível com anel azul", await js<boolean>(`getComputedStyle(document.activeElement).boxShadow.includes('31, 118, 255')`));
+  await js(`(() => { const card = document.querySelector('#session-approvals .card'); card.querySelector('input[value="B"]').click(); [...card.querySelectorAll('button')].find(b => b.textContent === 'Responder').click(); return true; })()`);
   check("pergunta respondida e execução concluída", await until(`${runStatus} === 'Concluído'`, 8000));
 
   await send("approve this command");
@@ -109,9 +116,14 @@ try {
   await until(`[...document.querySelectorAll('#attention .card')].some(c => c.textContent.includes('Execução não confirmada'))`, 4000);
   await shot("07-unknown-run-1440.png");
 
-  for (const [w, h, name] of [[1024, 768, "08-session-1024.png"], [390, 844, "09-session-390.png"]] as const) {
+  for (const [w, h, name] of [[1024, 768, "08-session-1024.png"], [768, 1024, "08b-session-768.png"], [390, 844, "09-session-390.png"]] as const) {
     await viewport(w, h);
     check(`${w}px sem overflow horizontal`, await js<boolean>(noHorizontalOverflow));
+    if (w === 390) {
+      check("390px: badges do cabeçalho sem truncamento", await js<boolean>(`['source', 'live', 'logout'].every(id => { const n = document.getElementById(id); return n.scrollWidth <= n.clientWidth + 1 && n.getBoundingClientRect().right <= window.innerWidth; })`));
+      check("390px: cabeçalho em até 2 linhas (≤ 96px)", await js<boolean>(`document.querySelector('.topbar').getBoundingClientRect().height <= 96`));
+      check("390px: Reconciliar visível e tocável", await js<boolean>(`(() => { const b = document.getElementById('reconcile'); const r = b.getBoundingClientRect(); return !b.hidden && r.width > 0 && r.height >= 32 && r.right <= window.innerWidth; })()`));
+    }
     await shot(name);
   }
   await js(`document.querySelector('.tabs button[data-pane="inbox"]').click(); true`);
