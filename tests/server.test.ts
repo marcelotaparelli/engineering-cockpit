@@ -62,7 +62,7 @@ test("explicit login, cookie flags, grants and local project/VM reads", async ()
   const { response, body, cookie } = await login();
   expect(response.status).toBe(200);
   expect(logs.at(-1)?.event).toBe("auth_succeeded");
-  expect(response.headers.get("set-cookie")).toContain("HttpOnly; SameSite=Strict; Path=/; Max-Age=1800");
+  expect(response.headers.get("set-cookie")).toContain("HttpOnly; SameSite=Strict; Path=/; Max-Age=43200");
   expect(body.csrf).toMatch(/^[A-Za-z0-9_-]+$/);
   expect(body.proof).toMatch(/^[A-Za-z0-9_-]+$/);
   expect(JSON.stringify(logs)).not.toContain(body.proof);

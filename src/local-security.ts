@@ -2,9 +2,16 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { SafeError, validProject, type Snapshot, type Vm } from "./model.ts";
 import type { RuntimeStore, RunRecord, SessionRecord } from "./runtime-store.ts";
 
-const SESSION_MS = 30 * 60_000;
+/**
+ * F1 sliding session: a session ends after IDLE_MS without OPERATOR activity, and at most SESSION_MAX_MS after login,
+ * whichever comes first. Activity is never inferred from traffic (polling, SSE, heartbeats): only a CSRF-verified mutation or an
+ * explicit activity signal sent by the page after real input (`touch`) moves the idle deadline. The absolute ceiling never moves.
+ */
+export const SESSION_IDLE_MS = 30 * 60_000;
+export const SESSION_MAX_MS = 12 * 60 * 60_000;
 const MAX_SESSIONS = 32;
-const MAX_NONCES = 256;
+/** Nonces are kept for the whole session (replay protection does not decay); sized for a 12 h working day of mutations. */
+const MAX_NONCES = 4096;
 const FAILURE_WINDOW_MS = 60_000;
 const MAX_FAILURES = 5;
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -17,7 +24,8 @@ interface LocalSession {
   id: string;
   proof: string;
   csrf: string;
-  expiresAt: number;
+  createdAt: number;
+  lastActivityAt: number;
   nonces: Set<string>;
 }
 
@@ -29,8 +37,11 @@ export class LocalSecurity {
   readonly #sessions = new Map<string, LocalSession>();
   readonly #failures: number[] = [];
   readonly #now: () => number;
+  readonly #idleMs: number;
+  readonly #maxMs: number;
 
-  constructor(credential: string, projects: readonly string[], now: () => number = Date.now) {
+  constructor(credential: string, projects: readonly string[], now: () => number = Date.now,
+    limits: { idleMs?: number; maxMs?: number } = {}) {
     if (!tokenPattern.test(credential)) throw new SafeError("local_credential_required");
     if (projects.length === 0 || projects.some(project => !validProject(project)) || new Set(projects).size !== projects.length) {
       throw new SafeError("local_grants_required");
@@ -38,6 +49,16 @@ export class LocalSecurity {
     this.#credentialDigest = digest(credential);
     this.#grants = new Set(projects);
     this.#now = now;
+    this.#idleMs = limits.idleMs ?? SESSION_IDLE_MS;
+    this.#maxMs = limits.maxMs ?? SESSION_MAX_MS;
+    if (!(this.#idleMs > 0 && this.#maxMs >= this.#idleMs)) throw new SafeError("invalid_session_limits");
+  }
+
+  /** Cookie lifetime: the absolute ceiling (the server enforces the idle deadline itself). */
+  get cookieMaxAgeSeconds(): number { return Math.floor(this.#maxMs / 1000); }
+
+  #expiresAt(session: LocalSession): number {
+    return Math.min(session.lastActivityAt + this.#idleMs, session.createdAt + this.#maxMs);
   }
 
   login(credential: unknown, prior?: LocalPrincipal): { cookie: string; proof: string; csrf: string } {
@@ -52,7 +73,8 @@ export class LocalSecurity {
     this.#prune(now);
     if (prior) this.#sessions.delete(prior.session.id);
     if (this.#sessions.size >= MAX_SESSIONS) this.#sessions.delete(this.#sessions.keys().next().value!);
-    const session: LocalSession = { id: random(), proof: random(), csrf: random(), expiresAt: now + SESSION_MS, nonces: new Set() };
+    // Always a fresh identifier (no fixation): a cookie value is only ever accepted if this server minted it at login.
+    const session: LocalSession = { id: random(), proof: random(), csrf: random(), createdAt: now, lastActivityAt: now, nonces: new Set() };
     this.#sessions.set(session.id, session);
     return { cookie: session.id, proof: session.proof, csrf: session.csrf };
   }
@@ -63,7 +85,7 @@ export class LocalSecurity {
     const value = cookies[0]!.slice("cockpit_session=".length);
     if (!noncePattern.test(value)) throw new SafeError("authentication_required");
     const session = this.#sessions.get(value);
-    if (!session || session.expiresAt <= this.#now()) {
+    if (!session || this.#expiresAt(session) <= this.#now()) {
       this.#sessions.delete(value);
       throw new SafeError("authentication_required");
     }
@@ -78,11 +100,24 @@ export class LocalSecurity {
     if (principal.session.nonces.has(nonce)) throw new SafeError("replay_denied");
     if (principal.session.nonces.size >= MAX_NONCES) throw new SafeError("nonce_capacity_reached");
     principal.session.nonces.add(nonce);
+    // A CSRF-verified mutation is operator activity by construction (only the page's own script can send it).
+    this.touch(principal);
+  }
+
+  /**
+   * Moves the idle deadline to now + IDLE (never past the absolute ceiling). Only for an authenticated, still-active session;
+   * callers decide what counts as activity — never polling, SSE or heartbeats.
+   */
+  touch(principal: LocalPrincipal): void {
+    if (!this.isActive(principal)) return;
+    principal.session.lastActivityAt = this.#now();
   }
 
   logout(principal: LocalPrincipal): void { this.#sessions.delete(principal.session.id); }
-  sessionInfo(principal: LocalPrincipal): { csrf: string; expires_at: string } {
-    return { csrf: principal.session.csrf, expires_at: new Date(principal.session.expiresAt).toISOString() };
+  sessionInfo(principal: LocalPrincipal): { csrf: string; expires_at: string; absolute_expires_at: string; idle_timeout_seconds: number } {
+    const session = principal.session;
+    return { csrf: session.csrf, expires_at: new Date(this.#expiresAt(session)).toISOString(),
+      absolute_expires_at: new Date(session.createdAt + this.#maxMs).toISOString(), idle_timeout_seconds: Math.floor(this.#idleMs / 1000) };
   }
   authorizeProject(principal: LocalPrincipal, project: string): void {
     if (!principal.grants.has(project)) throw new SafeError("resource_not_found");
@@ -113,9 +148,9 @@ export class LocalSecurity {
   }
   /** Long-lived streams re-check this so logout or expiry ends them. */
   isActive(principal: LocalPrincipal): boolean {
-    return this.#sessions.get(principal.session.id) === principal.session && principal.session.expiresAt > this.#now();
+    return this.#sessions.get(principal.session.id) === principal.session && this.#expiresAt(principal.session) > this.#now();
   }
   #prune(now: number): void {
-    for (const [id, session] of this.#sessions) if (session.expiresAt <= now) this.#sessions.delete(id);
+    for (const [id, session] of this.#sessions) if (this.#expiresAt(session) <= now) this.#sessions.delete(id);
   }
 }

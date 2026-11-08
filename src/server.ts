@@ -268,7 +268,8 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           const credential = await readLogin(request);
           const prior = (() => { try { return options.security.authenticate(request.headers.get("cookie"), request.headers.get("x-session-proof")); } catch { return null; } })();
           const session = options.security.login(credential, prior ?? undefined);
-          headers.set("Set-Cookie", `cockpit_session=${session.cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800`);
+          // The cookie may live up to the absolute ceiling; the idle deadline is enforced server-side on every request.
+          headers.set("Set-Cookie", `cockpit_session=${session.cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${options.security.cookieMaxAgeSeconds}`);
           event = "auth_succeeded";
           return json({ csrf: session.csrf, proof: session.proof });
         }
@@ -278,7 +279,12 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           return new Response(asset.body, { status, headers });
         }
         const principal = options.security.authenticate(request.headers.get("cookie"), request.headers.get("x-session-proof"));
-        if (route === "/api/auth/session") return json(options.security.sessionInfo(principal));
+        if (route === "/api/auth/session") {
+          // F1: the page sends this header only after real operator input (keyboard, pointer, wheel). Polling, SSE and
+          // heartbeats never carry it, so an unattended tab cannot keep its session alive. Any other value is ignored.
+          if (request.headers.get("x-session-activity") === "user") options.security.touch(principal);
+          return json(options.security.sessionInfo(principal));
+        }
 
         // Every other POST is a state-changing operation: JSON only, CSRF bound to the session, single-use nonce.
         let body: Record<string, unknown> = {};
