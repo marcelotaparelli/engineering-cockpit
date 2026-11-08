@@ -68,26 +68,26 @@ Legenda: **H** = comprovado no Arch com provider real; **T** = só testes/simula
 | E0 | Codex real, D1–D7 | **H** | `docs/e0-homologacao.md` §Resultado real; `e0-recovery-test` |
 | E1 | agentes bloqueados | **T** | `request.unsupported` real nunca observado |
 | E2 | spike Claude | H parcial | `docs/evidence/e2-claude-spike-arch.json`: 12 PASS, 2 INCONCLUSIVE (pré-correção) |
-| E3 | Claude como provider | **A** | README diz "homologado"; `docs/e3-claude-code.md` diz "pendente"; sem `docs/evidence/e3-browser-arch.md` |
+| E3 | Claude como provider | **A** | `docs/evidence/e3-browser-arch.md` (F0): atestado sem resultado do passo (e) nem streaming incremental |
 | E3.1 | histórico persistente | A | `docs/evidence/e31-historico-arch.md` (só o resultado global) |
-| E4 | confiabilidade | H (Cockpit) / T (providers) | drill 11/11 no Arch **atestado**, sem `docs/evidence/e4-arch.md`; queda com Claude real não homologada |
-| UI v1.1 | identidade | aprovada | `docs/evidence/ui-brand-v1.1-2026-11-08/` (branch `feat/ui-brand-identity`) |
+| E4 | confiabilidade | H (Cockpit) / T (providers) | `docs/evidence/e4-arch.md` (F0): 278 testes + drill 11/11 no Arch **atestados**; queda com Claude real não homologada |
+| UI v1.1 | identidade | aprovada | `docs/evidence/ui-brand-v1.1-2026-11-08/` (no `develop` desde a F0) |
 
-Integração E4 + UI: branch `integration/e4-ui-v1.1` (`a11a1d9`), sem conflitos, 283/283, drill PASS, 46/46 checks visuais. **Não mesclada** no `develop` (`ca24bdf`).
+Integração E4 + UI: branch `integration/e4-ui-v1.1` (`a11a1d9`), sem conflitos, 283/283, drill PASS, 46/46 checks visuais. **Mesclada** no `develop` por fast-forward na F0. A reexecução na F0 teve o mesmo resultado (`docs/evidence/e4-arch.md`).
 
 ## 6. Lacunas e riscos (ordenados por impacto)
 
 | # | Lacuna | Evidência | Impacto | Tratamento |
 | --- | --- | --- | --- | --- |
-| L1 | Aceites E3 e E4 no Arch sem registro no repositório | ausência em `docs/evidence/`; README contradiz `e3-claude-code.md` | a única prova de aprovação/AskUserQuestion reais é oral | F0 |
+| L1 | Aceites E3 e E4 no Arch sem registro no repositório | ausência em `docs/evidence/`; README contradiz `e3-claude-code.md` | a única prova de aprovação/AskUserQuestion reais é oral | **F0: registrada como atestado**; a prova estruturada com provider real vem na F2 |
 | L2 | Sessão HTTP expira em 30 min absolutos, sem renovação; nova aba exige login | `src/local-security.ts:5,55`; UI só reage a 401 | inviabiliza uso diário | F1 |
 | L3 | Sem empacotamento como serviço (systemd), token em variável de shell, grants fixos no start | README; `src/config.ts` | Cockpit depende de um terminal aberto | F1 |
 | L4 | Run Codex reconciliado como `running` preso a um app-server órfão: sem eventos, sem interrupção, projeto travado até o órfão terminar | `src/execution.ts:287-299`; E4 §10 | beco sem saída operacional | F2 (decisão D10) |
-| L5 | Stream ao vivo perde os primeiros caracteres quando o histórico recarrega durante deltas | reproduzido no `develop`; `public/app.js:692` | ruído visual, desconfiança | F1 |
+| L5 | Stream ao vivo perde os primeiros caracteres quando o histórico recarrega durante deltas | reproduzido no `develop`; `public/app.js:722` (era `:692` antes da UI v1.1) | ruído visual, desconfiança | F1 |
 | L6 | VM reservada hardcoded e `offline: VM parada` para VMs ligadas sem provider suportado (`opencode-*`, VM reservada) | `src/claude-protocol.ts:14`; `src/dashboard.ts:69` | texto enganoso; Cockpit não opera a própria VM de dev | F1 (D8) |
 | L7 | Sem CI | sem `.github/`; `verify` manual | regressão só é vista por quem lembra de rodar | F3 |
 | L8 | Queda abrupta com Claude real nunca exercitada; formas `UNVERIFIED` no código | `src/claude-protocol.ts:85,93,127` | risco residual de recuperação | F2 |
-| L9 | Pin de versão Codex sem runbook de upgrade | `codex-adapter.ts:24` | parada após update do CLI | runbook em F0 |
+| L9 | Pin de versão Codex sem runbook de upgrade | `codex-adapter.ts:24` | parada após update do CLI | **F0: `docs/runbook.md`** |
 | L10 | `unknown` some da inbox quando chega run novo; sem "ciente" | E4 §10 | perda de visibilidade | F4 |
 
 ## 7. Roadmap priorizado (V1 = Cockpit operacional diário)
@@ -163,7 +163,7 @@ OpenCode (F5); objetivos longos com checkpoints humanos (F6); reaper de conexõe
 
 ## 14. Próxima ação executável
 
-F0: fechar o ciclo E4 + UI (merge local `--ff-only` de `integration/e4-ui-v1.1`, registro dos aceites E3/E4 atestados, runbook mínimo, README coerente). Detalhes, agente e prompt no relatório da revisão de 2026-11-08.
+F0 concluída em 2026-11-08 (veja o histórico abaixo). A próxima fase é a **F1, operar todo dia**, em branch e worktree a partir do `develop`, com o escopo e o aceite da §7. A F3 (CI) pode correr em paralelo.
 
 ---
 
@@ -174,3 +174,4 @@ F0: fechar o ciclo E4 + UI (merge local `--ff-only` de `integration/e4-ui-v1.1`,
 | 2026-10-25 | kickoff | M0 definido; caminho M1–M3 esboçado |
 | 2026-11-07/08 | implícito | numeração E0–E4 adotada nos prompts de execução; nenhum documento definia E5/E6 |
 | 2026-11-08 | 2.0 | este plano: V1 = operação diária; painel de 6 instrumentos descartado do Cockpit; D6 ratificada; D8 e L4 para decisão |
+| 2026-11-08 | 2.0.1 | F0 concluída: `develop` com o fast-forward da integração E4 + UI v1.1 e este plano mesclado; aceites E3/E4 registrados como atestado (`docs/evidence/e3-browser-arch.md`, `e4-arch.md`); `docs/runbook.md`; README coerente. Só o estado foi atualizado (§5, L1, L5, L9, §14), sem mudança de escopo ou prioridade |
