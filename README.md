@@ -4,7 +4,7 @@ Painel local (127.0.0.1) para operar agentes Codex e Claude Code em micro-VMs Mi
 
 **Planejamento:** a fonte única é o [master plan v2](docs/master-plan.md), com a V1 = operação diária e as fases F0–F6. O [kickoff M0](engineering-cockpit-M0-kickoff.md) fica preservado como registro. Para operar e recuperar, veja o [runbook](docs/runbook.md).
 
-**Estado (2026-11-08, F0 concluída):** o `develop` integra o E4 e a identidade visual v1.1. A classificação dos aceites no Arch segue a regra do master plan: **H** = executado no Arch, **A** = atestado pelo operador, **T** = só testes ou simulação.
+**Estado (2026-11-08, F0 concluída; F1 implementada na branch `feat/f1-daily-ops`, aguardando homologação no Arch):** o `develop` integra o E4 e a identidade visual v1.1. A F1 acrescenta serviço systemd de usuário, sessão deslizante, nova aba sem novo login, stream sem perda ao recarregar o histórico e VMs reservadas por configuração ([docs/f1-operacao-diaria.md](docs/f1-operacao-diaria.md)). A classificação dos aceites no Arch segue a regra do master plan: **H** = executado no Arch, **A** = atestado pelo operador, **T** = só testes ou simulação.
 
 | Marco | Situação | Classificação | Registro |
 | --- | --- | --- | --- |
@@ -26,6 +26,16 @@ COCKPIT_ALLOWED_PROJECTS=demo,lab PORT=8787 ./scripts/cockpit start
 ```
 
 Abra `http://127.0.0.1:8787` e digite a credencial. Palavras no prompt controlam a simulação: "aprovação" pede aprovação, "lento" deixa o stream lento (bom para testar a interrupção), "falha" encerra com erro.
+
+## Operar como serviço (F1)
+
+```sh
+COCKPIT_PROJECTS_BASE="$HOME/sandboxes/agent/projects" COCKPIT_ALLOWED_PROJECTS=<projetos> \
+  ./scripts/cockpit service install        # gera credencial 0600, configuração 0600 e a unit; não inicia nada
+./scripts/cockpit service doctor && ./scripts/cockpit service start
+```
+
+Comandos, regras de preservação do `data/` e recuperação: [docs/runbook.md](docs/runbook.md) §"Serviço systemd de usuário". Decisões: [ADR-0003](docs/adr-0003-f1-sessao-deslizante-e-servico.md).
 
 ## Histórico de marcos
 
@@ -99,7 +109,7 @@ COCKPIT_SMOKE_VM=codex-demo \
 
 O fluxo é somente `initialize → thread/list(limit=1) → close`; o relatório não expõe VM, projeto ou IDs de thread. Exit `0/1/2` significa `PASS/FAIL/NOT_VERIFIED`. Veja os critérios e o risco residual em [docs/m0b1a-arch-smoke.md](docs/m0b1a-arch-smoke.md).
 
-Para iniciar a interface, forneça uma credencial local aleatória de 32 bytes codificada em 64 caracteres hexadecimais via `COCKPIT_LOCAL_TOKEN` e a lista explícita de projetos via `COCKPIT_ALLOWED_PROJECTS` (nomes separados por vírgula), e execute `./scripts/cockpit start`. Sem ambas as configurações válidas, o servidor falha antes de escutar. A credencial é digitada na página de login, não salva pelo Cockpit; a aba guarda somente uma prova de sessão em `sessionStorage`, enviada junto com o cookie nas rotas protegidas. Proteja o ambiente do processo. `.bun-version`, `packageManager`, `engines` e `@types/bun` registram o pin 1.4.4.
+Para iniciar a interface, forneça uma credencial local aleatória de 32 bytes codificada em 64 caracteres hexadecimais via `COCKPIT_LOCAL_TOKEN` **ou** em um arquivo privado via `COCKPIT_LOCAL_TOKEN_FILE` (0600, dono = usuário, sem link simbólico; as duas juntas são recusadas), e a lista explícita de projetos via `COCKPIT_ALLOWED_PROJECTS` (nomes separados por vírgula), e execute `./scripts/cockpit start`. Sem configurações válidas, o servidor falha antes de escutar, com status de saída 78. A credencial é digitada na página de login, não salva pelo Cockpit; a aba guarda somente uma prova de sessão em `sessionStorage`, enviada junto com o cookie nas rotas protegidas. A sessão termina após 30 min sem uso da página ou 12 h após o login; uma nova aba da mesma porta reaproveita a sessão de uma aba aberta. Proteja o ambiente do processo. `COCKPIT_RESERVED_VMS` (CSV de nomes de VM) acrescenta VMs que o Cockpit nunca opera; `claude-engineering-cockpit` fica sempre reservada. `.bun-version`, `packageManager`, `engines` e `@types/bun` registram o pin 1.4.4.
 
 Abra **`http://127.0.0.1:<porta>` do log de inicialização**. A porta padrão é escolhida pelo sistema; opcionalmente configure `PORT`. Bind exclusivamente loopback; o guard de Host não aceita o alias `localhost`.
 

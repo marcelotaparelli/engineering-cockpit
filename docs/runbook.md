@@ -11,7 +11,37 @@ Este runbook consolida a §11 do [master plan](master-plan.md). Ele vale para o 
 | `provider_version_unsupported` / `provider_capability_missing` (Claude) | `claude --version` falhou, o major é < 2 (`MIN_CLAUDE_MAJOR`) ou faltam flags exigidas no `--help` | Confira a instalação do CLI dentro da VM. O Cockpit não instala nada |
 | `provider_auth_required` (Claude) | `claude auth status` dentro da VM reporta que não há login | O operador faz login **dentro da VM**. O Cockpit não lê nem copia credenciais |
 | `foreign_runtime_database_denied` no start | O banco tem outro schema ou outra aplicação, por exemplo um código anterior ao E4 abrindo o schema v5 | Não apague o banco. Volte ao código correspondente ou restaure a cópia de `data/` (veja "Voltar atrás") |
-| Sessão HTTP expirada (volta para o login) | A sessão local dura 30 min absolutos (`src/local-security.ts`), e uma nova aba exige novo login | Faça login de novo com a credencial local. A expiração deslizante é a F1 do master plan |
+| Sessão HTTP expirada (volta para o login) | F1: a sessão termina após 30 min sem uso da página (teclado, mouse, toque, ou uma ação) ou 12 h após o login. Polling e stream não contam. Um aviso aparece no topo 5 min antes. Um reinício do Cockpit revoga todas as sessões | Entre de novo com a credencial local. Uma nova aba reaproveita a sessão de uma aba aberta da mesma porta |
+| VM aparece como **Sem suporte** | O Cockpit vê a VM mas não a opera. Pode ser provider sem adapter (ex.: `opencode-*`). Pode ser VM reservada: `claude-engineering-cockpit` sempre, mais as listadas em `COCKPIT_RESERVED_VMS` | Nada a fazer no Cockpit. Para reservar mais VMs, edite `COCKPIT_RESERVED_VMS` no arquivo de configuração do serviço e reinicie. Liberar a VM de desenvolvimento é decisão do Tech Lead (D8) e exige mudança de código |
+| Serviço não sobe: `startup_failed` com `exit_status: 78` nos logs | Início recusado e **não** reiniciado de propósito: configuração inválida, arquivo de credencial com permissão errada, porta ocupada ou `runtime_database_in_use` (outro Cockpit no mesmo diretório de dados) | `./scripts/cockpit service doctor` mostra o item em FAIL. Corrija e rode `./scripts/cockpit service start`. Não force a posse do banco |
+| Serviço caiu e voltou sozinho | `Restart=on-failure`: reinício após queda, no máximo 3 em 5 min | Igual a uma queda do E4: runs em andamento ficam **Não confirmado** e filhos `msb` sobreviventes aparecem como órfãos. Nada foi reenviado. Entre de novo no navegador |
+| Órfãos continuam vivos depois de `service stop` | `KillMode=process`, de propósito: o systemd não mata filhos `msb` que sobraram de uma queda, porque podem estar executando um turno. O `stop` encerra só o Cockpit; os filhos do próprio Cockpit ele encerra em ordem | Antes de parar, confira "Precisa de você". Órfãos listados ali: confira a VM e rode `kill <pid>`. Com o serviço parado: `pgrep -af "msb exec"` |
+
+## Serviço systemd de usuário (F1)
+
+O Cockpit pode rodar como serviço do próprio usuário, sem terminal aberto. Nada é instalado, habilitado ou iniciado sem um destes comandos. Todos rodam do checkout que o serviço vai usar:
+
+| Comando | O que faz |
+| --- | --- |
+| `./scripts/cockpit service install [--force] [--import-env-token]` | Gera três arquivos e faz `daemon-reload`. Não habilita nem inicia nada (detalhes abaixo) |
+| `./scripts/cockpit service doctor` | Diagnóstico só leitura. Não exibe a credencial |
+| `./scripts/cockpit service start` / `restart` | Roda o doctor, recusa iniciar se houver item bloqueante e espera `/api/health` responder |
+| `./scripts/cockpit service stop` | SIGTERM só para o Cockpit, que encerra os próprios filhos em ordem |
+| `./scripts/cockpit service status` / `logs [-f]` | Estado, PID, reinícios, URL. Logs do journal (JSON, sem credencial, sem prompts) |
+| `./scripts/cockpit service enable` / `disable` | Iniciar ou não com a sessão do usuário. Opcional |
+| `./scripts/cockpit service token-path` | Caminho do arquivo da credencial, para copiar ao fazer login (ex.: `wl-copy < "$(./scripts/cockpit service token-path)"`). Nunca o conteúdo |
+| `./scripts/cockpit service rotate-token` | Nova credencial (0600). Vale após `service restart`, que revoga todas as sessões |
+| `./scripts/cockpit service uninstall` | Remove a unit (recusa se ativa). Mantém configuração, credencial e dados |
+
+O `install` gera:
+- a credencial em `~/.config/engineering-cockpit/token` (0600): gerada só se ainda não existir; com `--import-env-token`, passa a ser a de `COCKPIT_LOCAL_TOKEN` do shell, substituindo a anterior;
+- a configuração não secreta em `~/.config/engineering-cockpit/cockpit.env` (0600), lida das variáveis do shell (`COCKPIT_MODE`, padrão `host`, `COCKPIT_PROJECTS_BASE`, `COCKPIT_ALLOWED_PROJECTS`, `PORT`, padrão 8787, `COCKPIT_DATA_DIR`, `COCKPIT_RESERVED_VMS`) e com o `PATH` do Bun 1.4.4 e do `msb`. Só é regravada com `--force`;
+- a unit `~/.config/systemd/user/engineering-cockpit.service`.
+
+Regras:
+- **Preserve o histórico:** se o Cockpit em terminal usa o `data/` de outro checkout, instale com `COCKPIT_DATA_DIR=<caminho absoluto desse data>`. Sem isso, o serviço usa o `data/` do checkout onde a unit foi gerada.
+- **Uma instância por banco:** pare o Cockpit do terminal antes de iniciar o serviço sobre o mesmo `data/`. Se não parar, o serviço é recusado com 78 e o doctor mostra o PID dono.
+- **Voltar ao terminal:** `./scripts/cockpit service stop` (e `disable`, se habilitado). Depois, o `./scripts/cockpit start` de sempre. A F1 não muda o schema do banco.
 
 ## Upgrade do Codex (versão nova do App Server)
 

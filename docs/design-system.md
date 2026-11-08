@@ -100,3 +100,9 @@ O Cockpit **não tem esses dados** hoje. Desenhar essas telas exigiria inventar 
 - `CHROMIUM=$(command -v chromium) bun scripts/brand-visual-check.ts <dir>`: fluxo de marca e Claude.
 
 Os dois rodam em modo mock (sem VM, sem `msb`). Capturas: v1.0 em `docs/evidence/ui-brand-2026-11-08/`; v1.1 (390, 768, 1024, 1440) e comparativos antes/depois em `docs/evidence/ui-brand-v1.1-2026-11-08/`.
+
+## F1 (operação diária)
+Sem tela, cor ou componente novo. Os tokens e a linguagem de estados da v1.1 foram mantidos.
+- **Sem suporte** (`s-unsupported`): VM observada que o Cockpit não opera (provider sem adapter ou reservada em `COCKPIT_RESERVED_VMS`). Usa a cor *paused*, como ocioso e offline, com um **quadrado vazado** como forma, distinta do círculo vazado de ocioso/offline. A linha seguinte diz o motivo. Antes, essas VMs apareciam como "Offline · VM parada", mesmo ligadas.
+- **Aviso de sessão** (`#session`, `badge conn warn`): fica oculto até faltarem 5 min para a sessão expirar e usa o mesmo âmbar com anel do "reconectando…". Em ≤ 900 px ocupa uma terceira linha do cabeçalho, só enquanto visível.
+- Evidência: `docs/evidence/ui-f1-2026-11-08/` (Chromium headless, mock).
