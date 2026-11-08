@@ -1,0 +1,37 @@
+# Engineering Cockpit: systemd USER unit template (F1).
+# Rendered by `./scripts/cockpit service install` into ~/.config/systemd/user/engineering-cockpit.service.
+# Do not edit the rendered copy by hand: re-run the install; `./scripts/cockpit service doctor` reports drift.
+# @ROOT@ and @ENV_FILE@ are absolute paths validated by src/service.ts (no spaces, quotes, `%`, `$` or `\`).
+[Unit]
+Description=Engineering Cockpit (local operator console, loopback only)
+Documentation=file://@ROOT@/docs/runbook.md
+# A crash is restarted at most 3 times in 5 minutes; then the unit stays failed until the operator acts.
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@
+# Non-secret settings only (0600). The credential is read by the Cockpit from COCKPIT_LOCAL_TOKEN_FILE (0600), never from
+# the environment or the command line; a COCKPIT_LOCAL_TOKEN inherited from the user manager is dropped.
+EnvironmentFile=@ENV_FILE@
+UnsetEnvironment=COCKPIT_LOCAL_TOKEN
+ExecStart=@ROOT@/scripts/cockpit start
+# Restart only after a crash. Exit 78 = refused startup (configuration, credential file, port, or the runtime database is
+# owned by another Cockpit): restarting would hit the same conflict, so it is never restarted. A restart never resends
+# anything: in-flight runs become "não confirmado" (unknown) and wait for the operator.
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=78
+# Stop = SIGTERM to the Cockpit only; it ends its own provider children in order (cockpit_shutdown). KillMode=process keeps
+# systemd from killing `msb exec` children behind the Cockpit's back after a crash: they stay visible as orphans in the
+# process ledger and block new sends until the operator checks the VM and ends them (runbook, E4).
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=yes
+SyslogIdentifier=engineering-cockpit
+
+[Install]
+WantedBy=default.target

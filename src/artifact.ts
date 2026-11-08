@@ -15,7 +15,8 @@ export async function artifactManifest(): Promise<string> {
       else throw new SafeError("artifact_symlink_denied");
     }
   }
-  for (const dir of ["src", "public", "tests", "fixtures", "scripts"]) await collect(dir);
+  // tools/systemd only: tools/runtime may hold a local Bun binary on the operator's host.
+  for (const dir of ["src", "public", "tests", "fixtures", "scripts", "tools/systemd"]) await collect(dir);
   const lines = [];
   for (const file of files.sort()) lines.push(`${createHash("sha256").update(await readFile(join(root, file))).digest("hex")}  ${file}`);
   return lines.join("\n") + "\n";
