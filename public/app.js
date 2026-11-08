@@ -265,6 +265,7 @@ $('filter').addEventListener('input', () => { if (state.dashboard) renderAgents(
 
 function approvalCard(item, onDone) {
   const li = el('li', null, 'card');
+  li.dataset.approval = item.approval_id || item.approvalId || '';
   const summary = item.summary;
   const type = item.action_type || item.actionType;
   const head = el('div', null, 'head');
@@ -337,13 +338,41 @@ function approvalCard(item, onDone) {
   return li;
 }
 
+// The selected session already shows its own pending question as a full form: the global inbox keeps only a pointer to it
+// (same approval, same count) so the answer is never offered twice. Other sessions keep the full, answerable card.
+function shownInSession(item) {
+  const id = item.approval_id || item.approvalId;
+  const type = item.action_type || item.actionType;
+  if (type !== 'question' || !id || !item.session_id || item.session_id !== state.sessionId || !state.sessionData) return false;
+  return (state.sessionData.approvals || []).some(a => (a.approval_id || a.approvalId) === id);
+}
+function sessionPointer(item) {
+  const li = el('li', null, 'card pointer');
+  const head = el('div', null, 'head');
+  head.append(el('strong', 'O agente pergunta'), el('span', ago(item.created_at || item.createdAt), 'where'));
+  li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
+  li.append(el('div', 'A pergunta está aberta na sessão selecionada. Responda por lá.', 'muted small'));
+  const id = item.approval_id || item.approvalId;
+  const actions = el('div', null, 'actions');
+  actions.append(button('Ir para a pergunta', () => {
+    setPane('session');
+    const target = [...document.querySelectorAll('#session-approvals .card')].find(card => card.dataset.approval === id);
+    if (!target) return;
+    target.scrollIntoView({ block: 'nearest' });
+    const first = target.querySelector('input, textarea, button');
+    if (first) first.focus();
+  }));
+  li.append(actions);
+  return li;
+}
+
 function renderAttention(items) {
   const list = $('attention');
   list.replaceChildren();
   for (const id of ['attention-count', 'tab-count']) { $(id).textContent = String(items.length); $(id).className = items.length ? 'count hot' : 'count'; }
   if (!items.length) { list.append(el('li', 'Nada pendente. Quando um agente pedir aprovação ou travar, aparece aqui.', 'empty-list')); return; }
   for (const item of items) {
-    if (item.kind === 'approval') { list.append(approvalCard(item, refreshAll)); continue; }
+    if (item.kind === 'approval') { list.append(shownInSession(item) ? sessionPointer(item) : approvalCard(item, refreshAll)); continue; }
     const li = el('li', null, 'card bad');
     const head = el('div', null, 'head');
     if (item.kind === 'blocked') {
@@ -464,6 +493,7 @@ async function loadSession(withHistory) {
     renderRun();
     const approvals = $('session-approvals');
     approvals.replaceChildren(...data.approvals.map(item => approvalCard(item, refreshAll)));
+    if (state.dashboard) renderAttention(state.dashboard.attention);
     if (withHistory) await loadHistory();
   } catch (error) {
     if (error.status === 401) return;

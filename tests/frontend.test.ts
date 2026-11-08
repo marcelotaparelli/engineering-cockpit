@@ -3,6 +3,8 @@ import { Window } from "happy-dom";
 
 const html = await Bun.file(new URL("../public/index.html", import.meta.url)).text();
 const javascript = await Bun.file(new URL("../public/app.js", import.meta.url)).text();
+/** The page's own brand images (static markup). Data must never add any image beyond these. */
+const staticImages = (html.match(/<img\b/g) ?? []).length;
 
 const vm = { vm_name: "codex-demo", project: "demo", provider: "codex", vm_state: "running", orphaned: false, runnable: true, state: "idle",
   next_step: "Abrir sessão e enviar prompt", session_id: "ses-1", run_id: null, last_activity: null, sessions: 1 };
@@ -154,7 +156,7 @@ test("attention inbox decides an approval with its exact expected version; conte
   await withUi(router, async ui => {
     expect(ui.document.getElementById("attention-count")!.textContent).toBe("1");
     expect(ui.document.getElementById("attention")!.textContent).toContain(markup);
-    expect(ui.document.querySelectorAll("img").length).toBe(0);
+    expect(ui.document.querySelectorAll("img").length).toBe(staticImages);
     click([...ui.document.querySelectorAll("#attention button")].find(node => node.textContent === "Aprovar"));
     await settle();
     expect(JSON.parse(decision!.body!)).toEqual({ decision: "approve", expected_version: 3 });
@@ -365,7 +367,7 @@ test("E3: a Claude question is answered from the inbox by option or free text; n
     const inbox = ui.document.getElementById("attention")!;
     expect(inbox.textContent).toContain("O agente pergunta");
     expect(inbox.textContent).toContain(markup);
-    expect(ui.document.querySelectorAll("img").length).toBe(0);
+    expect(ui.document.querySelectorAll("img").length).toBe(staticImages);
     const inputs = [...inbox.querySelectorAll("input")] as unknown as HTMLInputElement[];
     expect(inputs.map(input => input.type)).toEqual(["radio", "radio", "checkbox", "checkbox"]);
     expect(inputs.some(input => input.checked)).toBe(false);
@@ -544,4 +546,64 @@ test("E4: an unknown run says what failed (VM stopped) and a reconcile without e
     expect(error).toContain("continua não confirmado");
     expect(calls.some(call => call.method === "POST" && call.path.endsWith("/runs"))).toBe(false); // nothing resent
   }, { cockpit_session_proof: "synthetic", cockpit_view: JSON.stringify({ vm: "codex-demo", sessionId: "ses-1" }) });
+});
+
+// ---------------------------------------------------------------- brand identity
+test("brand: the page's only images are the approved brand rasters, with text alternatives where they carry the name", () => {
+  const sources = [...html.matchAll(/<img\b[^>]*\bsrc="([^"]+)"[^>]*>/g)].map(match => [match[1], /\balt="([^"]*)"/.exec(match[0])?.[1]] as const);
+  expect(sources.length).toBe(staticImages);
+  for (const [src] of sources) expect(src).toMatch(/^\/brand\/(emblem|mark|lockup|wordmark)\.png$/);
+  expect(sources.filter(([src]) => src === "/brand/lockup.png" || src === "/brand/wordmark.png").every(([, alt]) => (alt ?? "").includes("Engineering Cockpit"))).toBe(true);
+  expect(html).toContain('<link rel="icon" type="image/png" href="/brand/favicon.png">');
+});
+
+test("brand: design tokens in CSS match the documented token file (palette of the approved board)", async () => {
+  const css = await Bun.file(new URL("../public/style.css", import.meta.url)).text();
+  const tokens = await Bun.file(new URL("../assets/brand/tokens.json", import.meta.url)).json() as { color: Record<string, string> };
+  expect(tokens.color).toMatchObject({ "ec-steel": "#d9dee6", "ec-deep-navy": "#0a1a2e", "ec-charcoal": "#11161f", "ec-forge-blue": "#1f76ff" });
+  for (const [name, value] of Object.entries(tokens.color)) expect(css).toContain(`--${name}: ${value};`);
+  expect(css).not.toMatch(/@import|url\(\s*["']?(https?:|\/\/)/); // no external asset
+});
+
+test("v1.1: a question already open in the selected session is not duplicated in the inbox; other sessions keep the full form", async () => {
+  const mk = (id: string, session: string) => ({ kind: "approval", approval_id: id, run_id: "run-1", session_id: session, project: "demo", vm_name: "codex-demo", version: 1,
+    action_type: "question", created_at: new Date().toISOString(), summary: { actionType: "question", itemId: null, command: null, cwd: null, reason: null, toolName: "AskUserQuestion",
+      questions: [{ question: "Qual banco?", header: null, multiSelect: false, options: [{ label: "Postgres", description: null }, { label: "SQLite", description: null }] }] } });
+  const here = mk("apr-here", "ses-1"), elsewhere = mk("apr-else", "ses-2");
+  const decisions: Call[] = [];
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: dashboard({ attention: decisions.length ? [elsewhere] : [here, elsewhere] }) };
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([], decisions.length ? [] : [here]) };
+    if (call.method === "POST" && call.path === "/api/approvals/apr-here/decision") { decisions.push(call); return { status: 200, body: { status: "approved", version: 2 } }; }
+    return undefined;
+  });
+  await withUi(router, async ui => {
+    await settle();
+    const inbox = ui.document.getElementById("attention")!;
+    const inSession = ui.document.getElementById("session-approvals")!;
+    // Same count (the global inbox still lists both), but the selected session's form exists only once.
+    expect(ui.document.getElementById("attention-count")!.textContent).toBe("2");
+    expect(inSession.querySelectorAll("fieldset.question")).toHaveLength(1);
+    expect(inbox.querySelectorAll("fieldset.question")).toHaveLength(1);                 // only the other session's
+    expect(inbox.querySelectorAll(".card.pointer")).toHaveLength(1);
+    const pointer = inbox.querySelector(".card.pointer")!;
+    expect(pointer.querySelector("input, textarea")).toBeNull();
+    // The pointer takes the operator to the real form and focuses it.
+    click([...pointer.querySelectorAll("button")].find(node => node.textContent === "Ir para a pergunta"));
+    expect(ui.document.getElementById("app")!.getAttribute("data-pane")).toBe("session");
+    // Answering in the session posts the exact same decision as before.
+    const radios = [...inSession.querySelectorAll("input[type=radio]")] as unknown as HTMLInputElement[];
+    radios[0]!.checked = true;
+    click([...inSession.querySelectorAll("button")].find(node => node.textContent === "Responder"));
+    await settle();
+    expect(JSON.parse(decisions[0]!.body!)).toEqual({ decision: "approve", expected_version: 1, answers: { "Qual banco?": "Postgres" } });
+    expect(inbox.querySelectorAll(".card.pointer")).toHaveLength(0);
+  }, { cockpit_session_proof: "synthetic", cockpit_view: JSON.stringify({ vm: "codex-demo", sessionId: "ses-1" }) });
+});
+
+test("v1.1: state chips carry a shape cue and the simulation badge a dashed outline, not only colour", async () => {
+  const css = await Bun.file(new URL("../public/style.css", import.meta.url)).text();
+  for (const state of ["s-running", "s-awaiting_approval", "s-failed", "s-completed", "s-unknown", "s-idle"]) expect(css).toContain(`.${state}.chip::before`);
+  expect(css).toMatch(/\.badge\.sim[^}]*dashed/);
+  expect(css).toMatch(/\.conn\.bad::before/);
 });

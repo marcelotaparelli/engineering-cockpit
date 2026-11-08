@@ -1,0 +1,99 @@
+{
+  "at": "2026-11-08T13:47:04.271Z",
+  "mode": "mock",
+  "results": [
+    {
+      "check": "marca: logos metálicos carregados no login 1440px",
+      "pass": true
+    },
+    {
+      "check": "login 1440px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "marca: logos metálicos carregados no login 390px",
+      "pass": true
+    },
+    {
+      "check": "login 390px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "favicon e app icon declarados",
+      "pass": true
+    },
+    {
+      "check": "AskUserQuestion aparece no formulário da sessão",
+      "pass": true
+    },
+    {
+      "check": "inbox não duplica o formulário da sessão selecionada (só ponteiro; contagem global mantida)",
+      "pass": true
+    },
+    {
+      "check": "teclado: Enter no ponteiro foca a pergunta da sessão",
+      "pass": true
+    },
+    {
+      "check": "foco visível com anel azul",
+      "pass": true
+    },
+    {
+      "check": "pergunta respondida e execução concluída",
+      "pass": true
+    },
+    {
+      "check": "aprovação de ferramenta com entrada completa",
+      "pass": true
+    },
+    {
+      "check": "rejeição pela inbox",
+      "pass": true
+    },
+    {
+      "check": "streaming ao vivo",
+      "pass": true
+    },
+    {
+      "check": "interrompido",
+      "pass": true
+    },
+    {
+      "check": "resposta parcial marcada como incompleta",
+      "pass": true
+    },
+    {
+      "check": "processo do agente cai: execução não confirmada",
+      "pass": true
+    },
+    {
+      "check": "1024px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "768px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "390px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "390px: badges do cabeçalho sem truncamento",
+      "pass": true
+    },
+    {
+      "check": "390px: cabeçalho em até 2 linhas (≤ 96px)",
+      "pass": true
+    },
+    {
+      "check": "390px: Reconciliar visível e tocável",
+      "pass": true
+    },
+    {
+      "check": "sem erros de JavaScript/CSP no console",
+      "pass": true,
+      "detail": ""
+    }
+  ]
+}
