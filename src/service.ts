@@ -21,7 +21,7 @@ export const SERVICE_ENV_KEYS = ["COCKPIT_MODE", "COCKPIT_HOST_CONFIRMED", "COCK
   "COCKPIT_RESERVED_VMS", "COCKPIT_LOCAL_TOKEN_FILE", "PATH", "LANG"] as const;
 type ServiceKey = typeof SERVICE_ENV_KEYS[number];
 /** Paths written into the unit or the environment file: absolute, no whitespace, quotes, `%` (unit specifiers), `$` or `\`. */
-const SAFE_PATH = /^\/[A-Za-z0-9._+@\/-]*$/;
+export const SAFE_PATH = /^\/[A-Za-z0-9._+@\/-]*$/;
 const SAFE_VALUE = /^[A-Za-z0-9._,:+@\/=-]*$/;
 
 export interface ServicePaths { configDir: string; envFile: string; tokenFile: string; unitDir: string; unitFile: string }
@@ -199,7 +199,7 @@ export async function install(options: { env: Record<string, string | undefined>
   if (reload.code !== 0) throw new SafeError("systemctl_daemon_reload_failed");
   return { tokenCreated, tokenImported, envWritten, unitWritten: current !== unit, paths };
 }
-function isLink(path: string): boolean { try { return lstatSync(path).isSymbolicLink(); } catch { return false; } }
+export function isLink(path: string): boolean { try { return lstatSync(path).isSymbolicLink(); } catch { return false; } }
 
 /**
  * The credential file the service really uses: `COCKPIT_LOCAL_TOKEN_FILE` from the private settings file (never a guess).
@@ -281,7 +281,7 @@ function fileMode(path: string): { ok: boolean; detail: string } {
     return { ok: true, detail: "600, dono correto" };
   } catch { return { ok: false, detail: "ausente" }; }
 }
-async function portBusy(port: number): Promise<boolean> {
+export async function portBusy(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const socket = connect({ host: "127.0.0.1", port });
     const done = (busy: boolean) => { socket.destroy(); resolve(busy); };

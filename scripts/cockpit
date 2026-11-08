@@ -49,5 +49,6 @@ case "$COMMAND" in
   frontend-test) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file test tests/frontend.test.ts ;;
   artifact) exec "$RUNTIME" --no-env-file scripts/artifact.ts "$@" ;;
   service) exec "$RUNTIME" --no-env-file scripts/service.ts "$@" ;;
-  *) echo 'Usage: ./scripts/cockpit [bootstrap|start|verify|host-check|discovery-report|m0b1a-smoke|protocol-diagnose|e0-recovery-test|e2-claude-spike|e3-homologation|e4-homologation|frontend-test|artifact|service]' >&2; exit 2 ;;
+  f1-systemd-smoke) [ "$#" -eq 0 ] || exit 2; exec "$RUNTIME" --no-env-file scripts/f1-systemd-smoke.ts ;;
+  *) echo 'Usage: ./scripts/cockpit [bootstrap|start|verify|host-check|discovery-report|m0b1a-smoke|protocol-diagnose|e0-recovery-test|e2-claude-spike|e3-homologation|e4-homologation|frontend-test|artifact|service|f1-systemd-smoke]' >&2; exit 2 ;;
 esac
