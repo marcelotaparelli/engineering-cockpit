@@ -72,6 +72,21 @@ O foco aparece sempre como anel azul (`:focus-visible`). Com `prefers-reduced-mo
 - **Console** (`.msg.action`): ferramentas, comandos e aprovações no histórico, em mono sobre fundo de console, com borda lateral na cor do estado.
 - **Topbar:** lockup metálico, badges (`SIMULAÇÃO` em âmbar, conexão com LED) e linha de brilho azul na base.
 
+## Refinamento v1.1
+- **AskUserQuestion sem duplicação:** quando a sessão selecionada já mostra a pergunta, a inbox "Precisa de você" mostra só um cartão-ponteiro ("Ir para a pergunta", que troca para a sessão e foca o formulário). A contagem global não muda, e perguntas de **outras** sessões continuam com o formulário completo. Aprovações de comando/ferramenta não mudaram. Só front-end: mesma decisão, mesmos endpoints.
+- **Mobile 390 px:** cabeçalho em duas linhas (marca + Sair; depois simulação + conexão), sem truncar os badges. Textos secundários maiores (0,85 rem) e botões de ação com altura mínima de 36 px.
+- **Acabamento:** superfícies separadas por painel (gradientes navy/charcoal), realce metálico de 1 px no topo das bordas, foco azul apenas no controle focado. Sem blur, sem animação nova.
+- **Estados sem depender só da cor:**
+
+  | Estado | Cor | Forma / texto |
+  | --- | --- | --- |
+  | servidor conectado | verde | LED cheio + "AO VIVO" (conectando: anel; offline: quadrado) |
+  | executando | azul | ▶ + "EXECUTANDO" |
+  | simulação | âmbar | contorno **tracejado** + ◇ + "SIMULAÇÃO" |
+  | aguardando intervenção | âmbar | ◇ losango + "AGUARDANDO …" |
+  | não confirmado | vermelho | anel **tracejado** + borda tracejada + "NÃO CONFIRMADO" |
+  | falhou / travado | vermelho | ■ quadrado |
+
 ## O que não foi feito (de propósito)
 O prompt da marca pede uma demo "Mission Control" com:
 - pipelines, builds e integrations;
@@ -84,4 +99,4 @@ O Cockpit **não tem esses dados** hoje. Desenhar essas telas exigiria inventar 
 - `CHROMIUM=$(command -v chromium) bun scripts/visual-check.ts <dir>`: fluxo Codex, já existente.
 - `CHROMIUM=$(command -v chromium) bun scripts/brand-visual-check.ts <dir>`: fluxo de marca e Claude.
 
-Os dois rodam em modo mock (sem VM, sem `msb`). Capturas desta versão estão em `docs/evidence/ui-brand-2026-11-08/`.
+Os dois rodam em modo mock (sem VM, sem `msb`). Capturas: v1.0 em `docs/evidence/ui-brand-2026-11-08/`; v1.1 (390, 768, 1024, 1440) e comparativos antes/depois em `docs/evidence/ui-brand-v1.1-2026-11-08/`.

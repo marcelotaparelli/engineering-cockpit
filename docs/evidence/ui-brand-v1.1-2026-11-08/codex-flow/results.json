@@ -1,0 +1,100 @@
+{
+  "at": "2026-11-08T13:48:00.638Z",
+  "mode": "mock",
+  "results": [
+    {
+      "check": "1. login visível antes de autenticar",
+      "pass": true
+    },
+    {
+      "check": "1. formulário de login some após autenticar",
+      "pass": true
+    },
+    {
+      "check": "2. discovery lista VMs agrupadas por projeto",
+      "pass": true
+    },
+    {
+      "check": "credencial não aparece no DOM nem no storage",
+      "pass": true
+    },
+    {
+      "check": "SSE conectado (badge ao vivo)",
+      "pass": true
+    },
+    {
+      "check": "3. seleção do agente e abertura de sessão",
+      "pass": true
+    },
+    {
+      "check": "4. streaming em tempo real aparece na conversa",
+      "pass": true
+    },
+    {
+      "check": "4. execução concluída e histórico renderizado",
+      "pass": true
+    },
+    {
+      "check": "Precisa de você mostra a aprovação com contagem",
+      "pass": true
+    },
+    {
+      "check": "5. layout 1440px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "5. 1440px mostra as três áreas",
+      "pass": true
+    },
+    {
+      "check": "5. 1440px editor fixo visível no viewport",
+      "pass": true
+    },
+    {
+      "check": "5. layout 1024px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "5. 1024px mostra as três áreas",
+      "pass": true
+    },
+    {
+      "check": "5. 1024px editor fixo visível no viewport",
+      "pass": true
+    },
+    {
+      "check": "5. layout 390px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "5. 390px mostra uma área por vez com abas",
+      "pass": true
+    },
+    {
+      "check": "5. 390px editor fixo visível no viewport",
+      "pass": true
+    },
+    {
+      "check": "aprovação decidida pela inbox e execução concluída",
+      "pass": true
+    },
+    {
+      "check": "6. refresh restaura sessão e histórico sem novo envio",
+      "pass": true,
+      "detail": "runs 2 → 2"
+    },
+    {
+      "check": "interromper pelo botão",
+      "pass": true
+    },
+    {
+      "check": "sem erros de JavaScript/CSP no console",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "7. logs sem credencial nem prompts",
+      "pass": true
+    }
+  ]
+}
