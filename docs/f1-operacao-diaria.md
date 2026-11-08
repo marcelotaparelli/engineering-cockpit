@@ -46,8 +46,8 @@ O `install` só escreve arquivos e faz `daemon-reload`. A unit:
 | Verificação | Resultado |
 | --- | --- |
 | `bun run typecheck` | limpo |
-| `./scripts/cockpit verify` | **321 pass / 0 fail**: 283 anteriores + 38 da F1 |
-| `./scripts/cockpit e4-homologation` | 321 pass; drill **PASS 11/11**, overall `PASS` |
+| `./scripts/cockpit verify` | **338 pass / 0 fail**: 283 anteriores + 55 da F1, incluindo os das correções F1-A, F1-B, F1-D e da 2ª revisão |
+| `./scripts/cockpit e4-homologation` | 334 pass na última execução completa (antes dos 4 testes finais do smoke, que não tocam no drill); drill **PASS 11/11**, overall `PASS` |
 | `scripts/visual-check.ts` (fluxo Codex) | **23/23 PASS** |
 | `scripts/brand-visual-check.ts` (marca, 390–1440) | **23/23 PASS** |
 | `scripts/f1-visual-check.ts` (novo: BroadcastChannel real entre duas abas, L5, L6, credencial em arquivo) | **12/12 PASS** |
@@ -82,7 +82,7 @@ Testes novos, por requisito do brief:
 | 5 | baixa | Gravações da unit e da credencial não atômicas; `.tmp` órfão; unit invisível se o `XDG_CONFIG_HOME` do shell diferir do gerenciador | **corrigido**: gravação atômica (temp `O_EXCL|O_NOFOLLOW` + fsync + rename, temp removido em falha) para credencial, configuração e unit; doctor `unit_loaded` (FAIL se o systemd usa outra unit, WARN se não carregou). **Aceito**: a janela `lstat(dir)`/`open` em `readLocalCredentialFile` só é explorável por quem já escreve no `~/.config` do próprio usuário |
 | 6 | info | `KillMode=process` deixa órfãos de uma queda vivos após `stop` | **documentado** no runbook (linha "Órfãos continuam vivos depois de `service stop`") |
 | 7 | info | Filhos herdam o socket ou o descritor do SQLite? | verificado pelo revisor e pelo autor: **não**. O reinício após queda com órfãos vivos não é recusado |
-| 8 | info | Teto de 4096 nonces sem decaimento; ao atingi-lo, até o logout falha | aceito: equivale a uma mutação a cada 10 s por 12 h; novo login resolve |
+| 8 | info | Teto de 4096 nonces sem decaimento; ao atingi-lo, até o logout falha | superado pela F1-A da 2ª revisão (épocas de CSRF) |
 
 **Áreas sem achado** (avaliação do revisor, conferida pelo autor):
 - renovação só por CSRF ou pelo sinal de atividade, e o teto de 12 h é inviolável;
@@ -104,7 +104,7 @@ Autoverificação do autor:
 ## 5. Riscos e limitações
 
 - **Nada disto foi executado no Arch.** Não foram executados no Arch: systemd real, `KillMode=process` com `msb` real, `NoNewPrivileges` com `msb`, linger, Chromium/Firefox do operador. A unit foi verificada com systemd 252 (Debian); o Arch usa uma versão mais nova.
-- **`NoNewPrivileges=yes`:** se o `msb` do Arch depender de binário setuid (não esperado), `msb exec` falha. O sintoma aparece no doctor/logs como erro de transporte. Remover a linha da unit resolve.
+- **`NoNewPrivileges=yes`:** se o `msb` do Arch depender de binário setuid (não esperado), `msb exec` falha sob o systemd. O smoke F1-D (§6, A2) prova ou refuta isso. A restrição só deve ser removida com essa evidência e uma justificativa registrada.
 - **`KillMode=process`:** é proposital (órfãos visíveis, E4). Versões futuras do systemd podem emitir aviso sobre esse modo.
 - **Sessões em memória:** reinício e queda pedem novo login. É a decisão do ADR-0002, mantida.
 - **Atividade:** quem lê uma resposta longa por mais de 30 min sem tocar na página precisa entrar de novo. O aviso de 5 min existe para isso.
@@ -121,7 +121,28 @@ Autoverificação do autor:
 ```sh
 cd <checkout da branch feat/f1-daily-ops> && ./scripts/cockpit bootstrap && ./scripts/cockpit e4-homologation && ./scripts/cockpit artifact --check
 ```
-Esperado: 321 pass, drill `"overall": "PASS"` e `PASS artifact manifest`.
+Esperado: 338 pass, drill `"overall": "PASS"` e `PASS artifact manifest`.
+
+**A2. Smoke real do systemd (F1-D)** (isolado; não para nem altera nenhum Cockpit, nenhum `~/.config/engineering-cockpit`, nenhuma credencial nem `data/` existentes)
+
+Use uma VM Codex ligada e **sem turno em andamento**, de preferência uma VM de teste:
+```sh
+COCKPIT_F1_SMOKE_CONFIRMED=yes COCKPIT_SMOKE_VM=<codex-vm> COCKPIT_PROJECTS_BASE="$HOME/sandboxes/agent/projects" \
+  ./scripts/cockpit f1-systemd-smoke; echo "exit=$?"
+```
+O que ele faz e prova (relatório JSON; exit 0/1/2 = PASS/FAIL/NOT_VERIFIED):
+- **Unit de runtime:** gera `engineering-cockpit-f1-smoke.service` em `$XDG_RUNTIME_DIR/systemd/user`, a partir do **mesmo template** da unit do serviço, com `NoNewPrivileges=yes` mantido. Usa porta, `data/` e credencial próprios em `.cache/f1-systemd-smoke/`.
+- **Privilégios:** `NoNewPrivs: 1` confirmado em `/proc/<MainPID>/status`.
+- **Credencial:** login com a credencial lida do arquivo.
+- **Microsandbox:** `msb list` (discovery) e `msb exec`. O `msb exec` faz `initialize` + `thread/list` do Codex: só leitura, sem prompt, sem quota.
+- **Queda:** SIGKILL do processo principal; o systemd reinicia. Todo filho `msb` sobrevivente aparece no ledger de órfãos e depois é encerrado pelo smoke. O smoke só sinaliza processos `msb` do cgroup da **própria** unit, rechecados a cada sinal.
+- **Depois do reinício:** `msb exec` funciona de novo. O stop ordenado sai com 0 e encerra os filhos.
+- **Início recusado:** credencial 0644 → status 78, sem reinício automático.
+- **Journal:** a credencial não aparece.
+- **Limpeza:** remove tudo o que criou, com PASS, FAIL ou interrupção (Ctrl+C). Se mesmo assim sobrar algo (ex.: queda de energia), a próxima execução remove o remanescente sozinha. Manualmente: `systemctl --user stop engineering-cockpit-f1-smoke.service; systemctl --user kill --kill-whom=all -s SIGKILL engineering-cockpit-f1-smoke.service; rm -f "$XDG_RUNTIME_DIR/systemd/user/engineering-cockpit-f1-smoke.service"; systemctl --user daemon-reload; rm -rf .cache/f1-systemd-smoke`.
+- **Resultado honesto:** se nenhum filho `msb` sobreviver ao SIGKILL, `orphan_ledger` sai como NOT_VERIFIED (o ledger não foi exercitado sob o systemd) e o resultado geral não é PASS. Nesse caso o E4 continua coberto pelo drill; traga o JSON.
+
+Se `msb_exec` falhar só aqui (e funcionar no terminal), traga o JSON. Ele é a evidência para decidir sobre `NoNewPrivileges`.
 
 **B. Serviço em modo simulado, isolado** (porta 8788 e dados próprios, sem VM)
 ```sh

@@ -28,7 +28,15 @@
 - máximo de 32 sessões;
 - o login sempre cria um identificador novo, sem fixação. Um cookie que o servidor não emitiu é recusado.
 
-**Ajuste:** a capacidade de nonces por sessão passou de 256 para 4096. Com 12 h, 256 mutações esgotariam a sessão (`nonce_capacity_reached`). A proteção contra replay continua valendo por toda a sessão, sem expiração de nonces.
+**Ajuste: épocas de CSRF (F1-A, após a revisão independente).** Antes, o conjunto de nonces de uso único tinha um limite fixo por sessão (256; depois 4096). Ao atingi-lo, toda mutação, inclusive `interrupt`, era recusada até um novo login.
+
+Agora os nonces são guardados por **época de CSRF**:
+- Com 1024 nonces numa época, ela se fecha: a sessão recebe um token CSRF novo e um conjunto vazio.
+- **Replay continua impossível.** Toda requisição de uma época fechada carrega o token antigo e é recusada (`csrf_denied`). Dentro da época, o nonce é de uso único.
+- **Memória limitada:** um conjunto de até 1024 por sessão.
+- **Nenhuma mutação é recusada por capacidade:** `nonce_capacity_reached` deixou de existir.
+- **Na página:** em `csrf_denied`, ela relê o token uma vez e reenvia com nonce novo. É seguro porque o CSRF é verificado antes de qualquer efeito. Uma segunda recusa é mostrada, nunca repetida.
+- **Sessão revogada ou expirada:** `csrf()` também recusa qualquer requisição.
 
 **Revogação:** logout (imediato, também nas outras abas da mesma sessão), reinício do serviço (todas as sessões), rotação da credencial seguida de reinício.
 

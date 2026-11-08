@@ -29,8 +29,9 @@ O Cockpit pode rodar como serviço do próprio usuário, sem terminal aberto. Na
 | `./scripts/cockpit service stop` | SIGTERM só para o Cockpit, que encerra os próprios filhos em ordem |
 | `./scripts/cockpit service status` / `logs [-f]` | Estado, PID, reinícios, URL. Logs do journal (JSON, sem credencial, sem prompts) |
 | `./scripts/cockpit service enable` / `disable` | Iniciar ou não com a sessão do usuário. Opcional |
-| `./scripts/cockpit service token-path` | Caminho do arquivo da credencial, para copiar ao fazer login (ex.: `wl-copy < "$(./scripts/cockpit service token-path)"`). Nunca o conteúdo |
-| `./scripts/cockpit service rotate-token` | Nova credencial (0600). Vale após `service restart`, que revoga todas as sessões |
+| `./scripts/cockpit service token-path` | Caminho do arquivo da credencial **configurado** em `cockpit.env` (`COCKPIT_LOCAL_TOKEN_FILE`), para copiar ao fazer login (ex.: `wl-copy < "$(./scripts/cockpit service token-path)"`). Nunca o conteúdo |
+| `./scripts/cockpit service rotate-token` | Nova credencial no arquivo **configurado** em `cockpit.env`, gravada atomicamente e verificada. Em falha, a anterior é restaurada e a rotação é relatada como falha. Recusa se a configuração ou o arquivo não estiverem privados e válidos. Com o serviço rodando, a anterior continua aceita até `service restart`, que revoga todas as sessões. Com o serviço parado, vale no próximo `start` |
+| `./scripts/cockpit f1-systemd-smoke` | Smoke real do systemd no Arch (F1-D). Unit de runtime isolada, porta, dados e credencial próprios. Não toca no serviço instalado nem em outro Cockpit. Limpa tudo ao fim, também em Ctrl+C; um remanescente de execução interrompida é removido na próxima. Veja `docs/f1-operacao-diaria.md` §6 |
 | `./scripts/cockpit service uninstall` | Remove a unit (recusa se ativa). Mantém configuração, credencial e dados |
 
 O `install` gera:

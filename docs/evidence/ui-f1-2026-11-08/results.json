@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-08T17:33:34.150Z",
+  "at": "2026-11-08T18:03:01.368Z",
   "mode": "mock",
   "results": [
     {
@@ -48,7 +48,7 @@
     {
       "check": "após o logout, só as respostas 401 esperadas no console",
       "pass": true,
-      "detail": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      "detail": "Failed to load resource: the server responded with a status of 401 (Unauthorized) | Failed to load resource: the server responded with a status of 401 (Unauthorized)"
     },
     {
       "check": "logs sem credencial nem prompts",
