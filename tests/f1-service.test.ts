@@ -3,7 +3,8 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { doctor, install, parseEnvFile, renderEnvFile, renderUnit, repoRoot, restartsAfter, rotateToken, servicePaths, uninstall, type Runner } from "../src/service.ts";
+import { readFileSync } from "node:fs";
+import { configuredTokenFile, doctor, install, parseEnvFile, renderEnvFile, renderUnit, repoRoot, restartsAfter, rotateToken, servicePaths, uninstall, type Runner } from "../src/service.ts";
 import { RuntimeStore, procDatabaseHolders } from "../src/runtime-store.ts";
 
 /**
@@ -229,4 +230,95 @@ test("rotate-token replaces the credential atomically (0600); uninstall refuses 
   expect(await Bun.file(paths.unitFile).exists()).toBe(false);
   expect(await Bun.file(paths.envFile).exists()).toBe(true);
   expect(await Bun.file(paths.tokenFile).exists()).toBe(true);
+});
+
+// ---------------------------------------------------------------- F1-B: rotate-token follows cockpit.env, verifies, rolls back
+async function customSetup() {
+  const configHome = await home();
+  await install({ env: mockEnv(configHome), run: recorder().run });
+  const paths = servicePaths({ XDG_CONFIG_HOME: configHome });
+  const vault = join(configHome, "vault");
+  await mkdir(vault, { mode: 0o700 });
+  const custom = join(vault, "cockpit-secret");
+  const original = "cd".repeat(32);
+  await writeFile(custom, `${original}\n`, { mode: 0o600 });
+  const envText = await readFile(paths.envFile, "utf8");
+  await writeFile(paths.envFile, envText.replace(`COCKPIT_LOCAL_TOKEN_FILE=${paths.tokenFile}`, `COCKPIT_LOCAL_TOKEN_FILE=${custom}`), { mode: 0o600 });
+  const defaultBefore = await readFile(paths.tokenFile, "utf8");
+  return { configHome, paths, vault, custom, original, defaultBefore };
+}
+
+test("F1-B: rotate-token rotates the file named in cockpit.env (custom path), never the default one", async () => {
+  const { configHome, paths, vault, custom, original, defaultBefore } = await customSetup();
+  expect(configuredTokenFile({ XDG_CONFIG_HOME: configHome })).toBe(custom);
+  const result = await rotateToken({ XDG_CONFIG_HOME: configHome });
+  expect(result).toEqual({ tokenFile: custom });
+  const rotated = (await readFile(custom, "utf8")).trim();
+  expect(rotated).toMatch(/^[a-f0-9]{64}$/);
+  expect(rotated).not.toBe(original);
+  expect(await mode(custom)).toBe(0o600);
+  expect(await readFile(paths.tokenFile, "utf8")).toBe(defaultBefore); // the wrong file is untouched
+  expect((await readdir(vault)).sort()).toEqual(["cockpit-secret"]); // no temporary file left
+  expect(JSON.stringify(result)).not.toContain(rotated);
+});
+
+test("F1-B: no rotation without a valid, private configuration and credential file — and nothing is created or changed", async () => {
+  const notInstalled = await home();
+  await expect(rotateToken({ XDG_CONFIG_HOME: notInstalled })).rejects.toThrow("service_not_installed");
+  expect(await Bun.file(servicePaths({ XDG_CONFIG_HOME: notInstalled }).tokenFile).exists()).toBe(false);
+
+  const cases: Array<[string, (ctx: Awaited<ReturnType<typeof customSetup>>) => Promise<void>, string]> = [
+    ["settings readable by others", async c => { await chmod(c.paths.envFile, 0o644); }, "service_env_file_insecure"],
+    ["settings without a credential file", async c => { await writeFile(c.paths.envFile, (await readFile(c.paths.envFile, "utf8")).replace(/^COCKPIT_LOCAL_TOKEN_FILE=.*\n/m, "")); }, "local_credential_file_required"],
+    ["traversal in the configured path", async c => { await writeFile(c.paths.envFile, (await readFile(c.paths.envFile, "utf8")).replace(c.custom, `${c.vault}/../vault/cockpit-secret`)); }, "local_credential_file_invalid"],
+    ["configured file missing", async c => { await rm(c.custom); }, "local_credential_file_invalid"],
+    ["configured file readable by others", async c => { await chmod(c.custom, 0o644); }, "local_credential_file_insecure"],
+    ["configured file is a symlink", async c => { await rm(c.custom); await symlink(c.paths.tokenFile, c.custom); }, "local_credential_file_invalid"],
+    ["configured file malformed", async c => { await writeFile(c.custom, "not-a-token\n"); }, "local_credential_file_invalid"],
+  ];
+  for (const [label, breakIt, code] of cases) {
+    const ctx = await customSetup();
+    await breakIt(ctx);
+    const snapshot = async () => [await readFile(ctx.paths.tokenFile, "utf8"), await readFile(ctx.custom, "utf8").catch(() => "<absent>"), (await readdir(ctx.vault)).sort().join(",")];
+    const before = await snapshot();
+    let message = "";
+    try { await rotateToken({ XDG_CONFIG_HOME: ctx.configHome }); } catch (error) { message = (error as Error).message; }
+    expect(`${label} → ${message}`).toBe(`${label} → ${code}`);
+    expect(await snapshot()).toEqual(before);
+    expect(message).not.toContain(ctx.original);
+  }
+});
+
+test("F1-B: a failed or unverifiable write is rolled back to the previous credential and reported as failed", async () => {
+  const realRead = (path: string) => readFileSync(path, "utf8").trim();
+  // 1. The write itself fails (e.g. disk full): the previous credential stays, the rotation is reported as failed.
+  {
+    const ctx = await customSetup();
+    let message = "";
+    try { await rotateToken({ XDG_CONFIG_HOME: ctx.configHome }, { write: async () => { throw new Error("ENOSPC"); }, read: realRead, generate: () => "ef".repeat(32) }); }
+    catch (error) { message = (error as Error).message; }
+    expect(message).toBe("credential_rotation_failed");
+    expect((await readFile(ctx.custom, "utf8")).trim()).toBe(ctx.original);
+    expect(await mode(ctx.custom)).toBe(0o600);
+    expect((await readdir(ctx.vault)).sort()).toEqual(["cockpit-secret"]);
+  }
+  // 2. The write "succeeds" but the file does not hold the new value: restored, reported, never claimed as rotated.
+  {
+    const ctx = await customSetup();
+    let message = "";
+    try {
+      await rotateToken({ XDG_CONFIG_HOME: ctx.configHome }, { write: async path => { await writeFile(path, `${"00".repeat(32)}\n`, { mode: 0o600 }); }, read: realRead, generate: () => "ef".repeat(32) });
+    } catch (error) { message = (error as Error).message; }
+    expect(message).toBe("credential_rotation_failed");
+    expect((await readFile(ctx.custom, "utf8")).trim()).toBe(ctx.original);
+    expect(message).not.toContain("ef".repeat(32));
+  }
+  // 3. A generator returning the same or a malformed value is refused before anything is written.
+  {
+    const ctx = await customSetup();
+    for (const generate of [() => ctx.original, () => "XYZ"]) {
+      await expect(rotateToken({ XDG_CONFIG_HOME: ctx.configHome }, { write: async () => { throw new Error("must not write"); }, read: realRead, generate })).rejects.toThrow("credential_rotation_failed");
+    }
+    expect((await readFile(ctx.custom, "utf8")).trim()).toBe(ctx.original);
+  }
 });

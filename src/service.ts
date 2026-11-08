@@ -201,13 +201,45 @@ export async function install(options: { env: Record<string, string | undefined>
 }
 function isLink(path: string): boolean { try { return lstatSync(path).isSymbolicLink(); } catch { return false; } }
 
-/** Replaces the credential atomically (0600). Sessions and the running process keep the old one until a restart. */
-export async function rotateToken(env: Record<string, string | undefined> = process.env): Promise<ServicePaths> {
+/**
+ * The credential file the service really uses: `COCKPIT_LOCAL_TOKEN_FILE` from the private settings file (never a guess).
+ * The settings file must be private and well-formed, and the credential file must already exist, be private and valid:
+ * nothing is created or replaced in a place the configuration does not name.
+ */
+export function configuredTokenFile(env: Record<string, string | undefined> = process.env): string {
   const paths = servicePaths(env);
-  await ensurePrivateDir(paths.configDir);
-  await writePrivate(paths.tokenFile, `${newToken()}\n`);
-  readLocalCredentialFile(paths.tokenFile);
-  return paths;
+  if (!existsSync(paths.envFile) && !isLink(paths.envFile)) throw new SafeError("service_not_installed");
+  if (!fileMode(paths.envFile).ok) throw new SafeError("service_env_file_insecure");
+  const target = parseEnvFile(readFileSync(paths.envFile, "utf8")).COCKPIT_LOCAL_TOKEN_FILE;
+  if (!target) throw new SafeError("local_credential_file_required");
+  if (!SAFE_PATH.test(target) || target.split("/").includes("..")) throw new SafeError("local_credential_file_invalid");
+  readLocalCredentialFile(target); // exists, regular, private, owned, valid; otherwise refuse
+  return target;
+}
+
+export interface RotationDeps { write(path: string, content: string): Promise<void>; read(path: string): string; generate(): string }
+const ROTATION: RotationDeps = { write: (path, content) => writePrivate(path, content), read: readLocalCredentialFile, generate: newToken };
+
+/**
+ * F1-B: replaces the configured credential atomically (temp 0600 + rename) and verifies it by reading it back. On any failure
+ * the previous credential is restored (atomically) and the rotation is reported as failed: never a rotation that did not
+ * happen, never a file the configuration does not name. The value is never returned or printed. The running Cockpit keeps
+ * accepting the previous credential until its next start/restart (which also revokes every browser session).
+ */
+export async function rotateToken(env: Record<string, string | undefined> = process.env, deps: RotationDeps = ROTATION): Promise<{ tokenFile: string }> {
+  const tokenFile = configuredTokenFile(env);
+  const previous = deps.read(tokenFile);
+  const next = deps.generate();
+  if (!/^[a-f0-9]{64}$/.test(next) || next === previous) throw new SafeError("credential_rotation_failed");
+  try {
+    await deps.write(tokenFile, `${next}\n`);
+    if (deps.read(tokenFile) !== next) throw new SafeError("credential_rotation_unverified");
+  } catch {
+    let restored = false;
+    try { await writePrivate(tokenFile, `${previous}\n`); restored = readLocalCredentialFile(tokenFile) === previous; } catch { /* reported below */ }
+    throw new SafeError(restored ? "credential_rotation_failed" : "credential_rotation_rollback_failed");
+  }
+  return { tokenFile };
 }
 
 export async function uninstall(options: { env: Record<string, string | undefined>; run: Runner }): Promise<ServicePaths> {
