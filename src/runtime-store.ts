@@ -4,10 +4,11 @@ import { chmodSync, closeSync, lstatSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { SafeError, validProject, vmIdentity } from "./model.ts";
 import { assertNoSymlinks } from "./paths.ts";
-import type { ExecutionTarget, RunStatus } from "./provider.ts";
+import type { ExecutionTarget, HistoryApproval, HistoryItem, RunStatus } from "./provider.ts";
+import { TRANSCRIPT_KINDS, type TranscriptBody, type TranscriptEntry, type TranscriptKind } from "./transcript.ts";
 
 const APPLICATION_ID = 0x4352544d;
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const RUN_STATUSES: readonly RunStatus[] = ["prepared", "dispatching", "running", "awaiting_approval", "completed", "failed", "interrupted", "unknown"];
 const SCHEMA_V1 = [
   "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, provider TEXT NOT NULL, project_id TEXT NOT NULL, vm_name TEXT NOT NULL, vm_instance_id TEXT, discovery_version TEXT NOT NULL, provider_session_id TEXT NOT NULL, created_at TEXT NOT NULL, last_observed_at TEXT NOT NULL, UNIQUE(provider, project_id, vm_name, provider_session_id))",
@@ -26,7 +27,14 @@ const SCHEMA_V2 = [...SCHEMA_V1, ...SCHEMA_V2_ADDITIONS];
 // SQLite cannot widen a CHECK in place, so both tables are rebuilt with identical columns and their rows copied.
 const APPROVALS_V3 = "CREATE TABLE approvals (approval_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), action_type TEXT NOT NULL CHECK(action_type IN ('command','file_change','tool','question')), action_digest TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')), version INTEGER NOT NULL CHECK(version >= 1), created_at TEXT NOT NULL, expires_at TEXT NOT NULL, resolved_at TEXT, reason_code TEXT)";
 const RUN_METRICS_V3 = "CREATE TABLE run_metrics (run_id TEXT PRIMARY KEY REFERENCES runs(run_id), input_tokens INTEGER, output_tokens INTEGER, cached_input_tokens INTEGER, token_scope TEXT NOT NULL CHECK(token_scope IN ('not_measured','session_cumulative','run')), updated_at TEXT NOT NULL)";
-const SCHEMA = [...SCHEMA_V1, APPROVALS_V3, RUN_METRICS_V3, SCHEMA_V2_ADDITIONS[2]!, SCHEMA_V2_ADDITIONS[3]!];
+const SCHEMA_V3 = [...SCHEMA_V1, APPROVALS_V3, RUN_METRICS_V3, SCHEMA_V2_ADDITIONS[2]!, SCHEMA_V2_ADDITIONS[3]!];
+// v4 (E3.1): the conversation as observed by the Cockpit, for providers that cannot list/read their own transcript.
+// Sanitized, bounded content only (see transcript.ts); ordered by `seq`, deduplicated by (session_id, item_id).
+const SCHEMA_V4_ADDITIONS = [
+  "CREATE TABLE transcript_items (session_id TEXT NOT NULL REFERENCES sessions(session_id), item_id TEXT NOT NULL, run_id TEXT REFERENCES runs(run_id), approval_id TEXT REFERENCES approvals(approval_id), seq INTEGER NOT NULL UNIQUE CHECK(seq >= 1), kind TEXT NOT NULL CHECK(kind IN ('user_message','agent_message','reasoning','command','file_change','tool','plan','approval','other')), status TEXT CHECK(status IS NULL OR status IN ('in_progress','completed','failed','declined')), complete INTEGER NOT NULL CHECK(complete IN (0,1)), body_json TEXT NOT NULL CHECK(length(body_json) <= 262144), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(session_id, item_id))",
+  "CREATE INDEX transcript_by_session ON transcript_items(session_id, seq)",
+];
+const SCHEMA = [...SCHEMA_V3, ...SCHEMA_V4_ADDITIONS];
 const MIGRATE_V2_TO_V3 = [
   "ALTER TABLE approvals RENAME TO approvals_v2", APPROVALS_V3, "INSERT INTO approvals SELECT * FROM approvals_v2", "DROP TABLE approvals_v2",
   "ALTER TABLE run_metrics RENAME TO run_metrics_v2", RUN_METRICS_V3, "INSERT INTO run_metrics SELECT * FROM run_metrics_v2", "DROP TABLE run_metrics_v2",
@@ -94,6 +102,25 @@ export interface RunMetrics {
   durationMs: number | null;
   durationSource: "host_clock" | "not_measured";
 }
+/** Bounds of the persisted conversation (E3.1). */
+export interface TranscriptLimits {
+  /** Oldest items of a session beyond this are dropped. */
+  maxItemsPerSession?: number;
+  /** Oldest items of the whole store beyond this are dropped. */
+  maxItems?: number;
+  /** Items not updated for this long are dropped at startup. */
+  retentionDays?: number;
+  /** Default (and maximum is 500) page size of `transcriptPage`. */
+  pageSize?: number;
+}
+export interface TranscriptPage { items: HistoryItem[]; nextCursor: string | null }
+const TRANSCRIPT_STATUSES: readonly (string | null)[] = ["in_progress", "completed", "failed", "declined", null];
+const TRANSCRIPT_ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+type TranscriptRow = {
+  item_id: string; run_id: string | null; approval_id: string | null; seq: number; kind: string; status: string | null; complete: number;
+  body_json: string; run_status: string | null; approval_status: string | null; approval_reason: string | null;
+};
+
 export interface ProjectJournalRecord extends JournalRecord { sessionId: string | null; projectId: string | null }
 export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ["prepared", "dispatching", "running", "awaiting_approval"];
 export interface JournalInput {
@@ -196,8 +223,16 @@ function mapApproval(row: ApprovalRow): ApprovalRecord {
 export class RuntimeStore {
   readonly db: Database;
 
-  constructor(path: string, recoveryTime = new Date().toISOString()) {
+  readonly #transcriptLimits: Required<TranscriptLimits>;
+  #transcriptWrites = 0;
+
+  constructor(path: string, recoveryTime = new Date().toISOString(), limits: TranscriptLimits = {}) {
     requireTime(recoveryTime);
+    this.#transcriptLimits = {
+      maxItemsPerSession: limits.maxItemsPerSession ?? 2000, maxItems: limits.maxItems ?? 50_000, retentionDays: limits.retentionDays ?? 180,
+      pageSize: limits.pageSize ?? 200,
+    };
+    for (const value of Object.values(this.#transcriptLimits)) if (!Number.isSafeInteger(value) || value < 1) throw new SafeError("invalid_transcript_limits");
     const parent = dirname(path);
     assertNoSymlinks(parent);
     mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -238,6 +273,14 @@ export class RuntimeStore {
           // Exact v2 schema only: rebuild the two tables whose CHECK widened, rows preserved, in one transaction.
           this.db.transaction(() => {
             for (const sql of MIGRATE_V2_TO_V3) this.db.exec(sql);
+            this.db.exec("PRAGMA user_version=3;");
+          })();
+        }
+        const afterV2 = this.db.query("PRAGMA user_version").get() as { user_version: number };
+        if (afterV2.user_version === 3 && matches(SCHEMA_V3)) {
+          // Exact v3 schema only: additive (new table + index), existing rows untouched, one transaction.
+          this.db.transaction(() => {
+            for (const sql of SCHEMA_V4_ADDITIONS) this.db.exec(sql);
             this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION};`);
           })();
         }
@@ -247,6 +290,7 @@ export class RuntimeStore {
       this.db.exec("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;");
       chmodSync(path, 0o600);
       this.#recoverUncertain(recoveryTime);
+      this.#pruneTranscript(recoveryTime);
     } catch (error) { this.db.close(); throw error; }
   }
 
@@ -509,7 +553,103 @@ export class RuntimeStore {
     return rows.length;
   }
 
+  /**
+   * Insert or update one conversation item (E3.1). Deduplicated by (session, item id): a repeated or late event updates
+   * the same row in place and keeps its position; a completed item is never downgraded back to a partial one.
+   */
+  recordTranscript(sessionId: string, runId: string | null, entry: TranscriptEntry, at: string, approvalId: string | null = null): void {
+    requireId(sessionId); if (runId !== null) requireId(runId); if (approvalId !== null) requireId(approvalId); requireTime(at);
+    if (!TRANSCRIPT_ITEM_ID.test(entry.itemId) || !TRANSCRIPT_KINDS.includes(entry.kind) || !TRANSCRIPT_STATUSES.includes(entry.status)) {
+      throw new SafeError("invalid_transcript_item");
+    }
+    const body = JSON.stringify(entry.body);
+    if (body.length > 262_144) throw new SafeError("transcript_item_too_large");
+    this.db.transaction(() => {
+      const existing = this.db.prepare("SELECT complete FROM transcript_items WHERE session_id=? AND item_id=?").get(sessionId, entry.itemId) as { complete: number } | null;
+      if (existing) {
+        if (existing.complete === 1 && !entry.complete) return;
+        this.db.prepare("UPDATE transcript_items SET kind=?, status=?, complete=?, body_json=?, updated_at=?, run_id=COALESCE(run_id, ?), approval_id=COALESCE(approval_id, ?) WHERE session_id=? AND item_id=?")
+          .run(entry.kind, entry.status, entry.complete ? 1 : 0, body, at, runId, approvalId, sessionId, entry.itemId);
+        return;
+      }
+      const next = (this.db.query("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM transcript_items").get() as { seq: number }).seq;
+      this.db.prepare("INSERT INTO transcript_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(sessionId, entry.itemId, runId, approvalId, next, entry.kind, entry.status, entry.complete ? 1 : 0, body, at, at);
+      const count = (this.db.prepare("SELECT COUNT(*) AS n FROM transcript_items WHERE session_id=?").get(sessionId) as { n: number }).n;
+      if (count > this.#transcriptLimits.maxItemsPerSession) {
+        this.db.prepare("DELETE FROM transcript_items WHERE session_id=? AND seq IN (SELECT seq FROM transcript_items WHERE session_id=? ORDER BY seq LIMIT ?)")
+          .run(sessionId, sessionId, count - this.#transcriptLimits.maxItemsPerSession);
+      }
+      if (++this.#transcriptWrites % 100 === 0) this.#capTranscript();
+    })();
+  }
+
+  /** Newest-first paging, returned oldest-first. `before` is an opaque cursor from a previous page. Never asks a provider. */
+  transcriptPage(sessionId: string, before?: number, limit = this.#transcriptLimits.pageSize): TranscriptPage {
+    requireId(sessionId);
+    if (before !== undefined && (!Number.isSafeInteger(before) || before < 1)) throw new SafeError("invalid_history_cursor");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new SafeError("invalid_limit");
+    const rows = this.db.prepare(`SELECT t.item_id, t.run_id, t.approval_id, t.seq, t.kind, t.status, t.complete, t.body_json,
+        r.status AS run_status, a.status AS approval_status, a.reason_code AS approval_reason
+      FROM transcript_items t LEFT JOIN runs r ON r.run_id=t.run_id LEFT JOIN approvals a ON a.approval_id=t.approval_id
+      WHERE t.session_id=? AND t.seq<? ORDER BY t.seq DESC LIMIT ?`).all(sessionId, before ?? Number.MAX_SAFE_INTEGER, limit + 1) as TranscriptRow[];
+    const more = rows.length > limit;
+    const page = rows.slice(0, limit).reverse();
+    try {
+      return { items: page.map(row => this.#historyItem(row)), nextCursor: more && page.length ? String(page[0]!.seq) : null };
+    } catch { throw new SafeError("runtime_database_corrupt"); }
+  }
+
   close(): void { this.db.close(); }
+
+  #historyItem(row: TranscriptRow): HistoryItem {
+    if (!TRANSCRIPT_ITEM_ID.test(row.item_id) || !TRANSCRIPT_KINDS.includes(row.kind as TranscriptKind) || !TRANSCRIPT_STATUSES.includes(row.status)) throw new Error();
+    if (row.run_id !== null) requireId(row.run_id);
+    const body = JSON.parse(row.body_json) as TranscriptBody;
+    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new Error();
+    const text = (value: unknown): string | null => typeof value === "string" ? value : null;
+    // A partial item is "incomplete" once its run can no longer finish it; while the run is active it is just in progress.
+    const runActive = row.run_status !== null && ACTIVE_RUN_STATUSES.includes(row.run_status as RunStatus);
+    const unfinished = row.complete === 0 || row.status === "in_progress";
+    const item: HistoryItem = {
+      id: row.item_id, runId: row.run_id, kind: row.kind as TranscriptKind, status: row.status as HistoryItem["status"],
+      text: text(body.text), command: text(body.command), exitCode: Number.isSafeInteger(body.exitCode) ? body.exitCode! : null,
+      files: Array.isArray(body.files) ? body.files.filter((value): value is string => typeof value === "string") : [],
+      ...(typeof body.tool === "string" ? { tool: body.tool } : {}),
+      ...(body.notice === "auto_denied" || body.notice === "unapproved_execution" ? { notice: body.notice } : {}),
+      ...(unfinished && !runActive ? { incomplete: true } : {}),
+      ...(body.outputOmitted === true ? { outputOmitted: true } : {}),
+      ...(body.truncated === true ? { truncated: true } : {}),
+    };
+    if (row.kind === "approval" && body.approval && row.approval_id !== null) {
+      const status = row.approval_status;
+      if (status !== "pending" && status !== "approved" && status !== "denied" && status !== "expired") throw new Error();
+      const approval: HistoryApproval = {
+        approvalId: row.approval_id, actionType: body.approval.actionType, status, reasonCode: row.approval_reason,
+        toolName: text(body.approval.toolName), command: text(body.approval.command), files: Array.isArray(body.approval.files) ? body.approval.files : [],
+        questions: Array.isArray(body.approval.questions) ? body.approval.questions : [],
+        answers: body.approval.answers && typeof body.approval.answers === "object" ? body.approval.answers : null,
+      };
+      item.approval = approval;
+    }
+    return item;
+  }
+
+  /** Retention: age at startup, a global item cap at startup and every 100 writes. */
+  #pruneTranscript(now: string): void {
+    const cutoff = new Date(Date.parse(now) - this.#transcriptLimits.retentionDays * 86_400_000).toISOString();
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM transcript_items WHERE updated_at < ?").run(cutoff);
+      this.#capTranscript();
+    })();
+  }
+
+  #capTranscript(): void {
+    const total = (this.db.query("SELECT COUNT(*) AS n FROM transcript_items").get() as { n: number }).n;
+    if (total > this.#transcriptLimits.maxItems) {
+      this.db.prepare("DELETE FROM transcript_items WHERE seq IN (SELECT seq FROM transcript_items ORDER BY seq LIMIT ?)").run(total - this.#transcriptLimits.maxItems);
+    }
+  }
 
   #requireRun(runId: string): RunRecord {
     const row = this.db.prepare("SELECT * FROM runs WHERE run_id=?").get(runId) as RunRow | null;

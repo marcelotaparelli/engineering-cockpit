@@ -21,7 +21,8 @@ import type {
  * its stdin. The Claude CLI has no turn ids, no session listing and no transcript API on this channel, so:
  *  - turn ids are minted here, one turn at a time per process (the ExecutionService already serialises runs);
  *  - sessions are only those opened through the Cockpit (`sessionListing: "cockpit"`);
- *  - history is what this process observed, bounded and memory-only (`history: "session_memory"`);
+ *  - history is persisted by the Cockpit (`history: "cockpit"`, RuntimeStore transcript); the in-memory transcript below only
+ *    serves `history()` callers of this connection;
  *  - a run can be confirmed only by its live process (`reconcile: "process"`): after a crash or restart it stays `unknown`.
  * Every tool use is gated by the CLI (`--permission-mode default`) and routed to the host (`--permission-prompt-tool stdio`)
  * to be decided by a human; a tool the CLI refuses or runs on its own is flagged on the item (`notice`). Unknown control requests are
@@ -29,7 +30,7 @@ import type {
  */
 export const CLAUDE_CAPABILITIES: ProviderCapabilities = Object.freeze({
   resume: true, interrupt: true, approvals: true, questions: true,
-  sessionListing: "cockpit", history: "session_memory", usage: "run", reconcile: "process",
+  sessionListing: "cockpit", history: "cockpit", usage: "run", reconcile: "process",
 });
 export const CLAUDE_PROTOCOL = "claude-code-stream-json-v1";
 /** Oldest major line whose stream-json/control surface the adapter was written against (E2: 2.1.x). */

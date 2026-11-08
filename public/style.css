@@ -156,3 +156,7 @@ input, select, textarea { font: inherit; color: inherit; background: var(--bg); 
 .card .warn { color: var(--warn); }
 /* Permission outcome the operator did not decide (auto-denied / ran without Cockpit approval). */
 .msg .item-notice { margin-top: .25rem; font-weight: 600; color: var(--warn); }
+/* E3.1 persisted history */
+.msg .item-incomplete { margin-top: .25rem; color: var(--warn); font-style: italic; }
+.msg.approval .answer { margin-top: .2rem; }
+.msg.older { text-align: center; }

@@ -450,15 +450,38 @@ async function loadSession(withHistory) {
   updateComposer();
 }
 
+const HISTORY_NOTE = 'Histórico registrado pelo Cockpit: mostra o que o Cockpit observou nesta sessão. Saídas de ferramentas não são armazenadas.';
+// Renders one history item and indexes it by id, so a later live event for the same item replaces it instead of duplicating it.
+function historyNode(item) {
+  const node = renderItem(item);
+  if (item.id) state.liveItems.set(item.id, node);
+  return node;
+}
+function olderButton(sessionId, cursor) {
+  const li = el('li', '', 'msg note older');
+  li.append(button('Carregar mensagens anteriores', async () => {
+    try {
+      const page = await get(`/api/sessions/${encodeURIComponent(sessionId)}/history?before=${encodeURIComponent(cursor)}`);
+      if (state.sessionId !== sessionId) return;
+      const nodes = page.items.filter(item => !state.liveItems.has(item.id)).map(historyNode);
+      li.replaceWith(...(page.next_cursor ? [olderButton(sessionId, page.next_cursor)] : []), ...nodes);
+    } catch (error) { if (error.status !== 401) showError(`Falha ao carregar mensagens anteriores: ${error.code}`); }
+  }));
+  return li;
+}
+
 async function loadHistory() {
   const conversation = $('conversation');
+  const sessionId = state.sessionId;
   try {
-    const page = await get(`/api/sessions/${encodeURIComponent(state.sessionId)}/history`);
+    const page = await get(`/api/sessions/${encodeURIComponent(sessionId)}/history`);
+    if (state.sessionId !== sessionId) return;
     conversation.replaceChildren();
     state.liveItems.clear();
     const caps = state.sessionData && state.sessionData.session && state.sessionData.session.capabilities;
-    if (caps && caps.history === 'session_memory') conversation.append(el('li', 'Histórico parcial: este agente só mostra o que o Cockpit observou desde que iniciou; conversas anteriores ficam na VM.', 'msg note memory'));
-    for (const item of page.items) conversation.append(renderItem(item));
+    if (caps && caps.history === 'cockpit') conversation.append(el('li', HISTORY_NOTE, 'msg note memory'));
+    if (page.next_cursor) conversation.append(olderButton(sessionId, page.next_cursor));
+    for (const item of page.items) conversation.append(historyNode(item));
     if (!page.items.length) conversation.append(el('li', 'Sessão sem mensagens ainda.', 'msg note'));
   } catch (error) {
     if (error.status === 401) return;
@@ -478,9 +501,32 @@ function withNotice(node, item) {
   return node;
 }
 
+const APPROVAL_STATE = { pending: 'pendente', approved: 'aprovada', denied: 'rejeitada', expired: 'expirada' };
+const QUESTION_STATE = { pending: 'aguardando resposta', approved: 'respondida', denied: 'não respondida', expired: 'expirada' };
+function renderApproval(item) {
+  const approval = item.approval || {};
+  const question = approval.actionType === 'question';
+  const label = (question ? QUESTION_STATE : APPROVAL_STATE)[approval.status] || approval.status || '';
+  const what = question ? 'Pergunta do agente' : `Aprovação${approval.toolName ? ` · ${approval.toolName}` : ''}`;
+  const node = el('li', `${what} [${label}${approval.status === 'expired' && approval.reasonCode ? ` · ${REASON[approval.reasonCode] || approval.reasonCode}` : ''}]`, `msg action approval ${approval.status || ''}`);
+  if (approval.command) node.append(el('div', `$ ${approval.command}`, 'muted'));
+  if (approval.files && approval.files.length) node.append(el('div', approval.files.join(', '), 'muted'));
+  for (const text of approval.questions || []) {
+    node.append(el('div', text, 'muted'));
+    const answer = approval.answers && Object.hasOwn(approval.answers, text) ? approval.answers[text] : null;
+    if (answer !== null) node.append(el('div', `Resposta: ${answer}`, 'answer'));
+  }
+  return node;
+}
+
 function renderItem(item) {
-  const node = renderItemBody(item);
-  return item.notice ? withNotice(node, item) : node;
+  const node = item.kind === 'approval' ? renderApproval(item) : renderItemBody(item);
+  if (item.notice) withNotice(node, item);
+  // Persisted history: what never reached its final form is shown as such, never as a finished answer.
+  if (item.incomplete) node.append(el('div', item.kind === 'agent_message' ? 'Resposta incompleta: a execução terminou antes de concluí-la.' : 'Incompleto: a execução terminou antes da conclusão.', 'item-incomplete small'));
+  if (item.outputOmitted) node.append(el('div', 'Saída não armazenada pelo Cockpit.', 'muted small'));
+  if (item.truncated) node.append(el('div', 'Conteúdo cortado no limite de armazenamento.', 'muted small'));
+  return node;
 }
 
 function renderItemBody(item) {

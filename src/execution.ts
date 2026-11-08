@@ -8,9 +8,10 @@ import type {
   ProviderConnection, ProviderErrorClass, ProviderEvent, ProviderSessionSummary, RunStatus,
 } from "./provider.ts";
 import type { ApprovalRecord, RunRecord, RuntimeStore, SessionRecord } from "./runtime-store.ts";
+import { activityEntry, approvalEntry, partialMessageEntry, userMessageEntry, type TranscriptEntry } from "./transcript.ts";
 
 export interface ExecutionLog {
-  event: "run.dispatched" | "run.dispatch_failed" | "run.finished" | "run.transport_lost" | "approval.decided" | "provider.connected" | "provider.connect_failed" | "run.reconciled";
+  event: "run.dispatched" | "run.dispatch_failed" | "run.finished" | "run.transport_lost" | "approval.decided" | "provider.connected" | "provider.connect_failed" | "run.reconciled" | "transcript.write_failed";
   run_id?: string;
   outcome?: string;
   error_code?: string;
@@ -49,7 +50,15 @@ interface Live {
   closed: boolean;
   files: Map<string, string[]>;
 }
-interface ActiveRun { runId: string; session: SessionRecord; live: Live; providerRunId: string | null; buffer: ProviderEvent[]; errorClass?: ProviderErrorClass }
+/** Streamed agent text not yet completed by the provider (E3.1): persisted early (position), then throttled. */
+interface PartialText { text: string; flushedAt: number; flushedLength: number }
+interface ActiveRun {
+  runId: string; session: SessionRecord; live: Live; providerRunId: string | null; buffer: ProviderEvent[]; errorClass?: ProviderErrorClass;
+  partials?: Map<string, PartialText>;
+}
+/** Partial agent text is re-persisted at most this often while streaming (a hard kill loses at most this much). */
+const PARTIAL_FLUSH_MS = 1000;
+const MAX_PARTIALS = 64;
 
 const ERROR_REASON: Readonly<Record<ProviderErrorClass, string>> = Object.freeze({
   usage_limit: "provider_usage_limit", auth: "provider_auth_failed", transport: "provider_transport_error", context_window: "provider_context_window",
@@ -157,7 +166,17 @@ export class ExecutionService {
     return this.#store.createSession({ sessionId: `ses-${randomUUID()}`, target, providerSessionId: ref.id, createdAt: at, lastObservedAt: at });
   }
 
-  async history(session: SessionRecord): Promise<HistoryPage> {
+  /**
+   * Conversation of a session. Providers that cannot read their own transcript (`history: "cockpit"`) are served from the
+   * RuntimeStore only: no provider call, no VM needed, identical after a Cockpit restart.
+   */
+  async history(session: SessionRecord, cursor?: string, limit?: number): Promise<HistoryPage> {
+    if (this.#persistsHistory(session.target.provider)) {
+      if (cursor !== undefined && !/^[1-9][0-9]{0,15}$/.test(cursor)) throw new SafeError("invalid_history_cursor");
+      const page = this.#store.transcriptPage(session.sessionId, cursor === undefined ? undefined : Number(cursor), limit);
+      return { items: page.items, runs: [], nextCursor: page.nextCursor };
+    }
+    if (cursor !== undefined) throw new SafeError("invalid_history_cursor");
     const target = await this.revalidate(session.target.vmName, session.target.projectId);
     const live = await this.#ensure(target);
     return live.connection.history({ id: session.providerSessionId });
@@ -181,6 +200,8 @@ export class ExecutionService {
       requestDigest, createdAt: this.#iso(), exclusiveProject: session.target.projectId,
     });
     if (result.created) {
+      // The operator's message is part of the conversation from the moment the run exists, whatever happens to it.
+      if (this.#persistsHistory(session.target.provider)) this.#record(session.sessionId, result.run.runId, userMessageEntry(result.run.runId, prompt));
       this.#hub.journal();
       void this.#dispatch(result.run, session, target, prompt);
     }
@@ -268,6 +289,10 @@ export class ExecutionService {
     }
     const { approval: resolved, changed } = outcome;
     if (!changed || !pending) return resolved;
+    if (answers !== undefined && this.#persistsHistory(pending.live.adapter.provider)) {
+      const run = this.#store.getRun(pending.runId);
+      if (run) this.#record(run.sessionId, run.runId, approvalEntry(approval.approvalId, pending.summary, answers), approval.approvalId);
+    }
     this.#approvals.delete(approval.approvalId);
     this.#hub.journal();
     try {
@@ -381,6 +406,7 @@ export class ExecutionService {
     }
     for (const [key, active] of this.#active) {
       if (active.live !== live) continue;
+      this.#flushPartials(active);
       this.#active.delete(key);
       this.#blocked.delete(active.runId);
       const run = this.#store.getRun(active.runId);
@@ -426,10 +452,20 @@ export class ExecutionService {
       }
       case "run.output_delta":
         this.#hub.live({ ...base, kind: "delta", data: { itemId: event.itemId, delta: event.delta } });
+        if (this.#persistsHistory(live.adapter.provider)) this.#partial(active, event.itemId, event.delta);
         return;
       case "run.item":
         if (event.item.kind === "file_change") live.files.set(event.item.id, event.item.files);
         this.#hub.live({ ...base, kind: "item", data: { phase: event.phase, item: event.item } });
+        if (this.#persistsHistory(live.adapter.provider)) {
+          // Started agent messages/reasoning carry no content yet: their deltas or final form are recorded instead.
+          const skip = event.phase === "started" && (event.item.kind === "agent_message" || event.item.kind === "reasoning");
+          const entry = skip ? null : activityEntry(event.item, event.phase);
+          if (entry) {
+            if (entry.kind === "agent_message" && entry.complete) active.partials?.delete(event.item.id);
+            this.#record(session.sessionId, active.runId, entry);
+          }
+        }
         return;
       case "usage.updated":
         this.#store.recordUsage(active.runId, event, this.#iso(), live.adapter.capabilities.usage === "run" ? "run" : "session_cumulative");
@@ -464,6 +500,7 @@ export class ExecutionService {
           actionDigest: this.#digest(JSON.stringify([active.runId, String(event.approval.requestId), summary])),
           createdAt: at.toISOString(), expiresAt: new Date(at.getTime() + this.#approvalTtlMs).toISOString() });
         this.#approvals.set(approvalId, { approvalId, runId: active.runId, live, ref: event.approval, summary });
+        if (this.#persistsHistory(live.adapter.provider)) this.#record(session.sessionId, active.runId, approvalEntry(approvalId, summary), approvalId);
         const run = this.#store.getRun(active.runId);
         if (run?.status === "running") this.#move(active.runId, "awaiting_approval");
         else this.#hub.journal();
@@ -472,6 +509,7 @@ export class ExecutionService {
       }
       case "run.status_changed": {
         if (!TERMINAL.includes(event.status) && event.status !== "unknown") return;
+        this.#flushPartials(active);
         this.#active.delete(this.#key(live.vmName, event.sessionId));
         this.#blocked.delete(active.runId);
         for (const [id, pending] of this.#approvals) if (pending.runId === active.runId) this.#approvals.delete(id);
@@ -493,6 +531,7 @@ export class ExecutionService {
     const key = this.#key(live.vmName, providerSessionId);
     const active = this.#active.get(key);
     if (!active || active.live !== live) return;
+    this.#flushPartials(active);
     this.#active.delete(key);
     this.#blocked.delete(active.runId);
     for (const [id, pending] of this.#approvals) if (pending.runId === active.runId) this.#approvals.delete(id);
@@ -520,6 +559,41 @@ export class ExecutionService {
       this.#hub.journal();
       return updated;
     } catch { return null; }
+  }
+
+  #persistsHistory(provider: Provider): boolean { return this.#adapters.get(provider)?.capabilities.history === "cockpit"; }
+
+  /** Transcript writes never change run, approval or idempotency state: a failure is logged and the conversation goes on. */
+  #record(sessionId: string, runId: string, entry: TranscriptEntry, approvalId: string | null = null): void {
+    try { this.#store.recordTranscript(sessionId, runId, entry, this.#iso(), approvalId); }
+    catch (error) { this.#log({ event: "transcript.write_failed", run_id: runId, error_code: safeCode(error) }); }
+  }
+
+  #partial(active: ActiveRun, itemId: string, delta: string): void {
+    active.partials ??= new Map();
+    let partial = active.partials.get(itemId);
+    if (!partial) {
+      if (active.partials.size >= MAX_PARTIALS) return;
+      partial = { text: "", flushedAt: 0, flushedLength: 0 };
+      active.partials.set(itemId, partial);
+    }
+    if (partial.text.length < 64 * 1024 + 1) partial.text += delta;
+    // The first chunk is written at once so the message keeps its place in the conversation; then at most once a second.
+    if (partial.flushedLength === 0 || Date.now() - partial.flushedAt >= PARTIAL_FLUSH_MS) this.#writePartial(active, itemId, partial);
+  }
+
+  #writePartial(active: ActiveRun, itemId: string, partial: PartialText): void {
+    if (!partial.text || partial.flushedLength === partial.text.length) return;
+    partial.flushedAt = Date.now();
+    partial.flushedLength = partial.text.length;
+    this.#record(active.session.sessionId, active.runId, partialMessageEntry(itemId, partial.text));
+  }
+
+  /** The run is ending (any way): whatever was streamed and not completed is kept, marked incomplete on read. */
+  #flushPartials(active: ActiveRun): void {
+    if (!active.partials) return;
+    for (const [itemId, partial] of active.partials) this.#writePartial(active, itemId, partial);
+    active.partials.clear();
   }
 
   #digest(value: string): string { return createHmac("sha256", this.#digestKey).update(value, "utf8").digest("hex"); }

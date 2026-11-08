@@ -26,8 +26,11 @@ export interface ProviderCapabilities {
   questions: boolean;
   /** "provider": the provider enumerates its sessions; "cockpit": only sessions opened through the Cockpit are known. */
   sessionListing: "provider" | "cockpit";
-  /** "paged": provider-side transcript; "session_memory": only what this Cockpit process observed (bounded, never persisted). */
-  history: "none" | "paged" | "session_memory";
+  /**
+   * "paged": provider-side transcript. "cockpit": the provider cannot list or read its transcript, so the Cockpit persists what
+   * it observed (RuntimeStore `transcript_items`, sanitized and bounded) and serves it without asking the provider.
+   */
+  history: "none" | "paged" | "cockpit";
   usage: "none" | "session_cumulative" | "run";
   /** "provider": run state is re-read from the provider; "process": only a live process can confirm a run. */
   reconcile: "provider" | "process";
@@ -58,7 +61,7 @@ export interface StartSessionInput { mode: "new" }
 export interface ResumeHints { hasRuns: boolean }
 export interface StartRunInput { session: ProviderSessionRef; prompt: string }
 
-export type ActivityKind = "user_message" | "agent_message" | "command" | "file_change" | "reasoning" | "plan" | "tool" | "other";
+export type ActivityKind = "user_message" | "agent_message" | "command" | "file_change" | "reasoning" | "plan" | "tool" | "approval" | "other";
 export type ActivityStatus = "in_progress" | "completed" | "failed" | "declined" | null;
 /** Provider-neutral view of one unit of agent work. Content is transient: never journaled. */
 export interface ActivityItem {
@@ -77,7 +80,20 @@ export interface ActivityItem {
    */
   notice?: "auto_denied" | "unapproved_execution" | null;
 }
-export interface HistoryItem extends ActivityItem { runId: string | null }
+/** An approval or question as kept in the Cockpit's transcript; its status is the approvals table's, never the provider's. */
+export interface HistoryApproval {
+  approvalId: string; actionType: ApprovalActionType; status: "pending" | "approved" | "denied" | "expired"; reasonCode: string | null;
+  toolName: string | null; command: string | null; files: string[]; questions: string[]; answers: Record<string, string> | null;
+}
+export interface HistoryItem extends ActivityItem {
+  runId: string | null;
+  /** Persisted history only: the item never reached its final form (interrupted/failed/unconfirmed run, or Cockpit restart). */
+  incomplete?: boolean;
+  /** Persisted history only: the provider produced output that the Cockpit deliberately does not store. */
+  outputOmitted?: boolean;
+  truncated?: boolean;
+  approval?: HistoryApproval;
+}
 export interface HistoryRun { id: string; status: Exclude<RunStatus, "prepared" | "dispatching" | "awaiting_approval"> }
 export interface HistoryPage { items: HistoryItem[]; runs: HistoryRun[]; nextCursor: string | null }
 

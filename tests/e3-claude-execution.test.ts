@@ -79,7 +79,7 @@ async function openSession(auth: Auth, vm = "claude-alpha"): Promise<string> {
   const response = await post(auth, "api/sessions", { vm_name: vm, mode: "new" });
   expect(response.status).toBe(201);
   const body = await response.json() as { session_id: string; provider: string; capabilities: Record<string, unknown> };
-  expect(body).toMatchObject({ provider: "claude", capabilities: { questions: true, history: "session_memory", reconcile: "process" } });
+  expect(body).toMatchObject({ provider: "claude", capabilities: { questions: true, history: "cockpit", reconcile: "process" } });
   return body.session_id;
 }
 const startRun = (auth: Auth, sessionId: string, prompt: string, key = `k-${crypto.randomUUID()}`) => post(auth, `api/sessions/${sessionId}/runs`, { prompt }, { "Idempotency-Key": key });
@@ -101,7 +101,7 @@ describe("E3: Claude Code on the shared Cockpit infrastructure", () => {
     expect(world("claude-beta").spawned).toHaveLength(0);
   });
 
-  test("open → prompt exactly once (idempotent retry) → streamed → completed with per-run tokens → in-memory history", async () => {
+  test("open → prompt exactly once (idempotent retry) → streamed → completed with per-run tokens → persisted history", async () => {
     const auth = await login();
     const sessionId = await openSession(auth);
     const key = "idem-claude-0123456789";

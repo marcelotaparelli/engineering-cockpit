@@ -114,7 +114,7 @@ function errorStatus(code: string): number {
   if (code === "resource_not_found" || code === "route_not_found") return 404;
   if (code === "method_not_allowed") return 405;
   if (code === "query_not_allowed" || code === "content_type_denied" || code === "invalid_body" || code === "invalid_prompt" ||
-    code === "invalid_idempotency_key" || code === "idempotency_key_required") return 400;
+    code === "invalid_idempotency_key" || code === "idempotency_key_required" || code === "invalid_history_cursor" || code === "invalid_limit") return 400;
   if (code === "request_origin_denied" || code === "csrf_denied" || code === "replay_denied") return 403;
   if (CONFLICTS.has(code)) return 409;
   if (/^(provider|rpc|transport|msb)_/.test(code)) return 502;
@@ -141,6 +141,17 @@ export function sessionView(session: SessionRecord, execution?: ExecutionService
   return { session_id: session.sessionId, project: session.target.projectId, vm_name: session.target.vmName, provider: session.target.provider,
     thread_id: session.providerSessionId, created_at: session.createdAt, last_activity: session.lastObservedAt,
     capabilities: execution?.capabilities(session.target.provider) ?? null };
+}
+
+/** `?before=<cursor>&limit=<1..500>`, each at most once, nothing else. */
+function historyQuery(params: URLSearchParams): { before: string | undefined; limit: number | undefined } {
+  const keys = [...params.keys()];
+  if (keys.some(key => key !== "before" && key !== "limit") || new Set(keys).size !== keys.length) throw new SafeError("query_not_allowed");
+  const before = params.get("before") ?? undefined;
+  const rawLimit = params.get("limit");
+  if (before !== undefined && !/^[1-9][0-9]{0,15}$/.test(before)) throw new SafeError("invalid_history_cursor");
+  if (rawLimit !== null && (!/^[1-9][0-9]{0,2}$/.test(rawLimit) || Number(rawLimit) > 500)) throw new SafeError("invalid_limit");
+  return { before, limit: rawLimit === null ? undefined : Number(rawLimit) };
 }
 
 export function startServer(options: ServerOptions): Bun.Server<undefined> {
@@ -238,7 +249,8 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           (origin !== null && origin !== `http://${expectedHost}`) ||
           (fetchSite !== null && fetchSite !== "same-origin" && fetchSite !== "none") ||
           (request.method === "POST" && origin !== `http://${expectedHost}`)) throw new SafeError("request_origin_denied");
-        if (url.search) throw new SafeError("query_not_allowed");
+        // Only the history page accepts a query (strictly `before`/`limit`, parsed below); everything else stays query-free.
+        if (url.search && route !== "/api/sessions/:id/history") throw new SafeError("query_not_allowed");
         if (route === "unmatched") {
           if (request.method !== "GET") { headers.set("Allow", "GET"); throw new SafeError("method_not_allowed"); }
           throw new SafeError("route_not_found");
@@ -301,7 +313,8 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
         }
         if (route === "/api/sessions/:id/history") {
           const session = options.security.authorizeSession(requireRuntime(), principal, param);
-          const page = await requireExecution().history(session);
+          const { before, limit } = historyQuery(url.searchParams);
+          const page = await requireExecution().history(session, before, limit);
           return json({ session_id: session.sessionId, items: page.items, runs: page.runs, next_cursor: page.nextCursor });
         }
         if (route === "/api/sessions/:id/runs") {

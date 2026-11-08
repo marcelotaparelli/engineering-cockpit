@@ -347,7 +347,7 @@ test("E1: a blocked agent is flagged in the list and in the inbox with cause and
 
 // ---------------------------------------------------------------- E3: Claude Code in the same UI
 const claudeVm = { ...vm, vm_name: "claude-demo", provider: "claude", session_id: null, sessions: 0,
-  capabilities: { resume: true, interrupt: true, approvals: true, questions: true, sessionListing: "cockpit", history: "session_memory", usage: "run", reconcile: "process" } };
+  capabilities: { resume: true, interrupt: true, approvals: true, questions: true, sessionListing: "cockpit", history: "cockpit", usage: "run", reconcile: "process" } };
 
 test("E3: a Claude question is answered from the inbox by option or free text; nothing is pre-selected; markup stays text", async () => {
   const markup = '<img src=x onerror="globalThis.compromised=true">';
@@ -401,7 +401,7 @@ test("E3: a Claude tool approval shows the tool name and its full input; truncat
   });
 });
 
-test("E3: a Claude VM offers only Cockpit sessions (no thread listing call), states partial history and per-run tokens", async () => {
+test("E3: a Claude VM offers only Cockpit sessions (no thread listing call), states Cockpit-recorded history and per-run tokens", async () => {
   const session = { session_id: "ses-c", project: "demo", vm_name: "claude-demo", thread_id: "0b7f3c1e-0000-4000-8000-000000000000", last_activity: new Date().toISOString(), latest_run: null, state: "completed" };
   const run = { run_id: "run-c", session_id: "ses-c", status: "completed", provider_bound: true, reason_code: null, metrics: { inputTokens: 12, outputTokens: 3, tokenScope: "run", durationMs: 1200 } };
   const router = defaultRouter(call => {
@@ -416,7 +416,7 @@ test("E3: a Claude VM offers only Cockpit sessions (no thread listing call), sta
     await settle();
     expect(calls.some(call => call.path.includes("/threads"))).toBe(false);
     const conversation = ui.document.getElementById("conversation")!.textContent!;
-    expect(conversation).toContain("Histórico parcial");
+    expect(conversation).toContain("Histórico registrado pelo Cockpit");
     expect(conversation).toContain("Grep");
     expect(conversation).toContain("3 resultados");
     expect(ui.document.getElementById("run-detail")!.textContent).toContain("tokens (desta execução): 12 in / 3 out");
@@ -443,5 +443,60 @@ test("E3: a tool the agent denied by itself, or ran without Cockpit approval, is
     expect(notices[0]).toContain("Negado automaticamente");
     expect(notices[1]).toContain("sem aprovação do Cockpit");
     expect(ui.document.querySelector("#conversation img")).toBeNull();
+  });
+});
+
+test("E3.1: persisted history after a restart — approvals, answers and incomplete answers are shown; live events and reloads never duplicate", async () => {
+  const session = { session_id: "ses-h", project: "demo", vm_name: "claude-demo", thread_id: "0b7f3c1e-0000-4000-8000-000000000002", last_activity: new Date().toISOString(), latest_run: null, state: "unknown" };
+  const base = { status: null, command: null, exitCode: null, files: [] };
+  const newest = [
+    { ...base, id: "run-2:prompt", runId: "run-2", kind: "user_message", text: "Qual opção escolhi?" },
+    { ...base, id: "approval:apr-q", runId: "run-2", kind: "approval", text: null, approval: { approvalId: "apr-q", actionType: "question", status: "approved", reasonCode: "human_answer",
+      toolName: "AskUserQuestion", command: null, files: [], questions: ["Prioridade?"], answers: { "Prioridade?": "Segurança" } } },
+    { ...base, id: "approval:apr-c", runId: "run-2", kind: "approval", text: null, approval: { approvalId: "apr-c", actionType: "command", status: "expired", reasonCode: "process_restarted",
+      toolName: "Bash", command: "touch /tmp/x", files: [], questions: [], answers: null } },
+    { ...base, id: "turn-2:m:text", runId: "run-2", kind: "agent_message", text: "Você escolheu Segu", status: "in_progress", incomplete: true },
+  ];
+  const older = [{ ...base, id: "run-1:prompt", runId: "run-1", kind: "user_message", text: "mensagem antiga" }];
+  let historyCalls = 0;
+  const router = defaultRouter(call => {
+    if (call.path === "/api/dashboard") return { status: 200, body: dashboard({ vms: [vm, { ...claudeVm, session_id: "ses-h", sessions: 1 }], sessions: [session] }) };
+    if (call.path === "/api/sessions/ses-h") return { status: 200, body: { session: { session_id: "ses-h", provider: "claude", capabilities: claudeVm.capabilities },
+      runs: [{ run_id: "run-2", session_id: "ses-h", status: "unknown", provider_bound: true, reason_code: "process_restarted", metrics: {} }], approvals: [] } };
+    if (call.path === "/api/sessions/ses-h/history") { historyCalls++; return { status: 200, body: { items: newest, runs: [], next_cursor: "5" } }; }
+    if (call.path === "/api/sessions/ses-h/history?before=5") return { status: 200, body: { items: older, runs: [], next_cursor: null } };
+    return undefined;
+  });
+  await withUi(router, async (ui, calls, push) => {
+    click([...ui.document.querySelectorAll(".agent")].find(node => node.textContent!.includes("claude-demo")));
+    await settle();
+    const conversation = () => ui.document.getElementById("conversation")!;
+    const text = conversation().textContent!;
+    expect(text).not.toContain("Sessão sem mensagens ainda");
+    expect(text).toContain("Qual opção escolhi?");
+    expect(text).toContain("Pergunta do agente [respondida]");
+    expect(text).toContain("Resposta: Segurança");
+    expect(text).toContain("Aprovação · Bash [expirada");
+    expect(text).toContain("$ touch /tmp/x");
+    expect(conversation().querySelector(".item-incomplete")!.textContent).toContain("Resposta incompleta");
+    // Older messages are fetched on demand and placed before the newer ones.
+    click([...conversation().querySelectorAll("button")].find(node => node.textContent!.includes("Carregar mensagens anteriores")));
+    await settle();
+    expect(calls.some(call => call.path === "/api/sessions/ses-h/history?before=5")).toBe(true);
+    const messages = [...conversation().querySelectorAll(".msg.user")].map(node => node.textContent);
+    expect(messages).toEqual(["mensagem antiga", "Qual opção escolhi?"]);
+    expect(conversation().textContent).not.toContain("Carregar mensagens anteriores");
+    // A live event for an item already shown (SSE replay/reconnect) replaces it in place.
+    push(`event: live\ndata: ${JSON.stringify({ kind: "item", phase: "completed", session_id: "ses-h", run_id: "run-2", item: { ...base, id: "turn-2:m:text", kind: "agent_message", status: "completed", text: "Você escolheu Segurança" } })}\n\n`);
+    await settle();
+    expect([...conversation().querySelectorAll(".msg.agent")].map(node => node.textContent)).toEqual(["Você escolheu Segurança"]);
+    // A full reload renders the same conversation once.
+    const before = historyCalls;
+    click(ui.document.getElementById("refresh"));
+    ui.document.getElementById("session-select")!.dispatchEvent(new ui.Event("change"));
+    await settle(80);
+    expect(historyCalls).toBeGreaterThan(before);
+    expect([...conversation().querySelectorAll(".msg.user")].map(node => node.textContent)).toEqual(["Qual opção escolhi?"]);
+    expect(conversation().querySelectorAll(".msg.approval").length).toBe(2);
   });
 });

@@ -48,13 +48,13 @@ Mesmo `ExecutionService`, `RuntimeStore` (sessões, runs, journal, idempotência
 | Capability | Codex | Claude Code | Consequência |
 | --- | --- | --- | --- |
 | `sessionListing` | `provider` | `cockpit` | A UI só oferece sessões abertas pelo Cockpit (o canal não lista sessões). |
-| `history` | `paged` | `session_memory` | Histórico = o que este processo do Cockpit observou (limitado, só memória, nunca persistido). A UI avisa "Histórico parcial". |
+| `history` | `paged` | `cockpit` | Desde o E3.1, o Cockpit grava no SQLite o que observou e serve o histórico sem consultar o Claude (ver `docs/e31-historico.md`). |
 | `usage` | `session_cumulative` | `run` | Tokens por execução (`token_scope='run'`). |
 | `reconcile` | `provider` | `process` | Só o processo vivo confirma um run; após queda/restart o run fica `unknown` (nunca reenviado). |
 | `questions` | `false` | `true` | `AskUserQuestion` vira um registro na **mesma tabela de aprovações** (`action_type='question'`). |
 
 ### Contrato comum (mudanças)
-- `ProviderCapabilities` + `questions`, `sessionListing`, `history:"session_memory"`, `reconcile`; `ProviderAdapter.capabilities` e `acceptsTarget()`.
+- `ProviderCapabilities` + `questions`, `sessionListing`, `history:"cockpit"` (era `session_memory` até o E3.1), `reconcile`; `ProviderAdapter.capabilities` e `acceptsTarget()`.
 - `ApprovalSummary.actionType`: `command | file_change | tool | question`, com `toolName`, `detail` (entrada exata, limitada a 8 KiB, `truncated` avisado na UI), `files`, `questions`.
 - `decideApproval(ref, { decision, answers? })`; evento `session.lost` (processo do provider morreu → run em andamento vira `unknown`).
 - `resumeSession(ref, { hasRuns })`: sessão que nunca teve turno é reaberta com `--session-id` (não há transcript para `--resume`).
@@ -86,7 +86,7 @@ Mesmo `ExecutionService`, `RuntimeStore` (sessões, runs, journal, idempotência
 | Classificação real de quota/autenticação | Não forçável sem esgotar quota; só estrutural (nunca por texto) |
 
 ## Limitações reais do protocolo (CLI stream-json)
-1. Não lista sessões nem lê transcript: histórico anterior ao processo atual do Cockpit não aparece (fica na VM).
+1. Não lista sessões nem lê transcript. Desde o E3.1 o Cockpit persiste o que observa; turnos feitos fora do Cockpit, ou antes do E3.1, continuam só na VM.
 2. Não há id de turno: o Cockpit cria um por envio e serializa turnos por processo.
 3. Não há estado de turno consultável: após restart do Cockpit ou queda do processo, o run fica `unknown` para sempre (o operador confere na VM). O processo filho morre com o Cockpit; o turno pode ter terminado na VM sem o Cockpit saber.
 4. Interrupção vira um `result` comum: o Cockpit marca `interrupted` porque pediu a interrupção.
