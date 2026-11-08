@@ -15,6 +15,8 @@ export interface MsbChild {
   stderr: ReadableStream<Uint8Array>;
   exited: Promise<number>;
   kill(signal: "SIGKILL"): void;
+  /** Host PID when the child is a real process (E4 process ledger); absent for in-process doubles. */
+  pid?: number;
 }
 
 export interface MsbSpawnOptions {
@@ -50,10 +52,12 @@ export function minimalChildEnv(source: Readonly<Record<string, string | undefin
   return result;
 }
 
-const nativeSpawn: MsbSpawn = (argv, options) => {
+/** The only real spawn of `msb` children (Codex and Claude): Arch host check, argv array, no shell. */
+export const hostSpawn: MsbSpawn = (argv, options) => {
   assertArchHost();
   return Bun.spawn([...argv], options) as unknown as MsbChild;
 };
+const nativeSpawn = hostSpawn;
 
 class InboundQueue implements AsyncIterable<RpcInboundMessage> {
   #values: RpcInboundMessage[] = [];

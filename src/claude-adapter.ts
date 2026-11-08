@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { assertArchHost } from "./host.ts";
 import { SafeError, safeCode, validProject, vmIdentity } from "./model.ts";
 import type { JsonObject } from "./jsonl.ts";
-import { minimalChildEnv, type MsbChild, type MsbSpawn } from "./msb-transport.ts";
+import { hostSpawn, minimalChildEnv, type MsbChild, type MsbSpawn } from "./msb-transport.ts";
 import {
   assertClaudeTarget, claudeStreamArgv, controlError, FORBIDDEN_E2_VMS, interruptRequest, probeCapabilities, toolDecision, userMessage,
   type ClaudeErrorClass, type ClaudeEvent, type ClaudeQuestion,
@@ -56,7 +55,6 @@ export interface ClaudeAdapterOptions {
   maxQueuedEvents?: number;
 }
 
-const nativeSpawn: MsbSpawn = (argv, options) => { assertArchHost(); return Bun.spawn([...argv], options) as unknown as MsbChild; };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FILE_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 /** Tools whose execution without a Cockpit approval must be flagged (commands and file writes). */
@@ -154,7 +152,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
   constructor(options: ClaudeAdapterOptions = {}) {
     this.#options = {
-      spawn: options.spawn ?? nativeSpawn, maxSessions: options.maxSessions ?? 4, idleMs: options.idleMs ?? 20 * 60_000,
+      spawn: options.spawn ?? hostSpawn, maxSessions: options.maxSessions ?? 4, idleMs: options.idleMs ?? 20 * 60_000,
       maxTurnMs: options.maxTurnMs ?? 2 * 60 * 60_000, turnKillGraceMs: options.turnKillGraceMs ?? 30_000,
       maxPendingPerSession: options.maxPendingPerSession ?? 8, probeTimeoutMs: options.probeTimeoutMs ?? 20_000,
       closeGraceMs: options.closeGraceMs ?? 3000, maxTranscriptItems: options.maxTranscriptItems ?? 500,

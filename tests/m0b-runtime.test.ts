@@ -135,11 +135,11 @@ describe("runtime schema v2", () => {
     store.createSession(session("ses-v1"));
     store.beginRun({ runId: "run-v1", sessionId: "ses-v1", idempotencyKey: "key-v1", requestDigest: digest("v1"), createdAt: at(1) });
     // Downgrade to the exact v1 layout produced by M0b.1b.
-    store.db.exec("DROP INDEX transcript_by_session; DROP TABLE transcript_items; DROP INDEX approvals_by_status; DROP INDEX runs_by_session; DROP TABLE approvals; DROP TABLE run_metrics; PRAGMA user_version=1;");
+    store.db.exec("DROP TABLE child_processes; DROP INDEX transcript_by_session; DROP TABLE transcript_items; DROP INDEX approvals_by_status; DROP INDEX runs_by_session; DROP TABLE approvals; DROP TABLE run_metrics; PRAGMA user_version=1;");
     store.close();
     const migrated = new RuntimeStore(path);
     expect(migrated.getRun("run-v1")?.status).toBe("prepared");
-    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(4); // v1 → v2 → v3 → v4 in one open
+    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(5); // v1 → v2 → v3 → v4 → v5 in one open
     expect(migrated.pendingApprovals()).toEqual([]);
     migrated.db.exec("CREATE TABLE intruder (x TEXT)");
     migrated.close();
@@ -154,7 +154,7 @@ describe("runtime schema v2", () => {
     store.createSession(session("ses-v2"));
     store.beginRun({ runId: "run-v2", sessionId: "ses-v2", idempotencyKey: "key-v2", requestDigest: digest("v2"), createdAt: at(1) });
     // Rebuild the exact v2 layout (narrow CHECKs) with one approval and one metrics row in it.
-    store.db.exec(`DROP INDEX transcript_by_session; DROP TABLE transcript_items; DROP INDEX approvals_by_status; DROP TABLE approvals; DROP TABLE run_metrics;
+    store.db.exec(`DROP TABLE child_processes; DROP INDEX transcript_by_session; DROP TABLE transcript_items; DROP INDEX approvals_by_status; DROP TABLE approvals; DROP TABLE run_metrics;
       CREATE TABLE approvals (approval_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), action_type TEXT NOT NULL CHECK(action_type IN ('command','file_change')), action_digest TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')), version INTEGER NOT NULL CHECK(version >= 1), created_at TEXT NOT NULL, expires_at TEXT NOT NULL, resolved_at TEXT, reason_code TEXT);
       CREATE TABLE run_metrics (run_id TEXT PRIMARY KEY REFERENCES runs(run_id), input_tokens INTEGER, output_tokens INTEGER, cached_input_tokens INTEGER, token_scope TEXT NOT NULL CHECK(token_scope IN ('not_measured','session_cumulative')), updated_at TEXT NOT NULL);
       CREATE INDEX approvals_by_status ON approvals(status, run_id);
@@ -163,7 +163,7 @@ describe("runtime schema v2", () => {
       PRAGMA user_version=2;`);
     store.close();
     const migrated = new RuntimeStore(path);
-    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(4); // v2 → v3 → v4
+    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(5); // v2 → v3 → v4 → v5
     // Restart recovery expires the pending approval (handles never survive), but the row and its history are kept.
     expect(migrated.getApproval("apr-old")).toMatchObject({ actionType: "command", status: "expired", reasonCode: "process_restarted" });
     expect(migrated.metrics(migrated.getRun("run-v2")!)).toMatchObject({ inputTokens: 7, outputTokens: 8, tokenScope: "session_cumulative" });

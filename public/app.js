@@ -35,7 +35,9 @@ const ERROR_TEXT = {
   csrf_denied: 'Sessão desta aba inválida para alterações. Entre novamente.',
   invalid_prompt: 'Prompt vazio ou grande demais.',
   invalid_body: 'Resposta inválida: responda todas as perguntas (até 2000 caracteres cada).',
+  orphan_process_alive: 'Um processo de uma execução anterior (de antes de uma queda do Cockpit) ainda está ativo nesta sessão ou VM. Nada foi enviado: veja o alerta "Processo órfão" em "Precisa de você".',
 };
+const ORPHAN_KIND = { codex_app_server: 'O servidor do Codex', claude_session: 'O processo do Claude Code desta sessão', claude_command: 'Uma verificação do Claude Code' };
 const TOOL_TITLE = { command: 'Aprovar comando', file_change: 'Aprovar alteração de arquivos', tool: 'Aprovar uso de ferramenta', question: 'O agente pergunta' };
 const PROVIDER_NAME = { codex: 'Codex', claude: 'Claude Code', opencode: 'OpenCode' };
 const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
@@ -342,6 +344,18 @@ function renderAttention(items) {
       li.append(el('div', 'O que fazer: abra a sessão, interrompa a execução e reformule o prompt sem exigir essa interação.', 'muted small'));
       const actions = el('div', null, 'actions');
       actions.append(button('Abrir e interromper', () => selectVm(item.vm_name, item.session_id), 'danger'));
+      li.append(actions);
+      list.append(li);
+      continue;
+    }
+    if (item.kind === 'orphan_process') {
+      head.append(el('strong', 'Processo órfão de antes de uma queda'), el('span', ago(item.created_at), 'where'));
+      li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
+      li.append(el('div', `${ORPHAN_KIND[item.process_kind] || 'Um processo'} (pid ${item.pid}) continua ativo depois que o Cockpit caiu. Ele pode ainda estar executando uma tarefa, sem supervisão e sem como pedir aprovação.`, 'muted small'));
+      li.append(el('div', item.blocks === 'vm' ? 'Novos envios para esta VM ficam bloqueados enquanto ele existir.' : item.blocks === 'session' ? 'Novos envios para esta sessão ficam bloqueados enquanto ele existir.' : 'Não bloqueia envios.', 'muted small'));
+      li.append(el('div', `O que fazer: confira o resultado na VM; quando for seguro, encerre-o no host com kill ${item.pid}. O Cockpit nunca o encerra sozinho.`, 'muted small'));
+      const actions = el('div', null, 'actions');
+      if (item.session_id) actions.append(button('Abrir sessão', () => selectVm(item.vm_name, item.session_id)));
       li.append(actions);
       list.append(li);
       continue;

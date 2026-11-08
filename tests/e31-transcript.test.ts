@@ -69,16 +69,16 @@ describe("E3.1 RuntimeStore transcript", () => {
     s.createSession(session("ses-1"));
     run(s, "ses-1", "run-1");
     s.recordUsage("run-1", { inputTokens: 3, outputTokens: 4 }, iso(5), "run");
-    s.db.exec("DROP INDEX transcript_by_session; DROP TABLE transcript_items; PRAGMA user_version=3;");
+    s.db.exec("DROP TABLE child_processes; DROP INDEX transcript_by_session; DROP TABLE transcript_items; PRAGMA user_version=3;");
     s.close();
     const migrated = new RuntimeStore(path, iso(10));
-    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(4);
+    expect((migrated.db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(5); // v3 → v4 → v5
     expect(migrated.getRun("run-1")).toMatchObject({ status: "completed" });
     expect(migrated.metrics(migrated.getRun("run-1")!)).toMatchObject({ inputTokens: 3, tokenScope: "run" });
     expect(migrated.listSessions(["alpha"]).map(item => item.sessionId)).toEqual(["ses-1"]);
     migrated.recordTranscript("ses-1", "run-1", userMessageEntry("run-1", "oi"), iso(11));
     expect(migrated.transcriptPage("ses-1").items.map(item => item.text)).toEqual(["oi"]);
-    migrated.db.exec("DROP INDEX transcript_by_session; DROP TABLE transcript_items; CREATE TABLE intruder (x TEXT); PRAGMA user_version=3;");
+    migrated.db.exec("DROP TABLE child_processes; DROP INDEX transcript_by_session; DROP TABLE transcript_items; CREATE TABLE intruder (x TEXT); PRAGMA user_version=3;");
     migrated.close();
     expect(() => new RuntimeStore(path, iso(12))).toThrow("foreign_runtime_database_denied");
   });

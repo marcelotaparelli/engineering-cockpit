@@ -107,7 +107,7 @@ async function readLogin(request: Request): Promise<unknown> {
   return body.credential;
 }
 const CONFLICTS = new Set(["idempotency_key_conflict", "project_busy", "session_busy", "run_version_conflict", "approval_conflict", "approval_expired",
-  "run_not_interruptible", "target_unavailable", "invalid_run_transition"]);
+  "run_not_interruptible", "target_unavailable", "invalid_run_transition", "orphan_process_alive"]);
 function errorStatus(code: string): number {
   if (code === "authentication_required" || code === "authentication_failed") return 401;
   if (code === "auth_rate_limited" || code === "nonce_capacity_reached") return 429;

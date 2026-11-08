@@ -8,7 +8,7 @@ import type { ExecutionTarget, HistoryApproval, HistoryItem, RunStatus } from ".
 import { TRANSCRIPT_KINDS, type TranscriptBody, type TranscriptEntry, type TranscriptKind } from "./transcript.ts";
 
 const APPLICATION_ID = 0x4352544d;
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const RUN_STATUSES: readonly RunStatus[] = ["prepared", "dispatching", "running", "awaiting_approval", "completed", "failed", "interrupted", "unknown"];
 const SCHEMA_V1 = [
   "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, provider TEXT NOT NULL, project_id TEXT NOT NULL, vm_name TEXT NOT NULL, vm_instance_id TEXT, discovery_version TEXT NOT NULL, provider_session_id TEXT NOT NULL, created_at TEXT NOT NULL, last_observed_at TEXT NOT NULL, UNIQUE(provider, project_id, vm_name, provider_session_id))",
@@ -34,7 +34,13 @@ const SCHEMA_V4_ADDITIONS = [
   "CREATE TABLE transcript_items (session_id TEXT NOT NULL REFERENCES sessions(session_id), item_id TEXT NOT NULL, run_id TEXT REFERENCES runs(run_id), approval_id TEXT REFERENCES approvals(approval_id), seq INTEGER NOT NULL UNIQUE CHECK(seq >= 1), kind TEXT NOT NULL CHECK(kind IN ('user_message','agent_message','reasoning','command','file_change','tool','plan','approval','other')), status TEXT CHECK(status IS NULL OR status IN ('in_progress','completed','failed','declined')), complete INTEGER NOT NULL CHECK(complete IN (0,1)), body_json TEXT NOT NULL CHECK(length(body_json) <= 262144), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(session_id, item_id))",
   "CREATE INDEX transcript_by_session ON transcript_items(session_id, seq)",
 ];
-const SCHEMA = [...SCHEMA_V3, ...SCHEMA_V4_ADDITIONS];
+const SCHEMA_V4 = [...SCHEMA_V3, ...SCHEMA_V4_ADDITIONS];
+// v5 (E4): the msb children this Cockpit spawned, so that the next start can tell which ones outlived a crash (orphans).
+// Host process identity only (pid + kernel start time, owner's identity, kind, VM, provider session id): no argv, no content.
+const SCHEMA_V5_ADDITIONS = [
+  "CREATE TABLE child_processes (pid INTEGER NOT NULL CHECK(pid > 1), start_ticks TEXT NOT NULL CHECK(length(start_ticks) BETWEEN 1 AND 20), owner_pid INTEGER NOT NULL CHECK(owner_pid > 0), owner_start_ticks TEXT NOT NULL CHECK(length(owner_start_ticks) BETWEEN 1 AND 20), kind TEXT NOT NULL CHECK(kind IN ('codex_app_server','claude_session','claude_command')), vm_name TEXT NOT NULL, provider_session_id TEXT, created_at TEXT NOT NULL, orphaned_at TEXT, PRIMARY KEY(pid, start_ticks))",
+];
+const SCHEMA = [...SCHEMA_V4, ...SCHEMA_V5_ADDITIONS];
 const MIGRATE_V2_TO_V3 = [
   "ALTER TABLE approvals RENAME TO approvals_v2", APPROVALS_V3, "INSERT INTO approvals SELECT * FROM approvals_v2", "DROP TABLE approvals_v2",
   "ALTER TABLE run_metrics RENAME TO run_metrics_v2", RUN_METRICS_V3, "INSERT INTO run_metrics SELECT * FROM run_metrics_v2", "DROP TABLE run_metrics_v2",
@@ -114,6 +120,15 @@ export interface TranscriptLimits {
   pageSize?: number;
 }
 export interface TranscriptPage { items: HistoryItem[]; nextCursor: string | null }
+export type ChildKind = "codex_app_server" | "claude_session" | "claude_command";
+const CHILD_KINDS: readonly ChildKind[] = ["codex_app_server", "claude_session", "claude_command"];
+/** One msb child spawned by a Cockpit process (E4). `startTicks`: kernel start time, so a reused PID is never confused with it. */
+export interface ChildProcessRecord {
+  pid: number; startTicks: string; ownerPid: number; ownerStartTicks: string; kind: ChildKind; vmName: string;
+  providerSessionId: string | null; createdAt: string; orphanedAt: string | null;
+}
+type ChildRow = { pid: number; start_ticks: string; owner_pid: number; owner_start_ticks: string; kind: string; vm_name: string; provider_session_id: string | null; created_at: string; orphaned_at: string | null };
+const TICKS = /^[0-9]{1,20}$/;
 const TRANSCRIPT_STATUSES: readonly (string | null)[] = ["in_progress", "completed", "failed", "declined", null];
 const TRANSCRIPT_ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 type TranscriptRow = {
@@ -321,6 +336,14 @@ export class RuntimeStore {
           // Exact v3 schema only: additive (new table + index), existing rows untouched, one transaction.
           this.db.transaction(() => {
             for (const sql of SCHEMA_V4_ADDITIONS) this.db.exec(sql);
+            this.db.exec("PRAGMA user_version=4;");
+          })();
+        }
+        const afterV3 = this.db.query("PRAGMA user_version").get() as { user_version: number };
+        if (afterV3.user_version === 4 && matches(SCHEMA_V4)) {
+          // Exact v4 schema only: additive (one new table), existing rows untouched, one transaction.
+          this.db.transaction(() => {
+            for (const sql of SCHEMA_V5_ADDITIONS) this.db.exec(sql);
             this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION};`);
           })();
         }
@@ -641,6 +664,40 @@ export class RuntimeStore {
   }
 
   close(): void { this.db.close(); }
+
+  /** E4 process ledger: remember a spawned child (idempotent by pid + start time). */
+  recordChild(record: Omit<ChildProcessRecord, "orphanedAt">): void {
+    if (!Number.isSafeInteger(record.pid) || record.pid <= 1 || !Number.isSafeInteger(record.ownerPid) || record.ownerPid <= 0 ||
+      !TICKS.test(record.startTicks) || !TICKS.test(record.ownerStartTicks) || !CHILD_KINDS.includes(record.kind)) throw new SafeError("invalid_child_process");
+    vmIdentity(record.vmName);
+    if (record.providerSessionId !== null) requireId(record.providerSessionId);
+    requireTime(record.createdAt);
+    this.db.prepare("INSERT INTO child_processes VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT(pid, start_ticks) DO NOTHING")
+      .run(record.pid, record.startTicks, record.ownerPid, record.ownerStartTicks, record.kind, record.vmName, record.providerSessionId, record.createdAt);
+  }
+
+  releaseChild(pid: number, startTicks: string): void {
+    this.db.prepare("DELETE FROM child_processes WHERE pid=? AND start_ticks=?").run(pid, startTicks);
+  }
+
+  markChildOrphaned(pid: number, startTicks: string, at: string): void {
+    requireTime(at);
+    this.db.prepare("UPDATE child_processes SET orphaned_at=COALESCE(orphaned_at, ?) WHERE pid=? AND start_ticks=?").run(at, pid, startTicks);
+  }
+
+  childProcesses(): ChildProcessRecord[] {
+    const rows = this.db.query("SELECT * FROM child_processes ORDER BY created_at, pid").all() as ChildRow[];
+    try {
+      return rows.map(row => {
+        if (!Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.owner_pid) || !TICKS.test(row.start_ticks) || !TICKS.test(row.owner_start_ticks) ||
+          !CHILD_KINDS.includes(row.kind as ChildKind)) throw new Error();
+        vmIdentity(row.vm_name); if (row.provider_session_id !== null) requireId(row.provider_session_id);
+        requireTime(row.created_at); if (row.orphaned_at !== null) requireTime(row.orphaned_at);
+        return { pid: row.pid, startTicks: row.start_ticks, ownerPid: row.owner_pid, ownerStartTicks: row.owner_start_ticks, kind: row.kind as ChildKind,
+          vmName: row.vm_name, providerSessionId: row.provider_session_id, createdAt: row.created_at, orphanedAt: row.orphaned_at };
+      });
+    } catch { throw new SafeError("runtime_database_corrupt"); }
+  }
 
   #historyItem(row: TranscriptRow): HistoryItem {
     if (!TRANSCRIPT_ITEM_ID.test(row.item_id) || !TRANSCRIPT_KINDS.includes(row.kind as TranscriptKind) || !TRANSCRIPT_STATUSES.includes(row.status)) throw new Error();

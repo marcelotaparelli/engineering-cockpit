@@ -8,10 +8,11 @@ import type {
   ProviderConnection, ProviderErrorClass, ProviderEvent, ProviderSessionSummary, RunStatus,
 } from "./provider.ts";
 import type { ApprovalRecord, RunRecord, RuntimeStore, SessionRecord } from "./runtime-store.ts";
+import type { OrphanProcess } from "./process-ledger.ts";
 import { activityEntry, approvalEntry, partialMessageEntry, userMessageEntry, type TranscriptEntry } from "./transcript.ts";
 
 export interface ExecutionLog {
-  event: "run.dispatched" | "run.dispatch_failed" | "run.finished" | "run.transport_lost" | "approval.decided" | "provider.connected" | "provider.connect_failed" | "run.reconciled" | "transcript.write_failed";
+  event: "run.dispatched" | "run.dispatch_failed" | "run.dispatch_blocked" | "run.finished" | "run.transport_lost" | "approval.decided" | "provider.connected" | "provider.connect_failed" | "run.reconciled" | "transcript.write_failed";
   run_id?: string;
   outcome?: string;
   error_code?: string;
@@ -30,6 +31,8 @@ export interface ExecutionOptions {
   /** Per-install secret for HMAC digests of prompts/actions (kept outside the database). */
   digestKey?: Uint8Array;
   log?: (entry: ExecutionLog) => void;
+  /** E4: msb children that outlived a previous Cockpit. A run never starts beside one of its session/VM. */
+  processes?: { blocking(vmName: string, providerSessionId: string): OrphanProcess | null; orphans(): OrphanProcess[] };
   /** Re-persist interval of streamed partial text (E3.1/E4). Default 1000 ms. */
   partialFlushMs?: number;
 }
@@ -103,6 +106,7 @@ export class ExecutionService {
   readonly #digestKey: Uint8Array;
   readonly #log: (entry: ExecutionLog) => void;
   readonly #partialFlushMs: number;
+  readonly #processes: ExecutionOptions["processes"];
   readonly #connections = new Map<string, Promise<Live>>();
   readonly #lives = new Map<string, Live>();
   readonly #active = new Map<string, ActiveRun>(); // key: vm \0 providerSessionId
@@ -124,6 +128,7 @@ export class ExecutionService {
     this.#approvalTtlMs = options.approvalTtlMs ?? 12 * 60 * 60_000;
     this.#digestKey = options.digestKey ?? randomBytes(32);
     this.#log = options.log ?? (entry => console.log(JSON.stringify(entry)));
+    this.#processes = options.processes;
     this.#partialFlushMs = options.partialFlushMs ?? PARTIAL_FLUSH_MS;
     if (!Number.isSafeInteger(this.#partialFlushMs) || this.#partialFlushMs < 1) throw new SafeError("invalid_partial_flush_interval");
     // A prepared run whose prompt was lost with the previous process was never sent: fail it explicitly.
@@ -201,6 +206,13 @@ export class ExecutionService {
       if (prior.requestDigest !== requestDigest) throw new SafeError("idempotency_key_conflict");
       return { run: prior, created: false };
     }
+    // E4: a process of the previous Cockpit may still be running a turn of this session (Claude) or VM (Codex app-server).
+    // Starting another one beside it would be a second, unsupervised agent: refused until the orphan is gone. Nothing is sent.
+    const orphan = this.#processes?.blocking(session.target.vmName, session.providerSessionId) ?? null;
+    if (orphan) {
+      this.#log({ event: "run.dispatch_blocked", outcome: orphan.kind, error_code: "orphan_process_alive" });
+      throw new SafeError("orphan_process_alive");
+    }
     const target = await this.revalidate(session.target.vmName, session.target.projectId);
     const result = this.#store.beginRun({
       runId: `run-${randomUUID()}`, sessionId: session.sessionId, idempotencyKey,
@@ -255,6 +267,9 @@ export class ExecutionService {
     if (!run || TERMINAL.includes(run.status) || run.status === "unknown") return [];
     return [...(this.#blocked.get(runId)?.values() ?? [])];
   }
+
+  /** Orphaned msb children of a previous Cockpit that are still alive (re-probed on every call). */
+  orphanProcesses(): OrphanProcess[] { return this.#processes?.orphans() ?? []; }
 
   approvalView(approval: ApprovalRecord): ApprovalView | null {
     const run = this.#store.getRun(approval.runId);

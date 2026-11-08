@@ -2,6 +2,7 @@ import type { Snapshot } from "./model.ts";
 import type { LocalPrincipal, LocalSecurity } from "./local-security.ts";
 import type { RunRecord, RuntimeStore } from "./runtime-store.ts";
 import type { ExecutionService } from "./execution.ts";
+import { vmIdentity } from "./model.ts";
 
 export type AgentState = "working" | "blocked" | "awaiting_approval" | "completed" | "failed" | "interrupted" | "unknown" | "idle" | "offline";
 
@@ -75,7 +76,7 @@ export function buildDashboard(input: {
 
   const approvals = store.pendingApprovals().map(item => input.execution?.approvalView(item) ?? null)
     .filter((view): view is NonNullable<typeof view> => view !== null && principal.grants.has(view.projectId));
-  const attention = [
+  const attention: Array<Record<string, unknown>> = [
     ...approvals.map(view => ({ kind: "approval", approval_id: view.approvalId, run_id: view.runId, session_id: view.sessionId, project: view.projectId,
       vm_name: view.vmName, provider: vmProvider(view.vmName), version: view.version, action_type: view.actionType, created_at: view.createdAt, summary: view.summary })),
     ...sessionViews.filter(view => view.state === "blocked").flatMap(view => (input.execution?.blockedRequests(view.latest_run!.run_id) ?? []).map(request => ({
@@ -86,6 +87,16 @@ export function buildDashboard(input: {
       kind: view.state === "unknown" ? "unknown_run" : "failed_run", run_id: view.latest_run!.run_id, session_id: view.session_id,
       project: view.project, vm_name: view.vm_name, reason_code: view.latest_run!.reason_code, created_at: view.latest_run!.ended_at ?? view.latest_run!.created_at })),
   ];
+  // E4: msb children of a previous Cockpit that are still alive. Shown with their PID: only the operator may end them.
+  for (const orphan of input.execution?.orphanProcesses() ?? []) {
+    let project: string;
+    try { project = vmIdentity(orphan.vmName).project; } catch { continue; }
+    if (!principal.grants.has(project)) continue;
+    const session = orphan.providerSessionId ? sessions.find(item => item.target.vmName === orphan.vmName && item.providerSessionId === orphan.providerSessionId) ?? null : null;
+    attention.push({ kind: "orphan_process", vm_name: orphan.vmName, project, provider: vmProvider(orphan.vmName), process_kind: orphan.kind, pid: orphan.pid,
+      session_id: session?.sessionId ?? null, blocks: orphan.kind === "codex_app_server" ? "vm" : orphan.kind === "claude_session" ? "session" : "nothing",
+      created_at: orphan.detectedAt, since: orphan.since });
+  }
   const count = (state: AgentState) => sessionViews.filter(view => view.state === state).length;
   return {
     source: input.source,
