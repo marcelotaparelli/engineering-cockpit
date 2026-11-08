@@ -1,0 +1,71 @@
+{
+  "at": "2026-11-08T11:39:26.919Z",
+  "mode": "mock",
+  "results": [
+    {
+      "check": "marca: logos metálicos carregados no login 1440px",
+      "pass": true
+    },
+    {
+      "check": "login 1440px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "marca: logos metálicos carregados no login 390px",
+      "pass": true
+    },
+    {
+      "check": "login 390px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "favicon e app icon declarados",
+      "pass": true
+    },
+    {
+      "check": "AskUserQuestion aparece em Precisa de você",
+      "pass": true
+    },
+    {
+      "check": "pergunta respondida e execução concluída",
+      "pass": true
+    },
+    {
+      "check": "aprovação de ferramenta com entrada completa",
+      "pass": true
+    },
+    {
+      "check": "rejeição pela inbox",
+      "pass": true
+    },
+    {
+      "check": "streaming ao vivo",
+      "pass": true
+    },
+    {
+      "check": "interrompido",
+      "pass": true
+    },
+    {
+      "check": "resposta parcial marcada como incompleta",
+      "pass": true
+    },
+    {
+      "check": "processo do agente cai: execução não confirmada",
+      "pass": true
+    },
+    {
+      "check": "1024px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "390px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "sem erros de JavaScript/CSP no console",
+      "pass": true,
+      "detail": ""
+    }
+  ]
+}
