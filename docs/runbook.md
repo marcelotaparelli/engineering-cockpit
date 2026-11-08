@@ -68,5 +68,7 @@ O pin é proposital (decisão D7): cada versão só entra depois que o formato d
 | --- | --- |
 | `./scripts/cockpit verify` | typecheck e suíte determinística |
 | `./scripts/cockpit artifact --check` | o manifesto `docs/artifact.sha256` confere com código, fixtures, locks e README |
+| `./scripts/cockpit f1-accept hermetic` | tudo o que a F1 prova sem o host: typecheck, suíte, drill E4, Chromium (Codex, marca, duas abas, Claude, `kill -9`, timers de sessão) e manifesto; relatório em `.cache/f1-acceptance/` |
+| `./scripts/cockpit f1-accept real-readonly` | no Arch, só leitura do serviço **instalado** (unit carregada, privilégios, loopback, journal). Com `COCKPIT_F1_ACCEPT_CONFIRMED=yes ... --with-login`, mais um login, uma leitura de contadores e um logout. Veja `docs/f1-aceite-automatizado.md` |
 | `./scripts/cockpit e4-homologation` | suíte e drill de recuperação com processos reais do Cockpit em modo simulado (veja `docs/e4-confiabilidade.md` §9) |
 | `CHROMIUM=$(command -v chromium) bun scripts/visual-check.ts <dir>` e `bun scripts/brand-visual-check.ts <dir>` | fluxos de UI no Chromium headless contra o Cockpit mock (opcional, só na máquina de desenvolvimento) |

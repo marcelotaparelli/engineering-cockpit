@@ -117,6 +117,8 @@ Autoverificação do autor:
 
 ## 6. Homologação no Arch (operador)
 
+> **Automatizada em grande parte:** `./scripts/cockpit f1-accept hermetic` e `real-readonly` cobrem o que não exige um humano; a matriz, os limites de segurança e o que continua manual estão em [f1-aceite-automatizado.md](f1-aceite-automatizado.md). Os passos abaixo seguem valendo como procedimento manual.
+
 **Pré-condição:** nenhuma execução de agente em andamento quando for trocar o Cockpit do terminal pelo serviço. Os passos A e B não tocam no Cockpit em uso.
 
 **A. Suíte, drill e manifesto** (seguro: sem msb, sem VM, sem quota, sem tocar no Cockpit em uso)
@@ -143,6 +145,8 @@ O que ele faz e prova (relatório JSON; exit 0/1/2 = PASS/FAIL/NOT_VERIFIED):
 - **Journal:** a credencial não aparece.
 - **Limpeza:** remove tudo o que criou, com PASS, FAIL ou interrupção (Ctrl+C). Se mesmo assim sobrar algo (ex.: queda de energia), a próxima execução remove o remanescente sozinha. Manualmente: `systemctl --user stop engineering-cockpit-f1-smoke.service; systemctl --user kill --kill-whom=all -s SIGKILL engineering-cockpit-f1-smoke.service; rm -f "$XDG_RUNTIME_DIR/systemd/user/engineering-cockpit-f1-smoke.service"; systemctl --user daemon-reload; rm -rf .cache/f1-systemd-smoke`.
 - **Resultado honesto:** se nenhum filho `msb` sobreviver ao SIGKILL, `orphan_ledger` sai como NOT_VERIFIED (o ledger não foi exercitado sob o systemd) e o resultado geral não é PASS. Nesse caso o E4 continua coberto pelo drill; traga o JSON.
+
+**Prova F1-P1 (opt-in, gasta quota):** acrescentando `COCKPIT_SMOKE_ORPHAN_PROOF=yes COCKPIT_SMOKE_QUOTA_CONFIRMED=yes` ao comando acima, o smoke envia **um** prompt real (sem ferramentas, resposta longa) à VM Codex **de teste** e leva o SIGKILL com o turno em voo, para que um filho `msb` real possa sobreviver. Confere então: `run_unknown_after_crash` (o run em voo fica `unknown`), `orphan_ledger` (o órfão real é listado), `orphan_blocks_send` (um envio é recusado com 409 `orphan_process_alive`; o único prompt extra possível é "Responda apenas: ok.") e `orphan_released` (o bloqueio some quando o processo termina). Roda só na unit isolada do smoke, **nunca** no serviço de uso diário; use uma VM que ninguém esteja usando, porque o turno continua na VM e o smoke encerra o `msb` órfão. Sem sobrevivente, as checagens de órfão saem `NOT_VERIFIED`. Matriz e limites: [f1-aceite-automatizado.md](f1-aceite-automatizado.md).
 
 Se `msb_exec` falhar só aqui (e funcionar no terminal), traga o JSON. Ele é a evidência para decidir sobre `NoNewPrivileges`.
 

@@ -69,6 +69,15 @@ A saída é JSON, com exit `0/1/2` = `PASS/FAIL/NOT_VERIFIED`. Detalhes e limita
 
 Um banco migrado para o **schema v5** (E4) não abre com código anterior ao E4. Antes do primeiro start com o E4, guarde uma cópia de `data/` se quiser poder voltar atrás. Uma segunda instância no mesmo diretório de dados é recusada (`runtime_database_in_use`).
 
+## Aceite operacional da F1 automatizado
+
+```sh
+./scripts/cockpit f1-accept hermetic        # qualquer máquina: provedores simulados, portas e dados próprios, Chromium real
+./scripts/cockpit f1-accept real-readonly   # Arch: só leitura do serviço instalado (nada é iniciado, parado ou escrito nele)
+```
+
+O primeiro cobre o que dispensa o host; o segundo confere o serviço systemd **instalado** sem alterá-lo. Os testes reais que alteram estado ou gastam quota (smoke F1-D e prova de órfãos F1-P1) continuam isolados e exigem confirmação explícita. Matriz de cobertura, limites e lacunas humanas: [docs/f1-aceite-automatizado.md](docs/f1-aceite-automatizado.md).
+
 ## Inicialização reproduzível
 
 O projeto exige Bun **1.4.4**. O host Arch reportou Bun 1.4.2; atualize explicitamente para a versão pinada antes de iniciar. A verificação de versão é exata: outra versão falha antes do bootstrap ou da aplicação. Nenhum comando do Cockpit depende de Node ou npm.

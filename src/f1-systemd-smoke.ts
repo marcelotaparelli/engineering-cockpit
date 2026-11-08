@@ -20,7 +20,16 @@ import { defaultRunner, isLink, newToken, portBusy, renderEnvFile, renderUnit, r
 export const SMOKE_UNIT = "engineering-cockpit-f1-smoke.service";
 export const SMOKE_CHECK_IDS = ["preconditions", "unit_loaded", "start", "no_new_privileges", "credential_file", "msb_list", "msb_exec",
   "crash_restart", "orphan_ledger", "msb_exec_after_restart", "orderly_stop", "refused_start_not_restarted", "journal_clean", "cleanup"] as const;
-type CheckId = typeof SMOKE_CHECK_IDS[number];
+/**
+ * F1-P1 proof (opt-in, quota): the crash happens while a REAL turn is in flight, so a real `msb exec` child can survive it and the
+ * orphan ledger is exercised for real under systemd. Needs COCKPIT_SMOKE_ORPHAN_PROOF=yes AND COCKPIT_SMOKE_QUOTA_CONFIRMED=yes.
+ */
+export const SMOKE_PROOF_CHECK_IDS = ["orphan_turn_started", "run_unknown_after_crash", "orphan_blocks_send", "orphan_released"] as const;
+/** The only prompt the proof sends (one turn, no tools): long enough to outlive the SIGKILL, small enough to cost little quota. */
+export const PROOF_PROMPT = "Teste automatizado F1-P1, sem usar ferramentas: escreva 300 linhas numeradas, cada uma com uma frase curta sobre o mar.";
+/** Sent only to PROVE it is refused while an orphan is alive; if it were accepted, it is as harmless as a prompt can be. */
+export const PROOF_PROBE_PROMPT = "Responda apenas: ok.";
+type CheckId = typeof SMOKE_CHECK_IDS[number] | typeof SMOKE_PROOF_CHECK_IDS[number];
 type Status = "PASS" | "FAIL" | "NOT_VERIFIED";
 export interface SmokeCheck { id: CheckId; status: Status; reason: string | null; evidence?: Record<string, unknown> }
 export interface SmokeReport { milestone: "F1-D-systemd-smoke"; timestamp: string; overall: Status; unit: string; vm: string | null; checks: SmokeCheck[] }
@@ -70,8 +79,9 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
   const root = options.root ?? repoRoot();
   const proc = options.proc ?? realProc;
   const timeouts = options.timeoutsMs ?? { start: 20_000, restart: 30_000, settle: 8_000 };
+  const proof = env.COCKPIT_SMOKE_ORPHAN_PROOF === "yes";
   const report: SmokeReport = { milestone: "F1-D-systemd-smoke", timestamp: new Date().toISOString(), overall: "FAIL", unit: SMOKE_UNIT, vm: null,
-    checks: SMOKE_CHECK_IDS.map(id => ({ id, status: "NOT_VERIFIED", reason: "not_exercised" })) };
+    checks: [...SMOKE_CHECK_IDS, ...(proof ? SMOKE_PROOF_CHECK_IDS : [])].map(id => ({ id, status: "NOT_VERIFIED", reason: "not_exercised" })) };
   const set = (id: CheckId, status: Status, reason: string | null = null, evidence?: Record<string, unknown>) =>
     Object.assign(report.checks.find(check => check.id === id)!, { status, reason, ...(evidence ? { evidence } : {}) });
   const systemctl = (...args: string[]) => run(["systemctl", "--user", ...args]);
@@ -90,6 +100,7 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
   try {
     if (process.platform !== "linux") throw new SafeError("linux_required");
     if (env.COCKPIT_F1_SMOKE_CONFIRMED !== "yes") throw new SafeError("confirmation_required");
+    if (proof && env.COCKPIT_SMOKE_QUOTA_CONFIRMED !== "yes") throw new SafeError("quota_confirmation_required");
     vm = env.COCKPIT_SMOKE_VM ?? "";
     const identity = (() => { try { return vmIdentity(vm); } catch { throw new SafeError("smoke_vm_invalid"); } })();
     if (identity.provider !== "codex") throw new SafeError("smoke_vm_must_be_codex");
@@ -203,6 +214,26 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     await remember();
     set("msb_exec", "PASS", null, { route: "GET /api/vms/:vm/threads (initialize + thread/list, read-only)", msb_children_in_unit: ours.size });
 
+    // ---------------------------------------------------------------- F1-P1 (opt-in): a real turn is in flight when the Cockpit is killed
+    let proofSession = ""; let proofRun = "";
+    if (proof) {
+      current = "orphan_turn_started";
+      const created = await client.post("api/sessions", { vm_name: vm, mode: "new" });
+      proofSession = (created.body as { session_id?: string }).session_id ?? "";
+      if (created.status !== 201 || !proofSession) throw new SafeError(`proof_session_${(created.body as { error?: { code?: string } }).error?.code ?? created.status}`);
+      const sent = await client.post(`api/sessions/${encodeURIComponent(proofSession)}/runs`, { prompt: PROOF_PROMPT }, { "Idempotency-Key": `f1p1-${randomBytes(12).toString("hex")}` });
+      proofRun = (sent.body as { run_id?: string }).run_id ?? "";
+      if (sent.status !== 202 || !proofRun) throw new SafeError(`proof_run_${(sent.body as { error?: { code?: string } }).error?.code ?? sent.status}`);
+      let runStatus = "";
+      for (const end = Date.now() + timeouts.start; Date.now() < end && runStatus !== "running" && runStatus !== "awaiting_approval"; await Bun.sleep(300)) {
+        runStatus = ((await client.get(`api/runs/${encodeURIComponent(proofRun)}`)).body as { status?: string }).status ?? "";
+        if (["completed", "failed", "interrupted", "unknown"].includes(runStatus)) break;
+      }
+      if (runStatus !== "running" && runStatus !== "awaiting_approval") throw new SafeError(`proof_turn_not_in_flight_${runStatus || "no_status"}`);
+      await remember();
+      set("orphan_turn_started", "PASS", null, { run_status: runStatus, msb_children_in_unit: ours.size, note: "one real prompt was sent to the smoke VM; it is the operator's quota spend" });
+    }
+
     // ---------------------------------------------------------------- crash → systemd restart → orphan ledger
     current = "crash_restart";
     const before = await show("MainPID", "NRestarts");
@@ -224,8 +255,31 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     const listedOrphans = new Set(attention.filter(item => item.kind === "orphan_process").map(item => item.pid));
     const missing = survivors.filter(pid => !listedOrphans.has(pid));
     if (missing.length) throw new SafeError("orphan_not_in_ledger");
+    if (proof) {
+      current = "run_unknown_after_crash";
+      const after = ((await client.get(`api/runs/${encodeURIComponent(proofRun)}`)).body as { status?: string }).status ?? "";
+      if (after !== "unknown") throw new SafeError(`run_not_unknown_${after || "no_status"}`);
+      set("run_unknown_after_crash", "PASS", null, { status: "unknown", note: "the in-flight run was not promoted to a result without evidence" });
+      if (survivors.length > 0) {
+        current = "orphan_blocks_send";
+        const blocked = await client.post(`api/sessions/${encodeURIComponent(proofSession)}/runs`, { prompt: PROOF_PROBE_PROMPT }, { "Idempotency-Key": `f1p1-${randomBytes(12).toString("hex")}` });
+        const code = (blocked.body as { error?: { code?: string } }).error?.code ?? null;
+        if (blocked.status !== 409 || code !== "orphan_process_alive") throw new SafeError(`send_not_blocked_${blocked.status}_${code ?? "no_code"}`);
+        set("orphan_blocks_send", "PASS", null, { status: 409, error_code: "orphan_process_alive" });
+      } else set("orphan_blocks_send", "NOT_VERIFIED", "no_surviving_msb_child");
+    }
     // Only our own unit's leftovers, now that the ledger was checked: the operator protocol (check, then kill) on a smoke child.
     await terminate(survivors, proc, unitGroup);
+    if (proof && survivors.length > 0) {
+      current = "orphan_released";
+      let still = survivors.length;
+      for (const end = Date.now() + 10_000; Date.now() < end && still > 0; await Bun.sleep(300)) {
+        const items = ((await client.get("api/dashboard")).body as { attention: Array<{ kind: string; pid?: number }> }).attention;
+        still = items.filter(item => item.kind === "orphan_process" && survivors.includes(item.pid as number)).length;
+      }
+      if (still > 0) throw new SafeError("orphan_still_listed_after_end");
+      set("orphan_released", "PASS", null, { note: "the orphan left 'Precisa de você' by itself once the process ended" });
+    } else if (proof) set("orphan_released", "NOT_VERIFIED", "no_surviving_msb_child");
     if (survivors.length === 0) set("orphan_ledger", "NOT_VERIFIED", "no_surviving_msb_child", { note: "msb exec ended together with the killed Cockpit: the ledger could not be exercised under systemd" });
     else set("orphan_ledger", "PASS", null, { surviving_msb_children: survivors.length, listed_as_orphans: survivors.length, note: "survivors were listed (blocking) and then ended by the smoke" });
 
@@ -291,12 +345,17 @@ export async function terminate(pids: number[], proc: NonNullable<SmokeOptions["
 }
 
 class SmokeClient {
-  #cookie = ""; #proof = "";
+  #cookie = ""; #proof = ""; #csrf = "";
   constructor(readonly base: string, private readonly token: string) {}
   async login(): Promise<number> {
     const response = await fetch(this.base + "api/auth/login", { method: "POST", headers: { Origin: this.base.slice(0, -1), "Content-Type": "application/json" }, body: JSON.stringify({ credential: this.token }) });
-    if (response.status === 200) { this.#cookie = (response.headers.get("set-cookie") ?? "").split(";")[0]!; this.#proof = (await response.json() as { proof: string }).proof; }
+    if (response.status === 200) { this.#cookie = (response.headers.get("set-cookie") ?? "").split(";")[0]!; const body = await response.json() as { proof: string; csrf: string }; this.#proof = body.proof; this.#csrf = body.csrf; }
     return response.status;
+  }
+  async post(path: string, payload: unknown, extra: Record<string, string> = {}): Promise<{ status: number; body: unknown }> {
+    const response = await fetch(this.base + path, { method: "POST", body: JSON.stringify(payload), headers: { Cookie: this.#cookie, "X-Session-Proof": this.#proof, "X-CSRF-Token": this.#csrf,
+      "X-Request-Nonce": randomBytes(16).toString("hex") + "pp", Origin: this.base.slice(0, -1), "Content-Type": "application/json", ...extra } });
+    return { status: response.status, body: await response.json().catch(() => ({})) };
   }
   async get(path: string): Promise<{ status: number; body: unknown }> {
     const response = await fetch(this.base + path, { headers: { Cookie: this.#cookie, "X-Session-Proof": this.#proof } });
