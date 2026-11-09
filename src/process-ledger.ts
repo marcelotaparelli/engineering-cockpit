@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { safeCode, vmIdentity } from "./model.ts";
+import { SafeError, safeCode, vmIdentity } from "./model.ts";
 import type { MsbChild, MsbSpawn } from "./msb-transport.ts";
 import type { ChildKind, ChildProcessRecord, RuntimeStore } from "./runtime-store.ts";
 
@@ -107,12 +107,19 @@ export class ProcessLedger {
     };
   }
 
-  /** Orphans still alive now (re-probed; the ones that exited are forgotten). */
-  orphans(): OrphanProcess[] {
+  /**
+   * Orphans still alive now (re-probed; the ones that exited are forgotten). A failed read is logged and yields no orphan, so a
+   * broken ledger never takes the dashboard down; `strict` callers (F2: reconcile) get `process_ledger_unavailable` instead.
+   */
+  orphans(options: { strict?: boolean } = {}): OrphanProcess[] {
     if (!this.#self) return [];
     const alive: OrphanProcess[] = [];
     let rows: ChildProcessRecord[];
-    try { rows = this.#store.childProcesses(); } catch (error) { this.#log({ event: "process.ledger_failed", outcome: "read", error_code: safeCode(error) }); return []; }
+    try { rows = this.#store.childProcesses(); } catch (error) {
+      this.#log({ event: "process.ledger_failed", outcome: "read", error_code: safeCode(error) });
+      if (options.strict) throw new SafeError("process_ledger_unavailable");
+      return [];
+    }
     for (const row of rows) {
       if (row.orphanedAt === null) continue;
       if (this.#probe.startTicks(row.pid) !== row.startTicks) { this.#store.releaseChild(row.pid, row.startTicks); continue; }

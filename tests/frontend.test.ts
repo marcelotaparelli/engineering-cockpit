@@ -554,6 +554,27 @@ test("E4: an unknown run says what failed (VM stopped) and a reconcile without e
   }, { cockpit_session_proof: "synthetic", cockpit_view: JSON.stringify({ vm: "codex-demo", sessionId: "ses-1" }) });
 });
 
+test("F2 (L4): a reconcile refused because an orphaned Codex app-server owns the turn tells the operator what to do, and resends nothing", async () => {
+  const unknownRun = { run_id: "run-o", session_id: "ses-1", status: "unknown", provider_bound: true, reason_code: "process_restarted", lifecycle_version: 4,
+    created_at: new Date().toISOString(), ended_at: new Date().toISOString(), metrics: { inputTokens: null, durationMs: null } };
+  const router = defaultRouter(call => {
+    if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData([unknownRun]) };
+    if (call.method === "POST" && call.path === "/api/runs/run-o/reconcile") return { status: 200, body: { ...unknownRun, reconciliation: { result: "unconfirmed", reason_code: "orphan_owns_turn" } } };
+    return undefined;
+  });
+  await withUi(router, async (ui, calls) => {
+    click(ui.document.getElementById("reconcile"));
+    await settle(80);
+    const error = ui.document.getElementById("error")!.textContent!;
+    expect(error).toContain("sem evidência");
+    expect(error).toContain("servidor do Codex");
+    expect(error).toContain("Processo órfão");
+    expect(error).not.toContain("orphan_owns_turn"); // a sentence, not the raw code
+    expect(ui.document.getElementById("run-status")!.textContent).toBe("Não confirmado");
+    expect(calls.some(call => call.method === "POST" && call.path.endsWith("/runs"))).toBe(false);
+  }, { cockpit_session_proof: "synthetic", cockpit_view: JSON.stringify({ vm: "codex-demo", sessionId: "ses-1" }) });
+});
+
 // ---------------------------------------------------------------- brand identity
 test("brand: the page's only images are the approved brand rasters, with text alternatives where they carry the name", () => {
   const sources = [...html.matchAll(/<img\b[^>]*\bsrc="([^"]+)"[^>]*>/g)].map(match => [match[1], /\balt="([^"]*)"/.exec(match[0])?.[1]] as const);

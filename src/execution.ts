@@ -36,7 +36,7 @@ export interface ExecutionOptions {
   digestKey?: Uint8Array;
   log?: (entry: ExecutionLog) => void;
   /** E4: msb children that outlived a previous Cockpit. A run never starts beside one of its session/VM. */
-  processes?: { blocking(vmName: string, providerSessionId: string): OrphanProcess | null; orphans(): OrphanProcess[] };
+  processes?: { blocking(vmName: string, providerSessionId: string): OrphanProcess | null; orphans(options?: { strict?: boolean }): OrphanProcess[] };
   /** Re-persist interval of streamed partial text (E3.1/E4). Default 1000 ms. */
   partialFlushMs?: number;
   /** F1 (D8): VMs never operated, whatever the provider (`COCKPIT_RESERVED_VMS`). Adapters may refuse more on their own. */
@@ -286,6 +286,16 @@ export class ExecutionService {
     };
     // The prompt may have reached the provider, but no run id ever came back: there is nothing to look up.
     if (!run.providerRunId) return unconfirmed("provider_run_unbound");
+    // F2 (L4, decision D10): a Codex app-server that outlived the previous Cockpit serves every thread of its VM and may be the
+    // very process executing this turn. Another app-server would only see the turn as `running` from outside and reattach to a
+    // stream that never reaches it (no events, no interrupt, the run lock held until the orphan ends), or report a status for a
+    // turn whose owner is still alive. Neither is evidence: the reconciliation contacts no provider while the orphan lives, and
+    // the run stays `unknown` until the operator ends it (`kill <pid>`); the next reconcile then asks the provider as usual.
+    // Re-probed on every call. A ledger that cannot be read proves nothing either way: Codex runs then fail closed.
+    let orphans: OrphanProcess[];
+    try { orphans = this.#processes?.orphans({ strict: true }) ?? []; }
+    catch { if (session.target.provider === "codex") return unconfirmed("orphan_check_unavailable"); orphans = []; }
+    if (orphans.some(orphan => orphan.kind === "codex_app_server" && orphan.vmName === session.target.vmName)) return unconfirmed("orphan_owns_turn");
     const adapter = this.#adapters.get(session.target.provider);
     const current = this.#lives.get(session.target.vmName);
     if (adapter?.capabilities.reconcile === "process" && (!current || current.closed || !current.loaded.has(session.providerSessionId))) {

@@ -33,6 +33,8 @@ const REASON = {
   provider_run_unbound: 'O envio pode ter chegado ao agente, mas ele nunca devolveu um identificador da execução, então não há o que consultar. Confira na VM antes de repetir.',
   provider_cannot_confirm: 'Este agente só confirma uma execução pelo processo que a executava, e esse processo não existe mais (queda ou reinício). O estado continua não confirmado; confira na VM antes de repetir.',
   provider_reports_unknown: 'O agente não soube informar o estado desta execução. Ela continua não confirmada.',
+  orphan_owns_turn: 'O servidor do Codex de antes da queda do Cockpit ainda está ativo nesta VM e pode estar executando esta tarefa. A reconciliação não se reconecta a ele nem consulta o agente enquanto ele existir. Confirme dentro da VM que a tarefa terminou, só então encerre o processo órfão (veja "Processo órfão" em "Precisa de você") e reconcilie de novo.',
+  orphan_check_unavailable: 'O Cockpit não conseguiu ler o registro de processos órfãos, então não sabe se um servidor do Codex de antes de uma queda ainda executa esta tarefa. Nada foi consultado nem reatado. Confira na VM e tente reconciliar de novo; se persistir, veja os logs do Cockpit (process.ledger_failed).',
 };
 const ERROR_TEXT = {
   project_busy: 'Já existe uma execução ativa neste projeto. Aguarde ou interrompa antes de enviar outra.',
