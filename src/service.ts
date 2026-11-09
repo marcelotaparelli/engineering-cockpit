@@ -389,10 +389,11 @@ export async function doctor(options: { env: Record<string, string | undefined>;
 /** Checks that must pass before start/restart (the unit would otherwise fail with exit 78). */
 export const BLOCKING_CHECKS = new Set(["unit", "unit_loaded", "env_file", "token_file", "config", "bun", "msb", "runtime_database", "port"]);
 
-export function defaultRunner(): Runner {
+/** `detached`: own process group, so a Ctrl+C in the terminal reaches only the caller (which then decides), never the child it waits on. */
+export function defaultRunner(options: { detached?: boolean } = {}): Runner {
   return async argv => {
     try {
-      const child = Bun.spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { PATH: process.env.PATH ?? "/usr/bin:/bin",
+      const child = Bun.spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "ignore", ...(options.detached ? { detached: true } : {}), env: { PATH: process.env.PATH ?? "/usr/bin:/bin",
         ...(process.env.XDG_RUNTIME_DIR ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } : {}),
         ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}), ...(process.env.HOME ? { HOME: process.env.HOME } : {}) } });
       const stdout = await new Response(child.stdout).text();

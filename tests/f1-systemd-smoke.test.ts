@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSystemdSmoke, SMOKE_UNIT, terminate } from "../src/f1-systemd-smoke.ts";
 import { bareRoot, fakeBun } from "./support/runtime.ts";
-import { renderUnit, repoRoot, type Runner } from "../src/service.ts";
+import { defaultRunner, renderUnit, repoRoot, type Runner } from "../src/service.ts";
 
 /**
  * F1-D smoke, without systemd: the real smoke runs only on the Arch host. Here: preconditions refuse before creating anything,
@@ -175,6 +175,19 @@ test("F1-D smoke: a signal only reaches msb processes that are members of the sm
   } finally { for (const child of [bystander, ours]) { try { child.kill("SIGKILL"); } catch { /* gone */ } await child.exited; } }
 });
 
+test("F2-M3: after an interrupt `terminate` sends nothing, even to a process of the unit's own cgroup (the cleanup ends the cgroup through systemd)", async () => {
+  const group = `/user.slice/user-1000.slice/user@1000.service/app.slice/${SMOKE_UNIT}`;
+  const ours = Bun.spawn(["sleep", "30"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  const proc = { mainNoNewPrivs: () => true, cgroupPids: () => [], isMsb: () => true, alive: (pid: number) => existsSync(`/proc/${pid}`), inGroup: () => true };
+  const stop = new AbortController(); stop.abort();
+  try {
+    await terminate([ours.pid], proc, group, () => true, stop.signal);
+    await Bun.sleep(100);
+    expect(ours.exitCode).toBeNull();
+    expect(existsSync(`/proc/${ours.pid}`)).toBe(true);
+  } finally { try { ours.kill("SIGKILL"); } catch { /* gone */ } await ours.exited; }
+});
+
 test("F1-D smoke: precondition order is bun, then msb — a good project-local runtime (Arch checkout) moves the refusal to msb; a bad one stays a bun refusal", async () => {
   const good = await bareRoot(join(work, "root-local-good"), {});
   const bad = await bareRoot(join(work, "root-local-bad"), { version: "0.0.1" });
@@ -201,6 +214,20 @@ test("F2-M3: a VM reserved only in the INSTALLED service's env file is refused t
     ["PORT=8787\nnot a line\n", "service_env_unreadable"],
     ["COCKPIT_LOCAL_TOKEN=secret\n", "service_env_unreadable"],
   ];
+  // Located but not a readable file (here: a directory where the file should be) is not "absent": fail closed.
+  {
+    await rm(envFile, { force: true }); await mkdir(envFile);
+    const xdg = await runtimeDir(); currentXdg = xdg;
+    const report = await runSystemdSmoke({ env: baseEnv(xdg, { XDG_CONFIG_HOME: config }), run: manager().run, proc: noProc, root: isolated });
+    expect(`${report.overall} ${report.checks[0]!.reason}`).toBe("NOT_VERIFIED service_env_unreadable");
+    await rm(envFile, { recursive: true, force: true });
+  }
+  // HOME set but unusable (relative): the installed list cannot be located, so the smoke refuses instead of skipping it.
+  {
+    const xdg = await runtimeDir(); currentXdg = xdg;
+    const report = await runSystemdSmoke({ env: baseEnv(xdg, { HOME: "relative/home" }), run: manager().run, proc: noProc, root: isolated });
+    expect(`${report.overall} ${report.checks[0]!.reason}`).toBe("NOT_VERIFIED service_env_unreadable");
+  }
   for (const [text, code] of cases) {
     await writeFile(envFile, text, { mode: 0o600 });
     const before = readFileSync(envFile, "utf8");
@@ -235,4 +262,16 @@ test("F2-M3: the installed reserved list (plus the shell's) is passed on to the 
   expect(report.checks[0]).toMatchObject({ id: "preconditions", status: "PASS" });
   expect(smokeEnv).toMatch(/^COCKPIT_RESERVED_VMS=codex-other,claude-daily$/m);
   expect(existsSync(join(xdg, "systemd/user", SMOKE_UNIT))).toBe(false); // cleaned up (the stand-in Cockpit never answers)
+});
+
+test("F2-M3: the smoke runs systemctl/journalctl in their own session, so a second Ctrl+C in the terminal cannot kill the cleanup's `systemctl stop`", async () => {
+  const sessionOf = (stat: string) => stat.slice(stat.lastIndexOf(")") + 2).split(" ")[3]; // field 6 of /proc/<pid>/stat
+  const mine = sessionOf(readFileSync("/proc/self/stat", "utf8"));
+  const detached = await defaultRunner({ detached: true })(["cat", "/proc/self/stat"]);
+  const attached = await defaultRunner()(["cat", "/proc/self/stat"]);
+  expect(detached.code).toBe(0);
+  expect(sessionOf(detached.stdout)).not.toBe(mine);
+  expect(sessionOf(attached.stdout)).toBe(mine); // the shared default (service commands) is unchanged
+  // And the smoke uses the detached runner whenever none is injected.
+  expect(readFileSync(join(root, "src/f1-systemd-smoke.ts"), "utf8")).toContain("options.run ?? defaultRunner({ detached: true })");
 });

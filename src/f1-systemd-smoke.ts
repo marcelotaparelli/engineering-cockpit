@@ -99,7 +99,8 @@ const realOnInterrupt: NonNullable<SmokeOptions["onInterrupt"]> = handler => {
 export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<SmokeReport> {
   const env = options.env ?? process.env;
   const onInterrupt = options.onInterrupt ?? realOnInterrupt;
-  const run = options.run ?? defaultRunner();
+  // systemctl/journalctl in their own process group: a second Ctrl+C in the terminal must not kill the `systemctl stop` of the cleanup.
+  const run = options.run ?? defaultRunner({ detached: true });
   const root = options.root ?? repoRoot();
   const proc = options.proc ?? realProc;
   const timeouts = options.timeoutsMs ?? { start: 20_000, restart: 30_000, settle: 8_000 };
@@ -108,7 +109,10 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
   const provider: ProofProvider = (env.COCKPIT_SMOKE_VM ?? "").startsWith("claude-") ? "claude" : "codex";
   const report: SmokeReport = { milestone: "F1-D-systemd-smoke", timestamp: new Date().toISOString(), overall: "FAIL", unit: SMOKE_UNIT, vm: null, provider: null,
     checks: [...SMOKE_CHECK_IDS, ...(proof ? (provider === "claude" ? SMOKE_CLAUDE_PROOF_CHECK_IDS : SMOKE_PROOF_CHECK_IDS) : [])].map(id => ({ id, status: "NOT_VERIFIED", reason: "not_exercised" })) };
-  const set = (id: CheckId, status: Status, reason: string | null = null, evidence?: Record<string, unknown>) =>
+  /** Set by an interrupt: no request, start or signal of the main flow happens after it (each one checks it first). */
+  const stop = new AbortController();
+  // After an interrupt no step of the main flow is promoted to PASS (one cut short keeps its `interrupted` mark); the cleanup still reports.
+  const set = (id: CheckId, status: Status, reason: string | null = null, evidence?: Record<string, unknown>) => stop.signal.aborted && status === "PASS" && id !== "cleanup" ? undefined :
     Object.assign(report.checks.find(check => check.id === id)!, { status, reason, ...(evidence ? { evidence } : {}) });
   /** Records a verdict WITHOUT aborting: each real run spends quota, so one failed check must not hide what the others show. */
   const record = (id: CheckId, verdict: Verdict) => set(id, verdict.status, verdict.reason, verdict.evidence);
@@ -170,8 +174,6 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
 
   const token = newToken();
   let current: CheckId = "unit_loaded";
-  /** Set by an interrupt: no request, start or signal of the main flow happens after it (each one checks it first). */
-  const stop = new AbortController();
   const guard = () => { if (stop.signal.aborted) throw new SafeError("interrupted"); };
   let cleaning: Promise<void> | null = null;
   let startedAt = 0; // epoch seconds just before the unit is created: the journal check reads from here
@@ -398,7 +400,7 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     // (check, then end) applied to a smoke child. `terminate` signals a PID only while it is a member of THIS unit's cgroup.
     const listedTicks = new Map(survivors.map(pid => [pid, proc.startTicks?.(pid) ?? null] as const));
     guard();
-    await terminate(survivors, proc, unitGroup, pid => isExecChild(pid) && (listedTicks.get(pid) === null || proc.startTicks?.(pid) === listedTicks.get(pid)));
+    await terminate(survivors, proc, unitGroup, pid => isExecChild(pid) && (listedTicks.get(pid) === null || proc.startTicks?.(pid) === listedTicks.get(pid)), stop.signal);
     if (proof) {
       current = "orphan_released";
       if (survivors.length > 0) {
@@ -486,23 +488,28 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
  * the smoke must not guess which VMs the operator reserved before it sends a real prompt.
  */
 export function installedReservedVms(env: Record<string, string | undefined>): string {
+  if (!env.XDG_CONFIG_HOME && !env.HOME) return ""; // nowhere to look: no installed service can be located
   let file: string;
-  try { file = servicePaths(env).envFile; } catch { return ""; }
-  if (!existsSync(file)) return "";
-  try { return parseEnvFile(readFileSync(file, "utf8")).COCKPIT_RESERVED_VMS ?? ""; } catch { throw new SafeError("service_env_unreadable"); }
+  try { file = servicePaths(env).envFile; } catch { throw new SafeError("service_env_unreadable"); } // HOME/XDG_CONFIG_HOME set but unusable
+  let text: string;
+  try { text = readFileSync(file, "utf8"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""; throw new SafeError("service_env_unreadable"); } // only "absent" is absent
+  try { return parseEnvFile(text).COCKPIT_RESERVED_VMS ?? ""; } catch { throw new SafeError("service_env_unreadable"); }
 }
 
 /**
  * SIGTERM, then SIGKILL after 3 s — only to `msb` processes that are, at the moment of each signal, members of the smoke
  * unit's own cgroup. A PID that was reused by any other process (another Cockpit's `msb exec`, anything else) is never touched.
  */
-export async function terminate(pids: number[], proc: NonNullable<SmokeOptions["proc"]>, group: string, verify: (pid: number) => boolean = () => true): Promise<void> {
+export async function terminate(pids: number[], proc: NonNullable<SmokeOptions["proc"]>, group: string, verify: (pid: number) => boolean = () => true,
+  stop: AbortSignal = new AbortController().signal): Promise<void> {
+  // After an interrupt no further signal is sent from here: the cleanup ends the whole unit cgroup through systemd.
   // `verify` re-checks, at each signal, that the PID is still the process that was listed (same start time, still an `msb exec` child).
   const mine = (pid: number) => group.endsWith(`/${SMOKE_UNIT}`) && proc.inGroup(pid, group) && proc.isMsb(pid) && verify(pid);
   const targets = pids.filter(mine);
-  for (const pid of targets) { if (mine(pid)) { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } } }
-  for (const end = Date.now() + 3000; Date.now() < end && targets.some(pid => mine(pid)); await Bun.sleep(100)) { /* wait */ }
-  for (const pid of targets) if (mine(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+  for (const pid of targets) { if (!stop.aborted && mine(pid)) { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } } }
+  for (const end = Date.now() + 3000; Date.now() < end && !stop.aborted && targets.some(pid => mine(pid)); await Bun.sleep(100)) { /* wait */ }
+  for (const pid of targets) if (!stop.aborted && mine(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
 }
 
 /** A hung Cockpit must end the smoke with a FAIL and its cleanup, not block until Ctrl-C. */
@@ -521,10 +528,14 @@ class SmokeClient {
   async post(path: string, payload: unknown, extra: Record<string, string> = {}): Promise<{ status: number; body: unknown }> {
     const response = await fetch(this.base + path, { method: "POST", signal: this.#signal(), body: JSON.stringify(payload), headers: { Cookie: this.#cookie, "X-Session-Proof": this.#proof, "X-CSRF-Token": this.#csrf,
       "X-Request-Nonce": randomBytes(16).toString("hex") + "pp", Origin: this.base.slice(0, -1), "Content-Type": "application/json", ...extra } });
-    return { status: response.status, body: await response.json().catch(() => ({})) };
+    const body = await response.json().catch(() => ({}));
+    if (this.stop.aborted) throw new SafeError("interrupted"); // an abort while reading the body is not an empty answer
+    return { status: response.status, body };
   }
   async get(path: string): Promise<{ status: number; body: unknown }> {
     const response = await fetch(this.base + path, { signal: this.#signal(), headers: { Cookie: this.#cookie, "X-Session-Proof": this.#proof } });
-    return { status: response.status, body: await response.json().catch(() => ({})) };
+    const body = await response.json().catch(() => ({}));
+    if (this.stop.aborted) throw new SafeError("interrupted"); // an abort while reading the body is not an empty answer
+    return { status: response.status, body };
   }
 }

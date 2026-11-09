@@ -2,7 +2,7 @@ import { afterAll, afterEach, describe, expect, setDefaultTimeout, spyOn, test }
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROOF_PROBE_PROMPT, PROOF_PROMPT, runSystemdSmoke, SMOKE_CHECK_IDS, SMOKE_CLAUDE_PROOF_CHECK_IDS, SMOKE_PROOF_CHECK_IDS, type SmokeReport } from "../src/f1-systemd-smoke.ts";
+import { PROOF_PROBE_PROMPT, PROOF_PROMPT, runSystemdSmoke, SMOKE_CHECK_IDS, SMOKE_UNIT, SMOKE_CLAUDE_PROOF_CHECK_IDS, SMOKE_PROOF_CHECK_IDS, type SmokeReport } from "../src/f1-systemd-smoke.ts";
 import { CLAUDE_PROOF_PROMPT } from "../src/f2-proof.ts";
 import { bareRoot, fakeBun } from "./support/runtime.ts";
 import { alive, FakeSystemd, killSleepers, PARTIAL_TAIL, spawnSleeper, type World } from "./support/fake-systemd.ts";
@@ -322,6 +322,14 @@ describe.skipIf(process.platform !== "linux")("F2-M2 Claude proof, end to end", 
     expect(status(report).cleanup).toBe("PASS"); // returned only after the shared cleanup finished
     expect(fake.world.prompts).toHaveLength(1);
     expect(fake.world.timeline.filter(entry => entry === "POST /api/sessions/ses-proof/runs")).toHaveLength(1); // no probe
+  });
+
+  test("an interrupt during the orderly stop: that step keeps its `interrupted` mark (never promoted to PASS afterwards)", async () => {
+    let stops = 0;
+    const { report } = await interrupted("never", (argv, fire) => { if (argv.join(" ").endsWith(`stop ${SMOKE_UNIT}`) && ++stops === 1) setTimeout(fire, 50); });
+    expect(check(report, "orderly_stop")).toMatchObject({ status: "FAIL", reason: "interrupted" });
+    expect(report.overall).toBe("FAIL");
+    expect(status(report).cleanup).toBe("PASS");
   });
 
   test("a dashboard that cannot be read after the orphan ended is NOT_VERIFIED for the release, never a PASS", async () => {
