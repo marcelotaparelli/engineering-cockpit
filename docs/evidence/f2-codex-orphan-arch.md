@@ -1,7 +1,7 @@
 # F2-M3 / F1-P1 — Queda abrupta com Codex real, sob o systemd do Arch
 
-**Fonte:** relatório JSON gerado pelo próprio smoke (`./scripts/cockpit f1-systemd-smoke`, modo prova). O operador o executou no host Arch em 2026-11-09, e o executor o leu do checkout compartilhado (`.cache/f2-m3/`). Os arquivos brutos foram copiados **byte a byte** para [`f2-m3-arch-2026-11-09/`](f2-m3-arch-2026-11-09/), com `SHA256SUMS` conferido contra a origem: 12/12 OK.
-**Commit testado:** `de29ef92adcaca1415ecc75732252906341ac14e`. **VM:** `codex-cockpit-e0-test`, VM de teste. **Unit:** `engineering-cockpit-f1-smoke.service` (isolada, porta própria 25120). **Relatório:** `2026-11-09T08:26:04.650Z`.
+**Fonte:** relatório JSON gerado pelo próprio smoke (`./scripts/cockpit f1-systemd-smoke`, modo prova). O operador o executou no host Arch em 2026-11-09, e o executor o leu do checkout compartilhado (`.cache/f2-m3/`). Os arquivos brutos foram copiados **byte a byte** para [`f2-m3-arch-2026-11-09/`](f2-m3-arch-2026-11-09/), com `SHA256SUMS` conferido contra a origem: 11/11 OK (o 12º arquivo é o próprio `SHA256SUMS`).
+**Commit testado:** `de29ef92adcaca1415ecc75732252906341ac14e`. **VM:** `codex-cockpit-e0-test`, VM de teste. **Unit:** `engineering-cockpit-f1-smoke.service` (isolada, porta própria 25120). **Início da execução** (`timestamp` do relatório): `2026-11-09T08:26:04.650Z`; arquivo gravado às 08:26:21 UTC (mtime).
 **Resultado geral: `NOT_VERIFIED`.** Esse é o veredito do próprio smoke. Ele não foi reinterpretado.
 
 ## O que é executado e o que é atestado
@@ -9,7 +9,7 @@
 | Item | Natureza |
 | --- | --- |
 | Os veredictos abaixo | **executado**: checagens automáticas do smoke sobre o Cockpit real, o systemd real, o `msb` real e o Codex real; lidos do JSON arquivado |
-| Serviço da porta 8787 intacto | **executado**: o mesmo `MainPID=66227`, `NRestarts=0`, `active` antes (07:57) e depois (08:26) da janela inteira (veja [`e4-claude-real-arch.md`](e4-claude-real-arch.md)) |
+| Serviço da porta 8787 intacto | **executado**: o mesmo `MainPID=66227`, `NRestarts=0`, `active` antes e depois da janela inteira (mtime dos arquivos: 07:57:34 e 08:26:04 UTC) (veja [`e4-claude-real-arch.md`](e4-claude-real-arch.md)) |
 | Código de saída `2` do passo 4 | **atestado** pelo operador: o arquivo `4-codex-proof.exit` não foi gravado. É coerente com `overall: NOT_VERIFIED` |
 | VM ociosa e sem outro uso, quota autorizada, execução única | **atestado** pelo operador; há um único relatório |
 
@@ -32,7 +32,7 @@ Passo 2 (smoke base Codex, sem quota, mesmo commit): todas PASS, exceto `orphan_
 
 ## A observação real da reconciliação Codex
 
-Sem órfão vivo, a reconciliação seguiu o caminho do E0: abriu uma conexão nova com o App Server da VM e perguntou pelo turno. O **Codex real relatou o turno como `interrupted`**, e o Cockpit passou o run de `unknown` para `interrupted` **com evidência do provider** (`confirmed`). Isso está de acordo com a D3 e não houve reenvio. O nome da checagem vem do caso com órfão; aqui nada foi "liberado", porque não havia órfão.
+Sem órfão vivo, a reconciliação seguiu o caminho do E0. Pelo código (`src/execution.ts` `reconcile`), esse caminho abre uma conexão com o App Server da VM e pergunta pelo turno; o relatório não registra a contagem de conexões dessa chamada. O **Codex real relatou o turno como `interrupted`**, e o Cockpit passou o run de `unknown` para `interrupted` **com evidência do provider** (`confirmed`). Isso está de acordo com a D3 e não houve reenvio. O nome da checagem vem do caso com órfão; aqui nada foi "liberado", porque não havia órfão.
 
 Leitura cuidadosa:
 - é **uma** observação de um caso concreto: o `msb exec` do host, dono do turno, terminou junto com o Cockpit, e o provider passou a ver o turno como interrompido;

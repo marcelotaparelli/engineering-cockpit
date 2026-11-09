@@ -1,8 +1,8 @@
 # F2-M3 / L8 — Queda abrupta com Claude real, sob o systemd do Arch
 
-**Fonte:** relatório JSON gerado pelo próprio smoke (`./scripts/cockpit f1-systemd-smoke`, modo prova). O operador o executou no host Arch em 2026-11-09, e o executor o leu do checkout compartilhado (`.cache/f2-m3/`). Os arquivos brutos foram copiados **byte a byte** para [`f2-m3-arch-2026-11-09/`](f2-m3-arch-2026-11-09/), com `SHA256SUMS` conferido contra a origem: 12/12 OK.
+**Fonte:** relatório JSON gerado pelo próprio smoke (`./scripts/cockpit f1-systemd-smoke`, modo prova). O operador o executou no host Arch em 2026-11-09, e o executor o leu do checkout compartilhado (`.cache/f2-m3/`). Os arquivos brutos foram copiados **byte a byte** para [`f2-m3-arch-2026-11-09/`](f2-m3-arch-2026-11-09/), com `SHA256SUMS` conferido contra a origem: 11/11 OK (o 12º arquivo é o próprio `SHA256SUMS`).
 **Commit testado:** `de29ef92adcaca1415ecc75732252906341ac14e` (`feat/f2-real-provider-proof`), gravado pelo procedimento em `commit`.
-**VM:** `claude-cockpit-e2-test`, VM de teste e não a de desenvolvimento. **Unit:** `engineering-cockpit-f1-smoke.service` (unit de runtime isolada, porta própria 21758). **Relatório:** `2026-11-09T08:06:45.402Z`.
+**VM:** `claude-cockpit-e2-test`, VM de teste e não a de desenvolvimento. **Unit:** `engineering-cockpit-f1-smoke.service` (unit de runtime isolada, porta própria 21758). **Início da execução** (`timestamp` do relatório): `2026-11-09T08:06:45.402Z`; arquivo gravado às 08:07:03 UTC (mtime).
 **Resultado geral: `NOT_VERIFIED`.** Esse é o veredito do próprio smoke. Ele não foi reinterpretado.
 
 ## O que é executado e o que é atestado
@@ -11,7 +11,7 @@
 | --- | --- |
 | Os veredictos abaixo | **executado**: checagens automáticas do smoke sobre o Cockpit real, o systemd real, o `msb` real e o Claude real; lidos do JSON arquivado |
 | Commit, VM e porta | **executado**: gravados pelo procedimento e pelo relatório |
-| Serviço da porta 8787 intacto | **executado**: `systemctl --user show` antes (07:57) e depois (08:26) de toda a janela, que cobre as provas Claude e Codex: `ActiveState=active`, `MainPID=66227`, `NRestarts=0` nos dois instantes ([`service-8787-before.txt`](f2-m3-arch-2026-11-09/service-8787-before.txt), [`-after.txt`](f2-m3-arch-2026-11-09/service-8787-after.txt)) |
+| Serviço da porta 8787 intacto | **executado**: `systemctl --user show` antes e depois de toda a janela, que cobre as provas Claude e Codex. Os horários 07:57:34 e 08:26:04 UTC são o mtime dos arquivos originais; os arquivos em si não trazem horário. Resultado nos dois instantes: `ActiveState=active`, `MainPID=66227`, `NRestarts=0` nos dois instantes ([`service-8787-before.txt`](f2-m3-arch-2026-11-09/service-8787-before.txt), [`-after.txt`](f2-m3-arch-2026-11-09/service-8787-after.txt)) |
 | Código de saída `2` do passo 3 | **atestado** pelo operador: o arquivo `3-claude-proof.exit` não foi gravado. É coerente com `overall: NOT_VERIFIED`, que o script mapeia para 2 |
 | VM ociosa e sem outro uso, quota autorizada | **atestado** pelo operador |
 | Execução única do passo 3 | **atestado**: há um único relatório; o repositório não registra tentativas anteriores |

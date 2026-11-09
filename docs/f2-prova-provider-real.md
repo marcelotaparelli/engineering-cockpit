@@ -278,7 +278,7 @@ systemctl --user show engineering-cockpit.service -p ActiveState,MainPID,NRestar
 | Passo 2: todas as checagens PASS, exceto `orphan_ledger` NOT_VERIFIED `no_surviving_msb_child` (saída 2) | esperado: as sondas são curtas e terminam junto com o Cockpit, como no F1-D | segue para o passo 3/4 (com autorização) |
 | Passo 2: qualquer FAIL, ou NOT_VERIFIED em `preconditions`, `msb_list` ou `msb_exec` | ambiente ou VM sem condição | **não** gastar quota; trazer o JSON |
 | Passos 3/4: `overall` PASS | L8 (Claude) e F1-P1 + M1 (Codex) provados sob o systemd real | registrar; F2 pode ser encerrada |
-| `orphan_turn_started`, `run_unknown_after_crash`, `reconcile_conservative` (Claude) PASS, mas as checagens de órfão NOT_VERIFIED `no_surviving_msb_child` | evidência real de que o `msb exec` **não** sobrevive ao SIGKILL do Cockpit sob o systemd. Sem órfão não há bloqueio nem posse do turno; a recuperação conservadora (run `unknown`, sem reenvio) é o que vale | **CONDITIONAL GO**: registrar como achado. O §8.3 do V1 ("órfãos visíveis e bloqueando") passa a ser "não ocorrem sob o systemd", decisão do Tech Lead. Não repetir para "forçar" o órfão |
+| `orphan_turn_started`, `run_unknown_after_crash`, `reconcile_conservative` (Claude) PASS, mas as checagens de órfão NOT_VERIFIED `no_surviving_msb_child` | ~~evidência real de que o `msb exec` não sobrevive ao SIGKILL do Cockpit sob o systemd~~. **Superado pela §9:** uma execução mostra que nenhum `msb exec` sobreviveu **naquela** execução; isso não prova que órfãos sejam impossíveis. A recuperação conservadora (run `unknown`, sem reenvio) foi comprovada | **CONDITIONAL GO**: registrar como achado e não repetir para "forçar" o órfão. ~~O §8.3 do V1 passa a ser "não ocorrem sob o systemd"~~: **superado pela §9**, o V1 §8.3 fica pendente de decisão do Tech Lead |
 | `partial_preserved` NOT_VERIFIED (`no_partial_text_before_kill`), ou `orphan_turn_started` NOT_VERIFIED (turno terminou antes do kill) | o modelo não transmitiu texto a tempo, ou foi rápido demais | no máximo **uma** repetição, com nova autorização |
 | Codex `reconcile_after_release` NOT_VERIFIED `reattached_running_after_owner_ended` | é o caso aberto da P3, observado com Codex real | não é falha da M3; leva à decisão P3 com essa evidência |
 | Qualquer FAIL nos passos 3/4 | defeito real ou ambiente inesperado | **NO-GO**: não repetir sem análise do JSON (cada repetição gasta quota) |
@@ -321,10 +321,10 @@ Veja [`docs/evidence/f2-m3-2026-11-09/`](evidence/f2-m3-2026-11-09/).
 | 2. smoke base Claude / Codex | todas PASS, exceto `orphan_ledger` NOT_VERIFIED `no_surviving_msb_child`, `exit=2`: o portão esperado da §8.4 |
 | 3. prova Claude | `NOT_VERIFIED`. PASS: `orphan_turn_started`, `partial_preserved` (209 → 209 caracteres, incompleta, prompt 1×), `run_unknown_after_crash`, `reconcile_conservative` (`provider_cannot_confirm`, 0 filho novo), `reconcile_after_release`. NOT_VERIFIED `no_surviving_msb_child`: `orphan_ledger`, `orphan_blocks_send`, `orphan_released` |
 | 4. prova Codex | `NOT_VERIFIED`. PASS: `orphan_turn_started`, `run_unknown_after_crash`, `reconcile_after_release` (o Codex relatou `interrupted`, confirmado pelo provider). NOT_VERIFIED `no_surviving_msb_child`: `orphan_ledger`, `orphan_blocks_send`, `reconcile_conservative`, `orphan_released` |
-| porta 8787 | `active`, `MainPID=66227`, `NRestarts=0` antes (07:57) e depois (08:26) |
+| porta 8787 | `active`, `MainPID=66227`, `NRestarts=0` antes e depois (mtime dos arquivos: 07:57:34 e 08:26:04 UTC) |
 | atestado, sem arquivo | código de saída 2 dos passos 3 e 4 (os `.exit` não foram gravados; coerente com `NOT_VERIFIED`); VMs ociosas; execução única |
 
-Pela §8.4, o resultado cai na linha "checagens de órfão NOT_VERIFIED `no_surviving_msb_child`": CONDITIONAL GO, registrar como achado e não repetir. O Tech Lead decidiu exatamente isso.
+Pela §8.4, o resultado cai na linha "checagens de órfão NOT_VERIFIED `no_surviving_msb_child`": CONDITIONAL GO, registrar como achado e não repetir. O Tech Lead decidiu exatamente isso. A leitura escrita naquela linha antes da execução ("o `msb exec` não sobrevive", "não ocorrem sob o systemd") foi **corrigida**: uma execução não prova que órfãos sejam impossíveis.
 
 ### Critérios de aceite da F2 (master plan §7)
 
@@ -347,3 +347,11 @@ Pela §8.4, o resultado cai na linha "checagens de órfão NOT_VERIFIED `no_surv
 - P3: se um Codex real algum dia ler `running` um turno de dono morto, a reconciliação reata como no E0 e o run pode ficar sem eventos até o reinício ou a interrupção (§6). A mitigação é só de texto.
 - Intermitências de teste pré-existentes (o badge de sessão, §6, e `brand-visual-check`, §8.5): relevantes para a F3.
 
+### Verificação final e revisão independente do delta da F2
+
+| Verificação | Resultado |
+| --- | --- |
+| `./scripts/cockpit f1-accept hermetic` em `b931d74` (árvore limpa; o código é o mesmo testado no Arch em `de29ef9`, e daí em diante só mudaram docs) | **PASS**: typecheck limpo, **455 pass / 0 fail**, drill E4 PASS, Chromium 23/23, 23/23, 12/12, 52/52, `artifact` PASS ([`hermetic-report-final-b931d74.md`](evidence/f2-m3-2026-11-09/hermetic-report-final-b931d74.md)) |
+| `./scripts/cockpit artifact --check` | **PASS** |
+| Revisão final independente de `4e4bd9d..b931d74` (outro agente Claude, só leitura, sem as conclusões do autor; typecheck e 49 testes da F2) | **nenhum bloqueador**, 0 alto. Runtime: as duas saídas novas da `reconcile` não resolvem run, não reenviam, não sinalizam, não seguram o lock do projeto e não expõem PID, VM ou texto; Claude e Codex sem órfão não mudam; `defaultRunner()` sem argumento não muda (o serviço instalado não é afetado). Evidência: cada número, código e veredito dos registros confere com os JSON brutos, e `SHA256SUMS` confere 11/11. `4e4bd9d` é ancestral de `HEAD`: o fast-forward é possível. Links relativos resolvem |
+| Achados da revisão final (todos de documentação) | **corrigidos no commit seguinte**. Médio: a linha da §8.4 escrita antes da execução dizia "o `msb exec` não sobrevive" e "não ocorrem sob o systemd", agora marcada como superada. Baixos: contagem do `SHA256SUMS` (11 + o próprio arquivo); origem dos horários da porta 8787 (mtime UTC dos arquivos); `timestamp` é o início da execução; a conexão aberta pela reconciliação Codex é inferida do código; referência de linha da L4 e natureza "A/H" da linha F1 do master plan |

@@ -1,0 +1,74 @@
+{
+  "milestone": "F1-acceptance-hermetic",
+  "at": "2026-11-09T08:35:04.442Z",
+  "commit": "b931d74",
+  "tree_dirty": false,
+  "bun": "1.4.4",
+  "overall": "PASS",
+  "steps": [
+    {
+      "id": "typecheck",
+      "title": "tsc --noEmit (strict)",
+      "status": "PASS",
+      "seconds": 0.6,
+      "detail": "clean",
+      "log": "typecheck.log"
+    },
+    {
+      "id": "suite",
+      "title": "full deterministic suite (bun test)",
+      "status": "PASS",
+      "seconds": 140.4,
+      "detail": "455 pass / 0 fail",
+      "log": "suite.log"
+    },
+    {
+      "id": "e4-drill",
+      "title": "E4 recovery drill (real Cockpit processes, kill -9, orphans)",
+      "status": "PASS",
+      "seconds": 2.9,
+      "detail": "overall PASS",
+      "log": "e4-drill.log"
+    },
+    {
+      "id": "visual-check",
+      "title": "Chromium: Codex flow (login, stream, approval, interrupt, layouts)",
+      "status": "PASS",
+      "seconds": 5.4,
+      "detail": "23/23 checks",
+      "log": "visual-check.log"
+    },
+    {
+      "id": "brand-visual-check",
+      "title": "Chromium: brand and responsive layouts",
+      "status": "PASS",
+      "seconds": 5.2,
+      "detail": "23/23 checks",
+      "log": "brand-visual-check.log"
+    },
+    {
+      "id": "f1-visual-check",
+      "title": "Chromium: two tabs share the session, logout, L5 stream, L6 unsupported",
+      "status": "PASS",
+      "seconds": 3,
+      "detail": "12/12 checks",
+      "log": "f1-visual-check.log"
+    },
+    {
+      "id": "f1-browser-acceptance",
+      "title": "Chromium: Claude AskUserQuestion/approval, kill -9 restarts, session timers",
+      "status": "PASS",
+      "seconds": 61.2,
+      "detail": "52/52 checks",
+      "log": "f1-browser-acceptance.log"
+    },
+    {
+      "id": "artifact",
+      "title": "artifact manifest matches the tree",
+      "status": "PASS",
+      "seconds": 0,
+      "detail": "PASS artifact manifest",
+      "log": "artifact.log"
+    }
+  ]
+}
