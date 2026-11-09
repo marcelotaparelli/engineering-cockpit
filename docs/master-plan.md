@@ -55,6 +55,7 @@ Pontos de atenção (não bloqueiam): `ExecutionService` concentra 725 linhas de
 | D7 | Versões do Codex App Server fixadas (fail-closed) | E0 | vigente; exige runbook de upgrade |
 | D8 | VM `claude-engineering-cockpit` recusada no código | E2 | **REQUER DECISÃO** → tornar configuração (`COCKPIT_RESERVED_VMS`) |
 | D9 | Identidade visual v1.1 (recortes da prancha aprovada, CSP `img-src 'self'`) | brand book | aprovada, integração GO |
+| D10 | Run Codex `unknown` com app-server órfão vivo na VM não é reatado: `unconfirmed`/`orphan_owns_turn`; ledger ilegível → `orphan_check_unavailable` (falha fechada) | F2-M1 (`docs/f2-prova-provider-real.md` §4) | vigente; provada em teste, não observada com Codex real (nenhum órfão no Arch). Reatar ou não um turno `running` de dono morto = P3, aberta |
 
 ## 5. Estado real dos marcos
 
@@ -70,7 +71,9 @@ Legenda: **H** = comprovado no Arch com provider real; **T** = só testes/simula
 | E2 | spike Claude | H parcial | `docs/evidence/e2-claude-spike-arch.json`: 12 PASS, 2 INCONCLUSIVE (pré-correção) |
 | E3 | Claude como provider | **A** | `docs/evidence/e3-browser-arch.md` (F0): atestado sem resultado do passo (e) nem streaming incremental |
 | E3.1 | histórico persistente | A | `docs/evidence/e31-historico-arch.md` (só o resultado global) |
-| E4 | confiabilidade | H (Cockpit) / T (providers) | `docs/evidence/e4-arch.md` (F0): 278 testes + drill 11/11 no Arch **atestados**; queda com Claude real não homologada |
+| E4 | confiabilidade | H (Cockpit) / T (providers) | `docs/evidence/e4-arch.md` (F0): 278 testes + drill 11/11 no Arch **atestados**. Queda com Claude e Codex reais: veja F2 |
+| F1 | operação diária (systemd, sessão deslizante, L5, L6) | H (smoke) / A (uso) | `docs/evidence/f1-systemd-smoke-arch.md`: smoke F1-D atestado, `NOT_VERIFIED` aceito; F1-P1 executada na F2-M3, sem órfão |
+| F2 | prova com provider real (L4, L8) | **H** (queda, Claude e Codex) / T (órfão) | `docs/evidence/e4-claude-real-arch.md`, `f2-codex-orphan-arch.md`, JSON brutos em `docs/evidence/f2-m3-arch-2026-11-09/` (executado pelo operador no Arch, `de29ef9`, 2026-11-09): `kill -9` com turno real em voo → parcial preservada (Claude), run `unknown`, nenhum reenvio, reconciliação conservadora (Claude) ou com evidência do provider (Codex). Ambos `overall: NOT_VERIFIED`: **nenhum** filho `msb exec` sobreviveu, então órfão listado, envio bloqueado, liberação e `orphan_owns_turn` sob systemd **não verificados** (só em teste) |
 | UI v1.1 | identidade | aprovada | `docs/evidence/ui-brand-v1.1-2026-11-08/` (no `develop` desde a F0) |
 
 Integração E4 + UI: branch `integration/e4-ui-v1.1` (`a11a1d9`), sem conflitos, 283/283, drill PASS, 46/46 checks visuais. **Mesclada** no `develop` por fast-forward na F0. A reexecução na F0 teve o mesmo resultado (`docs/evidence/e4-arch.md`).
@@ -79,14 +82,14 @@ Integração E4 + UI: branch `integration/e4-ui-v1.1` (`a11a1d9`), sem conflitos
 
 | # | Lacuna | Evidência | Impacto | Tratamento |
 | --- | --- | --- | --- | --- |
-| L1 | Aceites E3 e E4 no Arch sem registro no repositório | ausência em `docs/evidence/`; README contradiz `e3-claude-code.md` | a única prova de aprovação/AskUserQuestion reais é oral | **F0: registrada como atestado**; a prova estruturada com provider real vem na F2 |
+| L1 | Aceites E3 e E4 no Arch sem registro no repositório | ausência em `docs/evidence/`; README contradiz `e3-claude-code.md` | a única prova de aprovação/AskUserQuestion reais é oral | **F0: registrada como atestado**. F2: a queda com provider real foi provada (L8); aprovação e `AskUserQuestion` reais **continuam atestado** (pergunta P2 da F2, fora da M3) |
 | L2 | Sessão HTTP expira em 30 min absolutos, sem renovação; nova aba exige login | `src/local-security.ts:5,55`; UI só reage a 401 | inviabiliza uso diário | F1 |
 | L3 | Sem empacotamento como serviço (systemd), token em variável de shell, grants fixos no start | README; `src/config.ts` | Cockpit depende de um terminal aberto | F1 |
-| L4 | Run Codex reconciliado como `running` preso a um app-server órfão: sem eventos, sem interrupção, projeto travado até o órfão terminar | `src/execution.ts:287-299`; E4 §10 | beco sem saída operacional | F2 (decisão D10) |
+| L4 | Run Codex reconciliado como `running` preso a um app-server órfão: sem eventos, sem interrupção, projeto travado até o órfão terminar | `src/execution.ts:287-299`; E4 §10 | beco sem saída operacional | **F2: D10 implementada** (`orphan_owns_turn`, falha fechada), provada em teste com processo real; sob systemd com Codex real **não verificada** (nenhum órfão). Resta a **P3** (turno lido `running` após a morte do dono), **aberta**: não observada no Arch, onde o Codex relatou `interrupted` |
 | L5 | Stream ao vivo perde os primeiros caracteres quando o histórico recarrega durante deltas | reproduzido no `develop`; `public/app.js:722` (era `:692` antes da UI v1.1) | ruído visual, desconfiança | F1 |
 | L6 | VM reservada hardcoded e `offline: VM parada` para VMs ligadas sem provider suportado (`opencode-*`, VM reservada) | `src/claude-protocol.ts:14`; `src/dashboard.ts:69` | texto enganoso; Cockpit não opera a própria VM de dev | F1 (D8) |
 | L7 | Sem CI | sem `.github/`; `verify` manual | regressão só é vista por quem lembra de rodar | F3 |
-| L8 | Queda abrupta com Claude real nunca exercitada; formas `UNVERIFIED` no código | `src/claude-protocol.ts:85,93,127` | risco residual de recuperação | F2 |
+| L8 | Queda abrupta com Claude real nunca exercitada; formas `UNVERIFIED` no código | `src/claude-protocol.ts:85,93,127` | risco residual de recuperação | **F2: exercitada no Arch** (parcial preservada, `unknown`, `provider_cannot_confirm`, sem reenvio). **Risco aceito pelo Tech Lead:** caminho de órfão real (listado/bloqueando/liberado) não verificado com Claude nem Codex, porque nenhum `msb exec` sobreviveu. Não se afirma que órfãos sejam impossíveis sob o systemd (`KillMode=process`) |
 | L9 | Pin de versão Codex sem runbook de upgrade | `codex-adapter.ts:24` | parada após update do CLI | **F0: `docs/runbook.md`** |
 | L10 | `unknown` some da inbox quando chega run novo; sem "ciente" | E4 §10 | perda de visibilidade | F4 |
 
@@ -163,7 +166,7 @@ OpenCode (F5); objetivos longos com checkpoints humanos (F6); reaper de conexõe
 
 ## 14. Próxima ação executável
 
-F0 concluída em 2026-11-08 (veja o histórico abaixo). A próxima fase é a **F1, operar todo dia**, em branch e worktree a partir do `develop`, com o escopo e o aceite da §7. A F3 (CI) pode correr em paralelo.
+F0 concluída em 2026-11-08; F1 integrada ao `develop` (`4e4bd9d`). **F2 tecnicamente concluída em 2026-11-09**, com CONDITIONAL GO do Tech Lead para o fechamento técnico. A integração é por fast-forward de `feat/f2-real-provider-proof` no `develop`, feita pelo operador. Ficam abertos sem bloquear a integração: a P3 (turno Codex `running` de dono morto, sem evidência real) e a P2 (prova real de aprovação/`AskUserQuestion`). O caminho de órfão real sob o systemd fica como risco aceito. Próximas fases: **F3 (CI)** e **F4 (visão operacional)**. A F3 deve tratar as intermitências de teste registradas na F2 (`docs/f2-prova-provider-real.md` §6 e §8.5).
 
 ---
 
@@ -175,3 +178,4 @@ F0 concluída em 2026-11-08 (veja o histórico abaixo). A próxima fase é a **F
 | 2026-11-07/08 | implícito | numeração E0–E4 adotada nos prompts de execução; nenhum documento definia E5/E6 |
 | 2026-11-08 | 2.0 | este plano: V1 = operação diária; painel de 6 instrumentos descartado do Cockpit; D6 ratificada; D8 e L4 para decisão |
 | 2026-11-08 | 2.0.1 | F0 concluída: `develop` com o fast-forward da integração E4 + UI v1.1 e este plano mesclado; aceites E3/E4 registrados como atestado (`docs/evidence/e3-browser-arch.md`, `e4-arch.md`); `docs/runbook.md`; README coerente. Só o estado foi atualizado (§5, L1, L5, L9, §14), sem mudança de escopo ou prioridade |
+| 2026-11-09 | 2.0.2 | F2 concluída tecnicamente: provas reais no Arch (`de29ef9`) registradas (`docs/evidence/e4-claude-real-arch.md`, `f2-codex-orphan-arch.md`); D10 registrada no §4 e implementada; §5 (linhas F1 e F2), L1, L4, L8 e §14 atualizados. Sem mudança de escopo ou prioridade. Riscos aceitos pelo Tech Lead: órfão real sob o systemd não verificado; P3 e P2 abertas |
