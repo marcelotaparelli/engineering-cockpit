@@ -17,7 +17,7 @@ import type { Snapshot } from "../src/model.ts";
  * Independent security review, finding 2 (reproduced before the fix): a revoke landing while `startRun` waited on the VM
  * revalidation still created and dispatched a run the operator could then no longer see, interrupt or approve.
  */
-test("a revoke during startRun's wait creates no run; a revoke during openSession's wait creates no session", async () => {
+test("revoke vs an operation in flight: refused while it is held (HTTP); the in-tick re-check stops any effect if authorization is lost (service)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cockpit-grant-race-"));
   const runtime = new RuntimeStore(join(dir, "rt", "runtime.sqlite"));
   const hub = new EventHub();
@@ -45,24 +45,41 @@ test("a revoke during startRun's wait creates no run; a revoke during openSessio
     expect(opened.status).toBe(201);
     const sessionId = (await opened.json() as { session_id: string }).session_id;
 
+    // Layer 1 (HTTP hold, review round 3): a revoke can no longer land while an authorized send is waiting — it is refused, and
+    // the send completes normally in a project that is still authorized. Nothing invisible is ever created.
     gate = new Promise(resolve => { release = resolve; });
     const pending = post(`api/sessions/${sessionId}/runs`, { prompt: "hello" }, { "Idempotency-Key": "k-race-0001-abcdefghij" });
     await Bun.sleep(50);
-    expect((await post("api/projects/alpha/revoke", { confirm: "alpha" })).status).toBe(200); // nothing active yet
+    const busy = await post("api/projects/alpha/revoke", { confirm: "alpha" });
+    expect(busy.status).toBe(409);
+    expect(((await busy.json()) as { error: { code: string } }).error.code).toBe("project_busy");
     gate = null; release();
-    const refused = await pending;
-    expect(refused.status).toBe(404);
-    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("resource_not_found");
-    expect(runtime.listRuns(sessionId, 10)).toEqual([]);
+    expect((await pending).status).toBe(202);
+    expect(grants.source("alpha")).toBe("ui");
+    for (let i = 0; i < 200 && execution.projectBusy("alpha"); i++) await Bun.sleep(10);
 
-    expect((await post("api/projects/alpha/grant", { confirm: "alpha" })).status).toBe(200);
-    const sessionsBefore = runtime.listSessions(["alpha"]).length;
     gate = new Promise(resolve => { release = resolve; });
     const opening = post("api/sessions", { vm_name: "codex-alpha", mode: "new" }); // waits in the server's revalidate
     await Bun.sleep(50);
-    expect((await post("api/projects/alpha/revoke", { confirm: "alpha" })).status).toBe(200);
+    expect((await post("api/projects/alpha/revoke", { confirm: "alpha" })).status).toBe(409);
     gate = null; release();
-    expect((await opening).status).toBe(404);
+    expect((await opening).status).toBe(201);
+
+    // Layer 2 (in-tick re-check inside the execution service, first review): whatever the caller, an authorization lost during
+    // the wait stops the effect — no run, no session.
+    const runsBefore = runtime.listRuns(sessionId, 50).length;
+    const session = runtime.getSession(sessionId)!;
+    let allowed = true;
+    gate = new Promise(resolve => { release = resolve; });
+    const direct = execution.startRun(session, "hello again", "k-race-0002-abcdefghij", () => allowed);
+    await Bun.sleep(30);
+    allowed = false;
+    gate = null; release();
+    await expect(direct).rejects.toThrow("resource_not_found");
+    expect(runtime.listRuns(sessionId, 50)).toHaveLength(runsBefore);
+    const sessionsBefore = runtime.listSessions(["alpha"]).length;
+    const target = await execution.revalidate("codex-alpha", "alpha");
+    await expect(execution.openSession(target, "new", undefined, () => false)).rejects.toThrow("resource_not_found");
     expect(runtime.listSessions(["alpha"]).length).toBe(sessionsBefore);
   } finally {
     server.stop(true); await execution.close().catch(() => {}); runtime.close(); store.close(); await rm(dir, { recursive: true, force: true });

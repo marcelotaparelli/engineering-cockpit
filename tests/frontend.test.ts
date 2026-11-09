@@ -1062,3 +1062,19 @@ test("picker: a fresh login (form, no stored proof) also lands on the project pi
     expect(cards(ui).map(node => node.dataset.project)).toEqual(["demo", "atlas", "engineering-cockpit"]);
   }, {});
 });
+
+test("revoked/reserved project with work still possibly running: the inbox says so, content-free, and how to regain control", async () => {
+  const router = defaultRouter(call => call.path === "/api/dashboard" ? { status: 200, body: dashboard({ attention: [
+    { kind: "run_outside_access", project: "atlas", vm_name: "codex-atlas", provider: "codex", runs: 2, reserved: false, created_at: new Date().toISOString() },
+    { kind: "run_outside_access", project: "vault", vm_name: "claude-vault", provider: "claude", runs: 1, reserved: true, created_at: new Date().toISOString() },
+  ] }) } : undefined);
+  await withUi(router, async ui => {
+    const text = ui.document.getElementById("attention")!.textContent!;
+    expect(text).toContain("Execução sem acesso no Cockpit");
+    expect(text).toContain("atlas · codex-atlas");
+    expect(text).toContain("2 execução(ões) ativa(s) ou não confirmada(s) num projeto cujo acesso foi revogado");
+    expect(text).toContain("autorize o projeto de novo em Projetos");
+    expect(text).toContain("num projeto reservado");
+    expect(text).toContain("o Cockpit não encerra nada sozinho");
+  });
+});

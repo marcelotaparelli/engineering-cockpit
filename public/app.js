@@ -510,6 +510,14 @@ function renderAttention(items) {
       list.append(li);
       continue;
     }
+    if (item.kind === 'run_outside_access') {
+      head.append(el('strong', 'Execução sem acesso no Cockpit'), el('span', ago(item.created_at), 'where'));
+      li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
+      li.append(el('div', `${item.runs} execução(ões) ativa(s) ou não confirmada(s) num projeto ${item.reserved ? 'reservado' : 'cujo acesso foi revogado'}. Ela(s) pode(m) ainda estar rodando na VM; o Cockpit não encerra nada sozinho.`, 'muted small'));
+      li.append(el('div', item.reserved ? 'O que fazer: confira na VM. Projeto reservado: o Cockpit não abre sessões nem histórico dele.' : 'O que fazer: autorize o projeto de novo em Projetos para acompanhar, interromper ou reconciliar; ou confira na VM.', 'muted small'));
+      list.append(li);
+      continue;
+    }
     if (item.kind === 'orphan_process') {
       head.append(el('strong', 'Processo órfão de antes de uma queda'), el('span', ago(item.created_at), 'where'));
       li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));

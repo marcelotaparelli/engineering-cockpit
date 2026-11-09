@@ -1,6 +1,6 @@
 import type { Snapshot } from "./model.ts";
 import type { LocalPrincipal, LocalSecurity } from "./local-security.ts";
-import type { RunRecord, RuntimeStore } from "./runtime-store.ts";
+import { ACTIVE_RUN_STATUSES, type RunRecord, type RuntimeStore } from "./runtime-store.ts";
 import type { ExecutionService } from "./execution.ts";
 import { vmIdentity } from "./model.ts";
 
@@ -107,6 +107,22 @@ export function buildDashboard(input: {
     attention.push({ kind: "orphan_process", vm_name: orphan.vmName, project, provider: vmProvider(orphan.vmName), process_kind: orphan.kind, pid: orphan.pid,
       session_id: session?.sessionId ?? null, reserved, blocks: orphan.kind === "codex_app_server" ? "vm" : orphan.kind === "claude_session" ? "session" : "nothing",
       created_at: orphan.detectedAt, since: orphan.since });
+  }
+  // Work that may still be running in a project the operator can no longer open (revoked from the page, or reserved): never
+  // hidden. Content-free (project, VM, how many, since when); re-authorizing (when not reserved) restores the runs themselves.
+  const outside = new Map<string, { project: string; vm_name: string; runs: number; since: string }>();
+  for (const run of input.store.runsWithStatus([...ACTIVE_RUN_STATUSES, "unknown"])) {
+    const owner = input.store.getSession(run.sessionId);
+    if (!owner || input.security.allows(principal, owner.target.projectId)) continue;
+    const key = `${owner.target.projectId}\u0000${owner.target.vmName}`;
+    const entry = outside.get(key) ?? { project: owner.target.projectId, vm_name: owner.target.vmName, runs: 0, since: run.createdAt };
+    entry.runs++;
+    if (run.createdAt < entry.since) entry.since = run.createdAt;
+    outside.set(key, entry);
+  }
+  for (const entry of outside.values()) {
+    attention.push({ kind: "run_outside_access", project: entry.project, vm_name: entry.vm_name, provider: vmProvider(entry.vm_name), runs: entry.runs,
+      reserved: input.security.grants.reserved(entry.project), created_at: entry.since });
   }
   const count = (state: AgentState) => sessionViews.filter(view => view.state === state).length;
   return {

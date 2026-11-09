@@ -251,6 +251,9 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
       let status = 200;
       let errorCode: string | null = null;
       let event: RequestLog["event"] = "request";
+      // A project-scoped operation holds its project from authorization to the end of the request (see ExecutionService.hold).
+      const held: { release: (() => void) | null } = { release: null };
+      const hold = (project: string) => { held.release?.(); held.release = options.execution?.hold(project) ?? null; };
       const headers = new Headers({ ...securityHeaders, "X-Request-Id": requestId, "X-Trace-Id": traceId });
       const json = (body: unknown, code = status) => {
         status = code;
@@ -323,8 +326,9 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           exact(body, []);
           const store = requireRuntime();
           const { run, session } = options.security.authorizeRun(store, principal, param);
+          hold(session.target.projectId);
           if (route === "/api/runs/:id/interrupt") return json(runView(store, await requireExecution().interrupt(run, session)), 202);
-          const { run: reconciled, outcome } = await requireExecution().reconcile(run, session);
+          const { run: reconciled, outcome } = await requireExecution().reconcile(run, session, () => options.security.allows(principal, session.target.projectId));
           return json({ ...runView(store, reconciled), reconciliation: { result: outcome.result, reason_code: outcome.reasonCode } });
         }
         if (route === "/api/sessions/:id") {
@@ -345,6 +349,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
         if (route === "/api/sessions/:id/runs") {
           const store = requireRuntime();
           const session = options.security.authorizeSession(store, principal, param);
+          hold(session.target.projectId);
           const key = request.headers.get("idempotency-key");
           if (!key) throw new SafeError("idempotency_key_required");
           if (!IDEMPOTENCY_KEY.test(key)) throw new SafeError("invalid_idempotency_key");
@@ -367,7 +372,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(param)) throw new SafeError("resource_not_found");
           const approval = store.getApproval(param);
           if (!approval) throw new SafeError("resource_not_found");
-          options.security.authorizeRun(store, principal, approval.runId);
+          hold(options.security.authorizeRun(store, principal, approval.runId).session.target.projectId);
           const decided = await requireExecution().decide(approval, body.decision, body.expected_version as number, answers);
           return json({ approval_id: decided.approvalId, status: decided.status, version: decided.version });
         }
@@ -444,6 +449,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
             throw new SafeError("invalid_body");
           }
           const vm = options.security.authorizeVm(snapshot, principal, body.vm_name);
+          hold(vm.project);
           const execution = requireExecution();
           const target = await execution.revalidate(vm.vm_name, vm.project);
           const session = await execution.openSession(target, body.mode, body.thread_id as string | undefined, () => options.security.allows(principal, vm.project));
@@ -460,6 +466,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           : errorCode === "resource_not_found" ? "authz_denied" : CONFLICTS.has(errorCode) || status >= 500 ? "request" : "security_denied";
         return json({ error: { code: errorCode }, source: options.source, host_verification: "not_verified", request_id: requestId }, status);
       } finally {
+        held.release?.();
         log({ event, request_id: requestId, trace_id: traceId, route, duration_ms: Math.round((performance.now() - start) * 100) / 100, status, error_code: errorCode });
       }
     },

@@ -59,8 +59,16 @@ export class GrantStore {
       closeSync(openSync(path, "wx", 0o600));
       created = true;
     }
+    const checked = lstatSync(path);
+    const checkedDir = lstatSync(dirname(path));
     this.#db = new Database(path, { strict: true });
     try {
+      // The path is resolved again by SQLite: the file and its directory opened must be the very ones checked above.
+      const opened = lstatSync(path);
+      const openedDir = lstatSync(dirname(path));
+      if (opened.ino !== checked.ino || opened.dev !== checked.dev || openedDir.ino !== checkedDir.ino || openedDir.dev !== checkedDir.dev) {
+        throw new SafeError("grant_store_denied");
+      }
       if (created) {
         this.#db.transaction(() => {
           this.#db.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${VERSION};`);

@@ -137,6 +137,8 @@ export class ExecutionService {
   readonly #lives = new Map<string, Live>();
   readonly #active = new Map<string, ActiveRun>(); // key: vm \0 providerSessionId
   readonly #approvals = new Map<string, PendingApproval>();
+  /** Project-scoped operations in flight (open session, send, interrupt, reconcile, decide), from authorization to their end. */
+  readonly #holds = new Map<string, number>();
   /** Provider requests the Cockpit cannot answer, per run. Memory-only: it describes a live process and dies with it. */
   readonly #blocked = new Map<string, Map<string, BlockedRequest>>();
   #closed = false;
@@ -179,6 +181,7 @@ export class ExecutionService {
    * operator can still interrupt or decide, so revocation refuses while this is true.
    */
   projectBusy(projectId: string): boolean {
+    if ((this.#holds.get(projectId) ?? 0) > 0) return true;
     for (const active of this.#active.values()) if (active.session.target.projectId === projectId) return true;
     for (const approval of this.#approvals.values()) {
       const run = this.#store.getRun(approval.runId);
@@ -186,6 +189,22 @@ export class ExecutionService {
       if (!session || session.target.projectId === projectId) return true; // unknown owner: fail closed
     }
     return false;
+  }
+
+  /**
+   * Marks an operation on a project as in flight; the HTTP layer takes it in the same tick as the authorization and releases it
+   * when the request ends. While held, `projectBusy` is true, so a revocation can never land between an operation's
+   * authorization and its effect (e.g. a reconcile that would otherwise bring a run back to life in a revoked project).
+   */
+  hold(projectId: string): () => void {
+    this.#holds.set(projectId, (this.#holds.get(projectId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const left = (this.#holds.get(projectId) ?? 1) - 1;
+      if (left > 0) this.#holds.set(projectId, left); else this.#holds.delete(projectId);
+    };
   }
 
   /** Why a VM is not operable, for display only: reserved by configuration/adapter, or a provider without adapter. */
@@ -290,7 +309,9 @@ export class ExecutionService {
   async interrupt(run: RunRecord, session: SessionRecord): Promise<RunRecord> {
     if (TERMINAL.includes(run.status)) return run;
     const active = this.#active.get(this.#key(session.target.vmName, session.providerSessionId));
-    if (run.status === "unknown" || !active || active.runId !== run.runId || !active.providerRunId || active.live.closed) {
+    // A run read as `unknown` that this process still follows (its turn is live on an open connection) can be interrupted:
+    // otherwise it would be stuck — not interruptible, not reconcilable (busy) and not revocable — until a restart.
+    if (!active || active.runId !== run.runId || !active.providerRunId || active.live.closed) {
       throw new SafeError("run_not_interruptible");
     }
     await active.live.connection.interrupt({ sessionId: session.providerSessionId, id: active.providerRunId });
@@ -304,7 +325,7 @@ export class ExecutionService {
    * outcome says why. Nothing is ever resent. Providers that can confirm a run only through its live process
    * (`reconcile: "process"`, Claude Code) are not even contacted once that process is gone: a fresh connection knows nothing.
    */
-  async reconcile(run: RunRecord, session: SessionRecord): Promise<{ run: RunRecord; outcome: ReconcileOutcome }> {
+  async reconcile(run: RunRecord, session: SessionRecord, authorized: () => boolean = () => true): Promise<{ run: RunRecord; outcome: ReconcileOutcome }> {
     if (run.status !== "unknown") return { run, outcome: { result: "not_applicable", reasonCode: "run_not_unknown" } };
     const unconfirmed = (reasonCode: string) => {
       this.#stats.reconcile_unconfirmed++;
@@ -331,6 +352,8 @@ export class ExecutionService {
     const target = await this.revalidate(session.target.vmName, session.target.projectId);
     const live = await this.#ensure(target);
     const result = await live.connection.reconcile({ sessionId: session.providerSessionId, id: run.providerRunId });
+    // Re-read in the same tick as every effect below: a project revoked or reserved meanwhile gets no run moved or revived.
+    if (!authorized()) throw new SafeError("resource_not_found");
     this.#log({ event: "run.reconciled", run_id: run.runId, outcome: result.status, provider: session.target.provider });
     if (result.status === "running") {
       const key = this.#key(target.vmName, session.providerSessionId);
@@ -340,6 +363,7 @@ export class ExecutionService {
         await live.connection.resumeSession({ id: session.providerSessionId }, this.#resumeHints(session));
         live.loaded.add(session.providerSessionId);
       }
+      if (!authorized()) throw new SafeError("resource_not_found");
       if (this.#active.has(key) || this.#store.activeRunForProject(session.target.projectId)) throw new SafeError("project_busy");
       this.#active.set(key, { runId: run.runId, session, live, providerRunId: run.providerRunId, buffer: [] });
       this.#stats.reconcile_confirmed++;
