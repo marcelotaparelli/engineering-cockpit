@@ -12,6 +12,18 @@ const dashboard = (overrides: Record<string, unknown> = {}) => ({ source: "mock"
   discovery_error: null, projects: ["demo"], vms: [vm], cursor: 7, attention: [],
   sessions: [{ session_id: "ses-1", project: "demo", vm_name: "codex-demo", thread_id: "thread-0001", last_activity: new Date().toISOString(), latest_run: null, state: "idle" }],
   counts: { working: 0, blocked: 0, awaiting_approval: 0, completed: 0, failed: 0, unknown: 0, interrupted: 0 }, ...overrides });
+type Agent = { provider: string; vm_name: string; vm_state: string; status: string };
+const project = (name: string, extra: Record<string, unknown>, agents: Agent[]) => ({ name, present: true, authorized: false, grant: null, granted_at: null,
+  reserved: false, can_authorize: false, can_revoke: false, agents, ...extra });
+const catalog = (overrides: Record<string, unknown> = {}) => ({ source: "mock", host_verification: "not_verified", observed_at: new Date().toISOString(), discovery_error: null,
+  ui_grants: true, counts: { discovered: 3, authorized: 1 }, projects: [
+    project("atlas", { can_authorize: true }, [{ provider: "claude", vm_name: "claude-atlas", vm_state: "running", status: "not_authorized" },
+      { provider: "codex", vm_name: "codex-atlas", vm_state: "absent", status: "absent" }]),
+    project("demo", { authorized: true, grant: "config" }, [{ provider: "claude", vm_name: "claude-demo", vm_state: "stopped", status: "stopped" },
+      { provider: "codex", vm_name: "codex-demo", vm_state: "running", status: "ready" }]),
+    project("engineering-cockpit", { reserved: true }, [{ provider: "claude", vm_name: "claude-engineering-cockpit", vm_state: "running", status: "reserved" },
+      { provider: "codex", vm_name: "codex-engineering-cockpit", vm_state: "absent", status: "absent" }]),
+  ], ...overrides });
 const sessionData = (runs: unknown[] = [], approvals: unknown[] = []) => ({ session: { session_id: "ses-1" }, runs, approvals });
 
 type Call = { method: string; path: string; headers: Record<string, string>; body: string | null };
@@ -53,6 +65,7 @@ const defaultRouter = (extra: Router = () => undefined): Router => call => {
   const custom = extra(call);
   if (custom !== undefined) return custom;
   if (call.path === "/api/dashboard") return { status: 200, body: dashboard() };
+  if (call.path === "/api/catalog") return { status: 200, body: catalog() };
   if (call.path === "/api/events") return "stream";
   if (call.path === "/api/vms/codex-demo/threads") return { status: 200, body: { vm_name: "codex-demo", threads: [{ id: "thread-0001", status: "idle", updatedAt: null, sessionId: "ses-1" }, { id: "thread-9999-external", status: "idle", updatedAt: null, sessionId: null }] } };
   if (call.path === "/api/sessions/ses-1") return { status: 200, body: sessionData() };
@@ -227,7 +240,7 @@ test("no visible agent: the panel explains why with counts only and points to th
   await withUi(router, async ui => {
     const box = ui.document.getElementById("discovery")!;
     expect(box.hasAttribute("hidden")).toBe(false);
-    expect(box.textContent).toContain("2 VM(s) de agente fora de COCKPIT_ALLOWED_PROJECTS");
+    expect(box.textContent).toContain("2 VM(s) de agente em projetos não autorizados. Autorize o projeto em Projetos.");
     expect(box.textContent).toContain("1 sandbox(es) que não são agentes");
     expect(box.textContent).toContain("discovery-report");
   });
@@ -923,4 +936,129 @@ test("F1-A: a closed CSRF epoch costs one token re-read and one resend with a NE
       expect(ui.document.getElementById("error")!.textContent).toContain("Sessão desta aba inválida");
     });
   } finally { sessionReply = previous; }
+});
+
+// ---------------------------------------------------------------- project picker (discovery ≠ authorization)
+const cards = (ui: Window) => [...ui.document.querySelectorAll("#catalog .catalog-item")] as unknown as HTMLElement[];
+const card = (ui: Window, name: string) => cards(ui).find(node => node.dataset.project === name)!;
+const pick = (ui: Window, vm: string) => ui.document.querySelector(`#catalog .pick[data-vm="${vm}"]`) as unknown as HTMLButtonElement;
+
+test("picker: with nothing selected the start screen lists discovered projects, authorized first; only an authorized, ready agent can be opened", async () => {
+  await withUi(defaultRouter(), async (ui, calls) => {
+    expect(ui.document.getElementById("empty")!.hasAttribute("hidden")).toBe(false);
+    expect(ui.document.getElementById("projects-open")!.hasAttribute("hidden")).toBe(false);
+    expect(calls.filter(call => call.path === "/api/catalog")).toHaveLength(1);
+    expect(cards(ui).map(node => node.dataset.project)).toEqual(["demo", "atlas", "engineering-cockpit"]);
+    expect(card(ui, "demo").textContent).toContain("Autorizado · configuração");
+    expect(card(ui, "demo").textContent).toContain("Definido em COCKPIT_ALLOWED_PROJECTS.");
+    expect(card(ui, "atlas").textContent).toContain("Não autorizado");
+    expect(card(ui, "engineering-cockpit").textContent).toContain("Reservado");
+    // Discovered but not authorized: visible, never openable. Reserved: not even authorizable from here.
+    expect(pick(ui, "claude-atlas").disabled).toBe(true);
+    expect(pick(ui, "claude-atlas").textContent).toContain("Autorize o projeto para usar");
+    expect(pick(ui, "claude-engineering-cockpit").disabled).toBe(true);
+    expect(card(ui, "engineering-cockpit").querySelector("button.grant")).toBeNull();
+    expect(card(ui, "atlas").querySelector("button.grant")).not.toBeNull();
+    // No VM is ever created or started from the picker: a stopped/absent VM says to use its launcher.
+    expect(pick(ui, "claude-demo").disabled).toBe(true);
+    expect(pick(ui, "claude-demo").textContent).toContain("ligue pelo launcher");
+    expect(pick(ui, "codex-atlas").textContent).toContain("crie pelo launcher");
+    expect(pick(ui, "codex-demo").disabled).toBe(false);
+    expect(pick(ui, "codex-demo").textContent).toContain("Codex");
+    click(pick(ui, "codex-demo"));
+    await settle(80);
+    expect(ui.document.getElementById("empty")!.hasAttribute("hidden")).toBe(true);
+    expect(ui.document.getElementById("vm-title")!.textContent).toBe("codex-demo");
+    expect(calls.some(call => call.path === "/api/sessions/ses-1/history")).toBe(true);
+    expect(calls.filter(call => call.method === "POST")).toEqual([]);
+    // "Projetos" goes back to the picker (and forgets the selection, so a reload starts there too).
+    click(ui.document.getElementById("projects-open"));
+    await settle();
+    expect(ui.document.getElementById("empty")!.hasAttribute("hidden")).toBe(false);
+    expect(ui.document.getElementById("session-view")!.hasAttribute("hidden")).toBe(true);
+    expect(JSON.parse(ui.sessionStorage.getItem("cockpit_view")!)).toEqual({ vm: null, sessionId: null });
+  });
+});
+
+test("picker: authorizing asks for confirmation first, then sends ONE CSRF-protected POST naming the project, and reloads the list", async () => {
+  let granted = false;
+  const router = defaultRouter(call => {
+    if (call.path === "/api/projects/atlas/grant") { granted = true; return { status: 200, body: { project: "atlas", action: "grant", changed: true, authorized: true, grant: "ui" } }; }
+    if (call.path === "/api/catalog" && granted) return { status: 200, body: catalog({ projects: [project("atlas", { authorized: true, grant: "ui", can_revoke: true }, [
+      { provider: "claude", vm_name: "claude-atlas", vm_state: "running", status: "ready" }, { provider: "codex", vm_name: "codex-atlas", vm_state: "absent", status: "absent" }])] }) };
+    return undefined;
+  });
+  await withUi(router, async (ui, calls) => {
+    click(card(ui, "atlas").querySelector("button.grant"));
+    await settle();
+    expect(calls.filter(call => call.method === "POST")).toEqual([]);
+    expect(card(ui, "atlas").querySelector(".confirm")!.textContent).toContain("Nenhuma VM é criada ou ligada");
+    click(card(ui, "atlas").querySelector("button.confirm-no"));
+    await settle();
+    expect(card(ui, "atlas").querySelector(".confirm")).toBeNull();
+    expect(calls.filter(call => call.method === "POST")).toEqual([]);
+    click(card(ui, "atlas").querySelector("button.grant"));
+    await settle();
+    click(card(ui, "atlas").querySelector("button.confirm-yes"));
+    await settle(80);
+    const posts = calls.filter(call => call.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.path).toBe("/api/projects/atlas/grant");
+    expect(JSON.parse(posts[0]!.body!)).toEqual({ confirm: "atlas" });
+    expect(posts[0]!.headers["X-CSRF-Token"]).toBe("csrf-synthetic");
+    expect(posts[0]!.headers["X-Request-Nonce"]).toMatch(/^[A-Za-z0-9_-]{22,128}$/);
+    expect(calls.filter(call => call.path === "/api/catalog").length).toBeGreaterThanOrEqual(2);
+    expect(ui.document.getElementById("catalog-notice")!.textContent).toContain("atlas autorizado");
+    expect(pick(ui, "claude-atlas").disabled).toBe(false);
+    expect(card(ui, "atlas").querySelector("button.revoke")).not.toBeNull();
+  });
+});
+
+test("picker: a refused grant or revoke says why in plain words and changes nothing locally", async () => {
+  const router = defaultRouter(call => {
+    if (call.path === "/api/projects/atlas/grant") return { status: 403, body: { error: { code: "project_reserved" } } };
+    if (call.path === "/api/projects/lab/revoke") return { status: 409, body: { error: { code: "project_busy" } } };
+    if (call.path === "/api/catalog") return { status: 200, body: catalog({ projects: [project("atlas", { can_authorize: true }, []), project("lab", { authorized: true, grant: "ui", can_revoke: true }, [])] }) };
+    return undefined;
+  });
+  await withUi(router, async ui => {
+    click(card(ui, "atlas").querySelector("button.grant"));
+    await settle();
+    click(card(ui, "atlas").querySelector("button.confirm-yes"));
+    await settle(80);
+    expect(ui.document.getElementById("catalog-notice")!.textContent).toContain("Projeto reservado: não pode ser autorizado pela interface.");
+    click(card(ui, "lab").querySelector("button.revoke"));
+    await settle();
+    expect(card(ui, "lab").querySelector(".confirm")!.textContent).toContain("nada é apagado");
+    click(card(ui, "lab").querySelector("button.confirm-yes"));
+    await settle(80);
+    expect(ui.document.getElementById("catalog-notice")!.textContent).toContain("Há uma execução ativa neste projeto");
+    expect(card(ui, "lab").textContent).toContain("Autorizado");
+  });
+});
+
+test("picker: project names and statuses are rendered as text only; discovery failure is stated; UI grants off is explained", async () => {
+  const router = defaultRouter(call => call.path === "/api/catalog" ? { status: 200, body: catalog({ discovery_error: "msb_timeout", ui_grants: false,
+    projects: [project("<img src=x onerror=alert(1)>", { authorized: true, grant: "config", present: null }, [{ provider: "codex", vm_name: "<b>x</b>", vm_state: "unobserved", status: "<i>y</i>" }])] }) } : undefined);
+  await withUi(router, async ui => {
+    expect(ui.document.querySelectorAll("img")).toHaveLength(staticImages);
+    expect(ui.document.querySelectorAll("#catalog b, #catalog i")).toHaveLength(0);
+    expect(ui.document.getElementById("catalog")!.textContent).toContain("<img src=x onerror=alert(1)>");
+    const notice = ui.document.getElementById("catalog-notice")!.textContent!;
+    expect(notice).toContain("indisponível (msb_timeout)");
+    expect(notice).toContain("Autorização pela interface desligada");
+  });
+});
+
+test("picker: a fresh login (form, no stored proof) also lands on the project picker", async () => {
+  const router = defaultRouter(call => call.path === "/api/auth/login" ? { status: 200, body: { csrf: "csrf-synthetic", proof: "proof-synthetic-0123456789ab" } } : undefined);
+  await withUi(router, async (ui, calls) => {
+    expect(ui.document.getElementById("login")!.hasAttribute("hidden")).toBe(false);
+    (ui.document.getElementById("credential") as unknown as HTMLInputElement).value = "f".repeat(64);
+    (ui.document.getElementById("login") as unknown as HTMLFormElement).requestSubmit();
+    await settle(120);
+    expect(ui.document.getElementById("app")!.hasAttribute("hidden")).toBe(false);
+    expect(calls.filter(call => call.path === "/api/catalog")).toHaveLength(1);
+    expect(cards(ui).map(node => node.dataset.project)).toEqual(["demo", "atlas", "engineering-cockpit"]);
+  }, {});
 });

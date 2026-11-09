@@ -220,14 +220,15 @@ function showLogin() {
   state.csrf = null; state.proof = null; state.dashboard = null;
   sessionClock.expiresAt = null; renderSessionBadge();
   try { sessionStorage.removeItem('cockpit_session_proof'); } catch {}
-  $('login').hidden = false; $('logout').hidden = true; $('app').hidden = true; $('refresh').hidden = true; $('live').hidden = true;
-  $('agents').replaceChildren(); $('attention').replaceChildren(); $('conversation').replaceChildren();
+  $('login').hidden = false; $('logout').hidden = true; $('app').hidden = true; $('refresh').hidden = true; $('live').hidden = true; $('projects-open').hidden = true;
+  $('agents').replaceChildren(); $('attention').replaceChildren(); $('conversation').replaceChildren(); $('catalog').replaceChildren();
+  catalogState.data = null; catalogState.confirm = null; catalogState.message = null;
   $('source').textContent = 'Acesso local protegido'; $('source').className = 'badge';
   setLive('offline', 'bad');
   $('status').textContent = 'Autenticação local necessária';
 }
 function showApp() {
-  $('login').hidden = true; $('logout').hidden = false; $('app').hidden = false; $('refresh').hidden = false; $('live').hidden = false;
+  $('login').hidden = true; $('logout').hidden = false; $('app').hidden = false; $('refresh').hidden = false; $('live').hidden = false; $('projects-open').hidden = false;
   if (!state.dashboard) { $('agents').replaceChildren(el('li', 'Carregando agentes…', 'empty-list')); setLive('conectando…', 'warn'); }
 }
 function setLive(text, tone) { $('live').textContent = text; $('live').className = `badge conn ${tone}`; }
@@ -252,6 +253,7 @@ async function init() {
     await loadDashboard();
     connectStream();
     if (state.vm) await selectVm(state.vm, state.sessionId);
+    else await loadCatalog(); // nothing selected: the project picker is the start screen
   } catch (error) { if (error.status !== 401) showError(`Falha ao iniciar: ${error.code}`); }
 }
 
@@ -273,6 +275,7 @@ $('login').addEventListener('submit', async event => {
     await loadDashboard();
     connectStream();
     if (state.vm) await selectVm(state.vm, state.sessionId);
+    else await loadCatalog(); // same start screen as a resumed session: the project picker
   } catch {
     $('login-error').textContent = 'Credencial recusada ou limite de tentativas atingido.';
     $('login-error').hidden = false;
@@ -332,7 +335,7 @@ function renderDiscovery(data) {
   } else if (!data.vms.length) {
     tone = 'warn';
     lines.push('Nenhuma VM de agente nos projetos autorizados.');
-    if (d.outside_grants) lines.push(`${d.outside_grants} VM(s) de agente fora de COCKPIT_ALLOWED_PROJECTS.`);
+    if (d.outside_grants) lines.push(`${d.outside_grants} VM(s) de agente em projetos não autorizados. Autorize o projeto em Projetos.`);
     if (d.ignored_invalid_project) lines.push(`${d.ignored_invalid_project} VM(s) com nome de projeto fora do padrão (minúsculas, dígitos, - e _).`);
     if (d.ignored_not_agent) lines.push(`${d.ignored_not_agent} sandbox(es) que não são agentes (ignoradas).`);
     lines.push('Detalhes por VM: ./scripts/cockpit discovery-report');
@@ -527,6 +530,141 @@ function renderAttention(items) {
     li.append(actions);
     list.append(li);
   }
+}
+
+// ---------------------------------------------------------------- project picker
+// Discovery is not authorization: every project directory is listed, but only an authorized project can be opened. Authorizing
+// is an explicit, confirmed act (CSRF-protected, audited on the server). VMs are reused as they are: never created or started.
+const AGENT_STATUS = {
+  ready: 'VM ligada',
+  stopped: 'VM parada: ligue pelo launcher (o Cockpit não liga VMs)',
+  absent: 'Sem VM: crie pelo launcher (o Cockpit não cria VMs)',
+  reserved: 'VM reservada: o Cockpit não opera esta VM',
+  unsupported: 'Provider sem suporte no Cockpit',
+  not_authorized: 'Autorize o projeto para usar',
+  project_missing: 'Diretório do projeto ausente',
+  unobserved: 'VMs não observadas agora',
+};
+const GRANT_ERROR = {
+  project_reserved: 'Projeto reservado: não pode ser autorizado pela interface.',
+  grant_from_config: 'Autorizado pela configuração (COCKPIT_ALLOWED_PROJECTS): só pode ser removido lá.',
+  project_busy: 'Há uma execução ativa neste projeto. Aguarde ou interrompa antes de revogar.',
+  orphan_process_alive: 'Há um processo órfão de uma execução anterior neste projeto. Resolva-o (veja "Precisa de você") antes de revogar.',
+  grant_limit_reached: 'Limite de projetos autorizados pela interface atingido.',
+  grants_read_only: 'Autorização pela interface desligada neste Cockpit (COCKPIT_UI_GRANTS=off).',
+  resource_not_found: 'Projeto não encontrado na pasta de projetos agora (ou já não autorizado). A lista foi atualizada.',
+};
+const catalogState = { data: null, confirm: null, busy: false, message: null };
+
+function projectsVisible() { return !$('app').hidden && !$('empty').hidden; }
+async function showProjects() {
+  ++selectToken; // a selection still loading must not reopen a session over the picker
+  state.vm = null; state.sessionId = null; saveView();
+  for (const node of document.querySelectorAll('.agent')) node.setAttribute('aria-pressed', 'false');
+  $('session-view').hidden = true; $('empty').hidden = false;
+  setPane('session');
+  await loadCatalog();
+}
+$('projects-open').addEventListener('click', () => { showProjects(); });
+async function loadCatalog() {
+  try { catalogState.data = await get('/api/catalog'); }
+  catch (error) {
+    if (error.status === 401) return;
+    catalogState.message = { text: `Não foi possível listar os projetos (${error.code}).`, tone: 'bad' };
+  }
+  renderCatalog();
+}
+function grantChip(project) {
+  if (project.grant === 'config') return ['Autorizado · configuração', 's-completed'];
+  if (project.grant === 'ui') return ['Autorizado', 's-completed'];
+  if (project.reserved) return ['Reservado', 's-unsupported'];
+  return ['Não autorizado', 's-idle'];
+}
+function renderCatalog() {
+  const data = catalogState.data;
+  const notes = [];
+  let tone = '';
+  if (catalogState.message) { notes.push(catalogState.message.text); tone = catalogState.message.tone; }
+  if (data && data.discovery_error) { notes.push(`Pasta de projetos ou VMs indisponível (${data.discovery_error}): exibindo só projetos autorizados.`); tone = 'bad'; }
+  else if (data && !data.projects.length) { notes.push('Nenhum projeto encontrado na pasta de projetos (COCKPIT_PROJECTS_BASE).'); tone = tone || 'warn'; }
+  if (data && !data.ui_grants) notes.push('Autorização pela interface desligada neste Cockpit: os projetos vêm de COCKPIT_ALLOWED_PROJECTS.');
+  const box = $('catalog-notice');
+  box.hidden = !notes.length;
+  box.className = `notice ${tone}`;
+  box.replaceChildren(...notes.map(line => el('span', line)));
+  const list = $('catalog');
+  if (!data) { list.replaceChildren(); return; }
+  const filter = $('project-filter').value.trim().toLowerCase();
+  const projects = data.projects.filter(project => !filter || project.name.includes(filter))
+    .sort((a, b) => Number(b.authorized) - Number(a.authorized) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  list.replaceChildren(...projects.map(projectCard));
+  if (!projects.length && data.projects.length) list.append(el('li', 'Nenhum projeto corresponde ao filtro.', 'empty-list'));
+}
+$('project-filter').addEventListener('input', renderCatalog);
+function projectCard(project) {
+  const li = el('li', null, `catalog-item${project.authorized ? ' authorized' : ''}`);
+  li.dataset.project = project.name;
+  const head = el('div', null, 'row');
+  const [label, tone] = grantChip(project);
+  head.append(el('strong', project.name, 'name'), el('span', label, `chip ${tone}`));
+  li.append(head);
+  if (project.present === false) li.append(el('div', 'Diretório ausente na pasta de projetos: nada pode ser aberto.', 'meta'));
+  const picks = el('div', null, 'picks');
+  for (const agent of project.agents) {
+    const known = state.dashboard && state.dashboard.vms.find(vm => vm.vm_name === agent.vm_name);
+    // Ready to open, or a stopped VM whose earlier sessions can still be read.
+    const openable = project.authorized && (agent.status === 'ready' || Boolean(known && known.session_id));
+    const pick = button('', () => openAgent(agent.vm_name), project.authorized && agent.status === 'ready' ? 'pick primary' : 'pick');
+    pick.dataset.vm = agent.vm_name;
+    pick.append(el('strong', PROVIDER_NAME[agent.provider] || agent.provider), el('span', AGENT_STATUS[agent.status] || agent.status, 'meta'));
+    pick.disabled = !openable || catalogState.busy;
+    pick.title = `${agent.vm_name} — ${AGENT_STATUS[agent.status] || agent.status}`;
+    picks.append(pick);
+  }
+  li.append(picks);
+  if (catalogState.confirm && catalogState.confirm.project === project.name) { li.append(confirmBox(project, catalogState.confirm.action)); return li; }
+  const actions = el('div', null, 'actions');
+  if (project.can_authorize) actions.append(button('Autorizar', () => askGrant(project.name, 'grant'), 'grant'));
+  if (project.can_revoke) actions.append(button('Revogar acesso', () => askGrant(project.name, 'revoke'), 'ghost revoke'));
+  if (project.grant === 'config') actions.append(el('span', 'Definido em COCKPIT_ALLOWED_PROJECTS.', 'muted small'));
+  else if (project.reserved && !project.authorized) actions.append(el('span', 'Projeto reservado: não pode ser autorizado pela interface.', 'muted small'));
+  if (actions.childNodes.length) li.append(actions);
+  return li;
+}
+function askGrant(project, action) { catalogState.confirm = { project, action }; catalogState.message = null; renderCatalog(); }
+function confirmBox(project, action) {
+  const box = el('div', null, 'notice warn confirm');
+  box.setAttribute('role', 'group');
+  box.setAttribute('aria-label', action === 'grant' ? `Confirmar autorização de ${project.name}` : `Confirmar revogação de ${project.name}`);
+  box.append(el('span', action === 'grant'
+    ? `Autorizar ${project.name}? O Cockpit poderá abrir sessões e enviar prompts às VMs deste projeto que já existem. Nenhuma VM é criada ou ligada.`
+    : `Revogar o acesso a ${project.name}? As sessões e o histórico deixam de aparecer até autorizar de novo; nada é apagado.`));
+  const actions = el('span', null, 'actions');
+  const confirm = button(action === 'grant' ? 'Confirmar autorização' : 'Confirmar revogação', () => changeGrant(project.name, action), action === 'grant' ? 'primary confirm-yes' : 'danger confirm-yes');
+  confirm.disabled = catalogState.busy;
+  actions.append(confirm, button('Cancelar', () => { catalogState.confirm = null; renderCatalog(); }, 'confirm-no'));
+  box.append(actions);
+  return box;
+}
+async function changeGrant(project, action) {
+  if (catalogState.busy) return;
+  catalogState.busy = true;
+  renderCatalog();
+  try {
+    await post(`/api/projects/${encodeURIComponent(project)}/${action}`, { confirm: project });
+    catalogState.message = { text: action === 'grant' ? `${project} autorizado. Escolha Claude Code ou Codex.` : `Acesso a ${project} revogado.`, tone: '' };
+  } catch (error) {
+    if (error.status === 401) { catalogState.busy = false; return; }
+    catalogState.message = { text: GRANT_ERROR[error.code] || `Não foi possível concluir (${error.code}).`, tone: 'bad' };
+  }
+  catalogState.confirm = null;
+  catalogState.busy = false;
+  await loadDashboard();
+  await loadCatalog();
+}
+async function openAgent(vmName) {
+  if (!state.dashboard || !state.dashboard.vms.some(vm => vm.vm_name === vmName)) await loadDashboard();
+  await selectVm(vmName);
 }
 
 // ---------------------------------------------------------------- session workspace
@@ -887,6 +1025,7 @@ function scheduleRefresh() {
 }
 async function refreshAll() {
   await loadDashboard();
+  if (projectsVisible() && !catalogState.busy && !catalogState.confirm) await loadCatalog();
   if (state.sessionId) await loadSession(false);
 }
 function onJournal(event) {

@@ -14,6 +14,7 @@
   <span id="live" class="badge conn" role="status" aria-live="polite" hidden>offline</span>
   <span id="session" class="badge conn warn" role="status" aria-live="polite" hidden></span>
   <span class="spacer"></span>
+  <button id="projects-open" type="button" class="ghost" hidden title="Escolher projeto e agente">Projetos</button>
   <button id="refresh" type="button" class="ghost" hidden title="Atualizar agora">Atualizar</button>
   <button id="logout" type="button" class="ghost" hidden>Sair</button>
 </header>
@@ -53,10 +54,15 @@
   </aside>
 
   <section id="workspace" class="pane pane-session" aria-labelledby="workspace-title">
-    <div id="empty" class="placeholder">
-      <img class="placeholder-mark" src="/brand/mark.png" width="398" height="272" alt="">
-      <h2 id="workspace-title">Selecione um agente</h2>
-      <p class="muted">Escolha uma VM em <strong>Agentes</strong> para abrir ou retomar uma sessão. O que depende de você aparece em <strong>Precisa de você</strong>.</p>
+    <div id="empty" class="catalog">
+      <div class="catalog-head">
+        <h2 id="workspace-title">Projetos</h2>
+        <p class="muted small">Escolha um projeto e o agente: <strong>Claude Code</strong> ou <strong>Codex</strong>. Projetos encontrados na pasta de projetos aparecem aqui, mas só podem ser usados depois de autorizados. O Cockpit usa as VMs que já existem: não cria nem liga VMs.</p>
+        <label for="project-filter" class="sr-only">Filtrar projetos</label>
+        <input id="project-filter" type="search" placeholder="Filtrar projetos…" autocomplete="off">
+      </div>
+      <div id="catalog-notice" class="notice" role="status" hidden></div>
+      <ul id="catalog" class="catalog-list" aria-label="Projetos"></ul>
     </div>
     <div id="session-view" class="session" hidden>
       <div class="session-head">
