@@ -64,14 +64,59 @@ sqlite3 -readonly "<data>/grants-host.sqlite" 'SELECT * FROM grant_audit ORDER B
 | `tests/project-grants.test.ts` | Store 0600, schema exato, persistência, auditoria append-only (UPDATE/DELETE recusados), recusa de symlink (arquivo e diretório), arquivo compartilhado, banco estranho e linha adulterada, limite de 256. Regras: reservado nunca concedível, configuração nunca revogável, conjunto vivo (principal antigo vê concessão e revogação), concessão gravada que virou reservada não vale. Config/serviço: vazio aceito só com UI ligada. Catálogo: só diretórios + autorizados, status por provider, sem VM-fantasma |
 | `tests/project-grants-http.test.ts` | Descoberta **real** sobre diretório temporário (com symlink para fora e nome inválido): 401 sem sessão; Origin, CSRF, prova, nonce repetido, corpo errado e GET recusados sem efeito; reservado 403; symlink, VM sem diretório e nome inventado 404; descoberta caindo 503 sem conceder; concessão vale na hora para a sessão aberta, é auditada sem segredo e persiste; revogação recusada com run ativo, efetiva depois (sessão e run voltam a 404), reconcedida traz a sessão de volta; stream SSE já aberto para de entregar eventos do projeto revogado (com controle positivo e teste de mutação: falha se o stream congelar os grants) |
 | `tests/project-grants-startup.test.ts` | `src/index.ts` real (mock) **sem** `COCKPIT_ALLOWED_PROJECTS`: catálogo, autorizar, abrir sessão Codex **e** Claude Code, auditoria no log sem a credencial, arquivo 0600, persistência após SIGTERM + restart; `COCKPIT_UI_GRANTS=off` com lista vazia recusa a partida e com lista não permite autorizar |
-| `tests/frontend.test.ts` (+4) | Tela inicial = seletor; ordem; botões desativados com o motivo; reservado sem "Autorizar"; confirmação antes de qualquer POST (cancelar não envia); um único POST com CSRF/nonce e corpo `{confirm}`; erros em linguagem simples; nomes/estados só como texto (sem injeção de marcação); "Projetos" volta ao seletor |
+| `tests/project-grants-race.test.ts` | Revogação durante a espera de `startRun` (revalidação da VM) → 404, **nenhum** run criado; durante `openSession` → 404, nenhuma sessão criada (achado 2 da revisão; falha sem a correção) |
+| `tests/frontend.test.ts` (+5) | Tela inicial = seletor; ordem; botões desativados com o motivo; reservado sem "Autorizar"; confirmação antes de qualquer POST (cancelar não envia); um único POST com CSRF/nonce e corpo `{confirm}`; erros em linguagem simples; nomes/estados só como texto (sem injeção de marcação); "Projetos" volta ao seletor; login pelo formulário também abre o seletor |
 
 Resultados: §5.
 
-## 5. Resultados
+## 5. Resultados (executados nesta VM de desenvolvimento, 2026-11-09)
 
-(preenchido abaixo)
+| Verificação | Resultado |
+|---|---|
+| Base `develop` `1ea3806`: `bun run typecheck` + `bun test` | 455 pass, 0 fail |
+| Branch final: `bun run typecheck` + `bun test` | typecheck limpo; **478 pass, 0 fail** (47 arquivos, ~143 s) |
+| Testes de regressão dos 3 achados da revisão | falham sem a correção (mutação: `git stash` de `src/`), passam com ela |
+| Teste do stream SSE | falha se o stream congelar os grants na abertura (mutação), passa com o conjunto vivo |
+| `scripts/projects-visual-check.ts` (Chromium headless, Cockpit **mock**) | 19/19 PASS: seletor como tela inicial, confirmação, autorizar, abrir Claude Code, voltar, 1440/1024/390 px sem overflow, revogar, console sem erro de JS/CSP, log sem credencial e com auditoria. Capturas em `docs/evidence/projetos-descoberta-mock/` |
+| `scripts/visual-check.ts` (fluxo de sessão existente) | 23/23 PASS, sem regressão |
+
+**Não executado (de propósito):**
+- nada no Arch;
+- nada contra o serviço da porta 8787, VMs reais, `msb`, credenciais ou bancos reais;
+- nenhum prompt real.
+
+O modo host foi exercitado só com descoberta real sobre diretório temporário e uma saída do `msb list` sintética (`tests/project-grants-http.test.ts`).
 
 ## 6. Revisão de segurança independente
 
-(preenchido abaixo)
+**Quem e como:** um agente revisor novo (Claude), sem acesso às conclusões do implementador. Recebeu o diff `1ea3806..8fa2df0`, as alegações a verificar e o modelo de ameaça (ADR-0002/0003, `m0b1b-threat-model.md`). Rodou somente leitura no repositório, com PoCs em diretório temporário, sem tocar em VM, `msb`, serviço ou credencial. Não houve revisão pelo Codex nesta tarefa. É uma revisão Claude independente, a mesma forma aceita pelo Tech Lead como exceção na F1.
+
+**Resultado:** nenhum achado crítico ou alto. Três defeitos reproduzidos, todos corrigidos neste branch, cada um com teste que falha sem a correção:
+
+| # | Severidade | Achado | Correção |
+|---|---|---|---|
+| 1 | média | Concessão da UI ofuscada (projeto que virou reservado ou passou para a configuração) ficava dormente no SQLite, não era revogável pela UI e voltava escondida quando a configuração mudava | Removida na partida, com auditoria `revoke` de ator `system` e log `project_grant` |
+| 2 | baixa/média | Revogação durante a espera de `startRun` criava e despachava um run num projeto já revogado, invisível ao operador (interromper e aprovações inacessíveis) | Grant relido de forma síncrona antes de `beginRun` e antes/depois do provider em `openSession` |
+| 3 | baixa | Primeira partida interrompida deixava arquivo vazio, e toda partida seguinte falhava com `grant_store_denied` | Arquivo vazio, privado e próprio é inicializado |
+
+**Informativos aceitos como risco residual** (ADR-0004 §6):
+- VM reservada não reserva o projeto (decisão P-D4);
+- run `unknown` não bloqueia a revogação;
+- arquivo `-journal`/`-wal` regular plantado pelo mesmo UID;
+- isolamento do `e0-recovery` só pelo ambiente.
+
+A flag `reserved` no modo fixo agora respeita `COCKPIT_RESERVED_PROJECTS`.
+
+**Propriedades confirmadas pelo revisor:**
+- descoberta nunca concede;
+- todas as proteções do POST;
+- diretório verificado por `refresh()` autoritativo, sem link;
+- reservado recusado no servidor e em `ProjectGrants`;
+- configuração não revogável pela UI;
+- conjunto de grants vivo em todas as verificações, inclusive replay e eventos ao vivo do SSE;
+- endurecimento do store;
+- nenhum segredo na auditoria ou nos logs;
+- UI só com `textContent`;
+- partida com `COCKPIT_UI_GRANTS=off` inalterada;
+- e3 e smoke isolados;
+- nenhuma criação ou partida de VM.

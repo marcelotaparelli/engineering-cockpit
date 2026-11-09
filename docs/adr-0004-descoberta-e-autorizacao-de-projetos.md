@@ -37,7 +37,8 @@ grants efetivos = COCKPIT_ALLOWED_PROJECTS (configuração, imutável pela UI)
 |---|---|
 | A UI só autoriza um projeto **descoberto agora**: `discovery.refresh()` autoritativo, nunca o cache de exibição. A falha da descoberta não concede nada (503) | `src/server.ts` (`/api/projects/:id/grant`) |
 | Projetos reservados nunca são autorizáveis pela UI (403 `project_reserved`): `engineering-cockpit` (projeto da VM de desenvolvimento, sempre) mais `COCKPIT_RESERVED_PROJECTS` (só acrescenta) | `src/project-grants.ts` |
-| Uma concessão da UI já gravada para um projeto que depois virou reservado (ou passou para a configuração) deixa de valer como concessão da UI | `ProjectGrants` (construtor) |
+| Uma concessão da UI gravada para um projeto que depois virou reservado (ou passou para a configuração) é **removida na partida**, com linha `revoke` na auditoria (ator `system:0000000000000000`, `request_id` `startup-reconcile`) e no log. Assim nunca volta escondida quando a configuração muda de novo | `ProjectGrants` (construtor), `GrantStore.dropShadowed` |
+| A autorização é relida de forma síncrona logo antes de criar um run (`startRun`, depois da revalidação da VM) ou uma sessão (`openSession`, antes e depois da chamada ao provider). Uma revogação que chega durante essas esperas não deixa run nem sessão invisível | `src/execution.ts`, `src/server.ts` |
 | A UI não revoga concessões da configuração (409 `grant_from_config`). Elas mudam só em `cockpit.env` | `ProjectGrants.revoke` |
 | Revogação recusada com run ativo ou aprovação pendente no projeto (409 `project_busy`) ou com processo órfão de uma VM dele (409 `orphan_process_alive`): não se esconde trabalho em voo | `src/server.ts` |
 | Revogar não apaga nada: sessões, runs e histórico voltam ao autorizar de novo | `RuntimeStore` inalterado |
@@ -57,7 +58,8 @@ grants efetivos = COCKPIT_ALLOWED_PROJECTS (configuração, imutável pela UI)
 - um único hard link, dono = UID do processo, sem bits de grupo/outros;
 - `application_id` próprio e schema exato; toda linha é validada na abertura. Qualquer divergência recusa a partida (`grant_store_denied`, saída 78);
 - aberto só **depois** do lock do banco de runtime: um Cockpit por diretório de dados;
-- limite de 256 concessões pela UI.
+- limite de 256 concessões pela UI;
+- um arquivo vazio e privado é inicializado. Esse é o caso de uma primeira partida que morreu entre criar o arquivo e gravar o schema, e não deve virar uma recusa permanente.
 
 **Auditoria:**
 - tabela `grant_audit` append-only. Triggers recusam `UPDATE`/`DELETE`, e os triggers fazem parte do schema exigido, então removê-los impede a partida;
@@ -98,7 +100,9 @@ As duas novas entram na lista de chaves permitidas de `cockpit.env` (`SERVICE_EN
 
 ## 6. Riscos residuais
 
-1. **Requisição em voo.** Uma requisição autorizada antes de uma revogação concorrente pode concluir o efeito já iniciado (ex.: um `startRun` aguardando a descoberta). A revogação não é um "kill switch": vale a partir da verificação seguinte.
+1. **Requisição em voo.** Criar run e criar sessão releem o grant antes do efeito durável. Leituras e ações que só reduzem risco (interromper, reconciliar, decidir aprovação) iniciadas antes de uma revogação podem terminar. A revogação não é um "kill switch" de processos já despachados.
+7. **Run `unknown` não bloqueia a revogação.** Só runs ativos bloqueiam. Um projeto com run `unknown` pode ser revogado, e a reconciliação fica inacessível até autorizar de novo (nada é apagado). Bloquear por `unknown` impediria revogar para sempre quando o provider não consegue confirmar.
+8. **VM reservada não reserva o projeto.** `COCKPIT_RESERVED_VMS=codex-x` mantém a VM recusada na execução, mas a UI pode autorizar o projeto `x`, o que expõe sessões e histórico de `claude-x`. Para proteger o projeto inteiro, use `COCKPIT_RESERVED_PROJECTS=x`.
 2. **Mesmo UID.** Quem tem o mesmo UID consegue editar o SQLite de forma consistente, como já consegue ler a credencial. Fora do modelo de ameaça (ADR-0002).
 3. **Identidade é o nome.** A concessão é por nome, como na configuração. Um diretório removido e recriado com o mesmo nome continua autorizado.
 4. **Auditoria sem tela.** A trilha fica no SQLite e no journal. Não há tela de auditoria nesta MVP.
@@ -110,3 +114,4 @@ As duas novas entram na lista de chaves permitidas de `cockpit.env` (`SERVICE_EN
 - **P-D1.** Aceitar a mudança de exposição do §3 (nomes de diretórios visíveis ao operador autenticado).
 - **P-D2.** Aceitar `COCKPIT_ALLOWED_PROJECTS` vazio como configuração válida com `COCKPIT_UI_GRANTS=on` (antes, a partida falhava).
 - **P-D3.** Aceitar `engineering-cockpit` como projeto sempre reservado para a UI. Ele continua autorizável pela configuração, como hoje.
+- **P-D4.** Decidir se `COCKPIT_RESERVED_VMS` deve também reservar o projeto da VM (risco residual 8). Hoje são independentes, como antes desta mudança.
