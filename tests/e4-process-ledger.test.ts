@@ -165,7 +165,9 @@ describe.skipIf(process.platform !== "linux")("E4: a run never starts beside an 
     const dashboard = buildDashboard({ store: h.store, execution: h.execution, principal, security: new LocalSecurity("a".repeat(64), ["alpha"]), snapshot: null, discoveryError: null, source: "mock" });
     expect(dashboard.attention).toContainEqual(expect.objectContaining({ kind: "orphan_process", pid: survivor.pid, process_kind: "claude_session", blocks: "session", session_id: session.sessionId }));
     const outsider = buildDashboard({ store: h.store, execution: h.execution, principal: { grants: new Set(["beta"]) } as unknown as LocalPrincipal, security: new LocalSecurity("a".repeat(64), ["alpha"]), snapshot: null, discoveryError: null, source: "mock" });
-    expect((outsider.attention as Array<{ kind: string }>).some(item => item.kind === "orphan_process")).toBe(false);
+    // ADR-0004 (review round 4, F3): a process is never hidden, even outside access — but only PID/VM, never the session.
+    const outside = (outsider.attention as Array<Record<string, unknown>>).filter(item => item.kind === "orphan_process");
+    expect(outside).toEqual([expect.objectContaining({ pid: survivor.pid, project: "alpha", outside_access: true, session_id: null })]);
 
     survivor.kill("SIGKILL"); await survivor.exited;
     const { run: next, created } = await h.execution.startRun(session, "outra tarefa", `key-${crypto.randomUUID()}`);
