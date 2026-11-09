@@ -36,10 +36,11 @@ O Cockpit pode rodar como serviço do próprio usuário, sem terminal aberto. Na
 
 O `install` gera:
 - a credencial em `~/.config/engineering-cockpit/token` (0600): gerada só se ainda não existir; com `--import-env-token`, passa a ser a de `COCKPIT_LOCAL_TOKEN` do shell, substituindo a anterior;
-- a configuração não secreta em `~/.config/engineering-cockpit/cockpit.env` (0600), lida das variáveis do shell (`COCKPIT_MODE`, padrão `host`, `COCKPIT_PROJECTS_BASE`, `COCKPIT_ALLOWED_PROJECTS`, `PORT`, padrão 8787, `COCKPIT_DATA_DIR`, `COCKPIT_RESERVED_VMS`) e com o `PATH` do Bun 1.4.4 e do `msb`. Só é regravada com `--force`;
+- a configuração não secreta em `~/.config/engineering-cockpit/cockpit.env` (0600), lida das variáveis do shell (`COCKPIT_MODE`, padrão `host`, `COCKPIT_PROJECTS_BASE`, `COCKPIT_ALLOWED_PROJECTS`, opcional desde a [ADR-0004](adr-0004-descoberta-e-autorizacao-de-projetos.md), `PORT`, padrão 8787, `COCKPIT_DATA_DIR`, `COCKPIT_RESERVED_VMS`, `COCKPIT_RESERVED_PROJECTS`, `COCKPIT_UI_GRANTS`) e com o `PATH` do Bun 1.4.4 e do `msb`. Só é regravada com `--force`;
 - a unit `~/.config/systemd/user/engineering-cockpit.service`.
 
 Regras:
+- **Projetos:** os diretórios de `COCKPIT_PROJECTS_BASE` aparecem na tela **Projetos**; os que não estão em `COCKPIT_ALLOWED_PROJECTS` são autorizados (e revogados) na própria página, com confirmação, CSRF e auditoria em `<data>/grants-<modo>.sqlite`. Detalhes em [projetos-descoberta.md](projetos-descoberta.md).
 - **Preserve o histórico:** se o Cockpit em terminal usa o `data/` de outro checkout, instale com `COCKPIT_DATA_DIR=<caminho absoluto desse data>`. Sem isso, o serviço usa o `data/` do checkout onde a unit foi gerada.
 - **Uma instância por banco:** pare o Cockpit do terminal antes de iniciar o serviço sobre o mesmo `data/`. Se não parar, o serviço é recusado com 78 e o doctor mostra o PID dono.
 - **Voltar ao terminal:** `./scripts/cockpit service stop` (e `disable`, se habilitado). Depois, o `./scripts/cockpit start` de sempre. A F1 não muda o schema do banco.
