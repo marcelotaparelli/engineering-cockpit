@@ -4,6 +4,8 @@ import { DEFAULT_RESERVED_VMS } from "./claude-protocol.ts";
 import { vmIdentity } from "./model.ts";
 
 export type GrantSource = "config" | "ui";
+/** Audit actor of changes the Cockpit makes by itself at startup (never an operator session). */
+export const SYSTEM_ACTOR = "system:0000000000000000";
 
 /**
  * Projects the UI can never authorize: the project of every default-reserved VM (the Cockpit's own development project, D8)
@@ -30,21 +32,26 @@ export class ProjectGrants {
   readonly #store: GrantStore | null;
   readonly #ui = new Map<string, string>(); // project -> granted_at
   readonly #view = new Set<string>();
+  /** UI grants removed at startup because the project is now reserved or in the configuration (for the startup log). */
+  readonly shadowedAtStart: readonly string[];
 
   private constructor(config: readonly string[], reserved: readonly string[], store: GrantStore | null) {
     ProjectGrants.validateConfig(config, reserved);
     this.#config = new Set(config);
     this.#reserved = new Set(reserved);
     this.#store = store;
-    // A UI grant of a project that became reserved (or that the configuration now grants) is not effective as a UI grant.
-    for (const row of store?.list() ?? []) if (!this.#reserved.has(row.project) && !this.#config.has(row.project)) this.#ui.set(row.project, row.grantedAt);
+    // A stored UI grant of a project that became reserved (or that the configuration now grants) is REMOVED, with an audit row:
+    // kept dormant, it would come back unseen (and unrevocable from the UI) when the configuration changed again.
+    this.shadowedAtStart = store?.dropShadowed(project => this.#reserved.has(project) || this.#config.has(project),
+      { actor: SYSTEM_ACTOR, requestId: "startup-reconcile", at: new Date().toISOString() }) ?? [];
+    for (const row of store?.list() ?? []) this.#ui.set(row.project, row.grantedAt);
     this.#rebuild();
   }
 
   /** Configuration-only grants (legacy behaviour): must be non-empty, nothing can be granted at run time. */
-  static fixed(projects: readonly string[]): ProjectGrants {
+  static fixed(projects: readonly string[], reserved: readonly string[] = DEFAULT_RESERVED_PROJECTS): ProjectGrants {
     if (projects.length === 0) throw new SafeError("local_grants_required");
-    return new ProjectGrants(projects, DEFAULT_RESERVED_PROJECTS, null);
+    return new ProjectGrants(projects, reserved, null);
   }
 
   /** The checks of `managed` that need no store: valid, unique configuration grants and valid reserved names. */

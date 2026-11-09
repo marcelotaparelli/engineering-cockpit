@@ -39,6 +39,9 @@ export class GrantStore {
       const file = lstatSync(path);
       const uid = process.getuid?.();
       if (!file.isFile() || file.nlink !== 1 || (file.mode & 0o077) !== 0 || (uid !== undefined && file.uid !== uid)) throw new SafeError("grant_store_denied");
+      // A first start that died between creating the file and writing its schema leaves an empty private file: initialise it
+      // (an empty file holds no grant, so nothing is lost or widened) instead of refusing every later start.
+      if (file.size === 0) created = true;
     } catch (error) {
       if (error instanceof SafeError) throw error;
       if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw new SafeError("grant_store_denied");
@@ -83,6 +86,22 @@ export class GrantStore {
       this.#db.prepare("INSERT INTO grants VALUES (?, ?, ?)").run(project, audit.at, audit.actor);
       this.#db.prepare("INSERT INTO grant_audit(at, action, project, actor, request_id) VALUES (?, 'grant', ?, ?, ?)").run(audit.at, project, audit.actor, audit.requestId);
       return true;
+    })();
+  }
+
+  /**
+   * Startup reconciliation: removes stored UI grants that can no longer be UI grants (project now reserved, or now granted by
+   * the configuration), each with a `revoke` audit row. A later configuration change can therefore never revive them silently.
+   */
+  dropShadowed(isShadowed: (project: string) => boolean, audit: GrantAudit): string[] {
+    return this.#db.transaction(() => {
+      const dropped = this.list().map(row => row.project).filter(isShadowed);
+      for (const project of dropped) {
+        check(project, audit);
+        this.#db.prepare("DELETE FROM grants WHERE project=?").run(project);
+        this.#db.prepare("INSERT INTO grant_audit(at, action, project, actor, request_id) VALUES (?, 'revoke', ?, ?, ?)").run(audit.at, project, audit.actor, audit.requestId);
+      }
+      return dropped;
     })();
   }
 

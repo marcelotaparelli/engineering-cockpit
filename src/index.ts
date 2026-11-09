@@ -39,7 +39,8 @@ try {
   // Opened only after the runtime database lock is held: one Cockpit per data directory writes its grants.
   const grantStore = settings.grantsDatabasePath ? new GrantStore(settings.grantsDatabasePath) : null;
   const grants = grantStore ? ProjectGrants.managed({ config: settings.allowedProjects, reserved: settings.reservedProjects, store: grantStore })
-    : ProjectGrants.fixed(settings.allowedProjects);
+    : ProjectGrants.fixed(settings.allowedProjects, settings.reservedProjects);
+  for (const project of grants.shadowedAtStart) console.log(JSON.stringify({ event: "project_grant", action: "revoke", project, actor: "system", request_id: "startup-reconcile" }));
   const security = new LocalSecurity(settings.localCredential, grants);
   // E4: every real msb child is recorded; children a previous (crashed) Cockpit left running are reported and block their session/VM.
   const processes = new ProcessLedger(runtime);

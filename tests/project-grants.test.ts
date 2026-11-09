@@ -95,15 +95,36 @@ test("grants: configuration ∪ UI, reserved never grantable, configuration neve
   store.close();
 });
 
-test("grants: a stored UI grant of a project that is now reserved (or now in the configuration) is not effective as a UI grant", () => {
+test("grants: a stored UI grant of a project now reserved or now in the configuration is removed at start, audited, and never revived", () => {
+  // Independent security review, finding 1 (reproduced before the fix): such rows stayed dormant, unrevocable from the UI, and
+  // came back silently once the configuration changed again.
   const path = fresh();
   const store = new GrantStore(path);
-  store.grant("alpha", audit(1)); store.grant("gamma", audit(2));
+  store.grant("alpha", audit(1)); store.grant("gamma", audit(2)); store.grant("delta", audit(3));
   const grants = ProjectGrants.managed({ config: ["gamma"], reserved: reservedProjects("alpha"), store });
-  expect([...grants.view]).toEqual(["gamma"]);
+  expect(grants.shadowedAtStart).toEqual(["alpha", "gamma"]);
+  expect([...grants.view]).toEqual(["delta", "gamma"]);
   expect(grants.source("gamma")).toBe("config");
   expect(grants.source("alpha")).toBeNull();
+  expect(store.list().map(row => row.project)).toEqual(["delta"]);
+  expect(store.audit().slice(0, 2).map(row => [row.action, row.project, row.actor, row.requestId])).toEqual([
+    ["revoke", "gamma", "system:0000000000000000", "startup-reconcile"], ["revoke", "alpha", "system:0000000000000000", "startup-reconcile"]]);
+  // The configuration goes back to empty and nothing is reserved any more: neither project returns.
+  const later = ProjectGrants.managed({ config: [], reserved: reservedProjects(undefined), store });
+  expect([...later.view]).toEqual(["delta"]);
+  expect(later.shadowedAtStart).toEqual([]);
   store.close();
+});
+
+test("store: an empty private file (first start died before the schema was written) is initialised, not a permanent refusal", async () => {
+  // Independent security review, finding 3 (reproduced before the fix).
+  const path = fresh();
+  await writeFile(path, "", { mode: 0o600 });
+  const store = new GrantStore(path);
+  expect(store.list()).toEqual([]);
+  expect(store.grant("alpha", audit())).toBe(true);
+  store.close();
+  expect(new GrantStore(path).list().map(row => row.project)).toEqual(["alpha"]);
 });
 
 test("grants: legacy fixed list stays non-empty and read-only; startup inputs are validated", () => {

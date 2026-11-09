@@ -198,12 +198,18 @@ export class ExecutionService {
       sessionId: this.#store.findSession(target, item.ref.id)?.sessionId ?? null }));
   }
 
-  async openSession(target: ExecutionTarget, mode: "new" | "resume", threadId?: string): Promise<SessionRecord> {
+  /**
+   * `authorized` (optional) is re-checked synchronously right before each durable effect: a grant revoked while this call was
+   * waiting on the VM or provider stops it there, so nothing is created in a project the operator can no longer see.
+   */
+  async openSession(target: ExecutionTarget, mode: "new" | "resume", threadId?: string, authorized: () => boolean = () => true): Promise<SessionRecord> {
+    if (!authorized()) throw new SafeError("resource_not_found");
     const live = await this.#ensure(target);
     const known = mode === "resume" && threadId ? this.#store.findSession(target, threadId) : null;
     const ref = mode === "new" ? await live.connection.startSession({ mode: "new" })
       : await live.connection.resumeSession({ id: threadId ?? "" }, known ? this.#resumeHints(known) : undefined);
     live.loaded.add(ref.id);
+    if (!authorized()) throw new SafeError("resource_not_found");
     const existing = this.#store.findSession(target, ref.id);
     if (existing) { this.#store.touchSession(existing.sessionId, this.#iso()); return existing; }
     const at = this.#iso();
@@ -227,7 +233,7 @@ export class ExecutionService {
   }
 
   /** Idempotent: the same key and prompt return the same run; a new key while the project is busy is refused. */
-  async startRun(session: SessionRecord, prompt: string, idempotencyKey: string): Promise<{ run: RunRecord; created: boolean }> {
+  async startRun(session: SessionRecord, prompt: string, idempotencyKey: string, authorized: () => boolean = () => true): Promise<{ run: RunRecord; created: boolean }> {
     if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_PROMPT_CHARS || prompt.includes("\0")) {
       throw new SafeError("invalid_prompt");
     }
@@ -247,6 +253,8 @@ export class ExecutionService {
       throw new SafeError("orphan_process_alive");
     }
     const target = await this.revalidate(session.target.vmName, session.target.projectId);
+    // Same tick as beginRun: a revocation that landed while discovery was refreshed means no run is created (and none dispatched).
+    if (!authorized()) throw new SafeError("resource_not_found");
     const result = this.#store.beginRun({
       runId: `run-${randomUUID()}`, sessionId: session.sessionId, idempotencyKey,
       requestDigest, createdAt: this.#iso(), exclusiveProject: session.target.projectId,

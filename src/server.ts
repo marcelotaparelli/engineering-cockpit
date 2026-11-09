@@ -347,7 +347,8 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           if (!key) throw new SafeError("idempotency_key_required");
           if (!IDEMPOTENCY_KEY.test(key)) throw new SafeError("invalid_idempotency_key");
           exact(body, ["prompt"]);
-          const { run, created } = await requireExecution().startRun(session, body.prompt as string, key);
+          // The grant is re-read after every wait inside startRun: a concurrent revoke can never leave an invisible run behind.
+          const { run, created } = await requireExecution().startRun(session, body.prompt as string, key, () => principal.grants.has(session.target.projectId));
           return json({ ...runView(store, run), replayed: !created }, created ? 202 : 200);
         }
         if (route === "/api/approvals") {
@@ -441,7 +442,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           const vm = options.security.authorizeVm(snapshot, principal, body.vm_name);
           const execution = requireExecution();
           const target = await execution.revalidate(vm.vm_name, vm.project);
-          const session = await execution.openSession(target, body.mode, body.thread_id as string | undefined);
+          const session = await execution.openSession(target, body.mode, body.thread_id as string | undefined, () => principal.grants.has(vm.project));
           return json(sessionView(session, execution), 201);
         }
         const visible = options.security.visible(snapshot, principal);
