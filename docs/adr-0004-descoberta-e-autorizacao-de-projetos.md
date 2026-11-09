@@ -45,7 +45,10 @@ grants efetivos  = (COCKPIT_ALLOWED_PROJECTS ∪ concessões da interface) \ res
 | **Reserva vence qualquer concessão**, inclusive `COCKPIT_ALLOWED_PROJECTS` (requisito 2 do fechamento; ver §7, P-D3). A entrada da configuração é ignorada e registrada na partida (`project_grant_ignored`). A UI recusa com 403 `project_reserved` | `src/project-grants.ts`, `src/index.ts` |
 | Concessão da UI gravada para um projeto que passou a ser reservado (ou a estar na configuração) é **removida na partida**, com linha `revoke` na auditoria (ator `system:0000000000000000`, `request_id` `startup-reconcile`) e no log. Nunca volta sozinha quando a reserva é retirada | `ProjectGrants`, `GrantStore.dropShadowed` |
 | A UI não revoga concessões da configuração (409 `grant_from_config`) | `ProjectGrants.revoke` |
-| Revogação recusada (409 `project_busy`) com run ativo, com turno de provider ainda acompanhado por este processo ou com aprovação ainda aberta, **mesmo que o run conste como `unknown`** (`ExecutionService.projectBusy`). Também recusada com processo órfão do projeto (409 `orphan_process_alive`). O Cockpit nunca encerra processos sozinho | `src/server.ts`, `src/execution.ts` |
+| **Trabalho comprovadamente vivo bloqueia a revogação** (409 `project_busy`), mesmo que o run conste como `unknown`: run ativo; turno de provider acompanhado por este processo; aprovação aberta; **operação em andamento no projeto**. Toda rota que pode ter efeito no projeto retém o projeto da autorização até o fim da requisição (`ExecutionService.hold`): abrir sessão, enviar, interromper, reconciliar, decidir, histórico Codex, listar threads. Também bloqueia: processo órfão do projeto (409 `orphan_process_alive`). O Cockpit nunca encerra processos sozinho | `src/server.ts`, `src/execution.ts` |
+| **Trabalho incerto não bloqueia, mas nunca fica oculto.** Um run `unknown` que este processo não acompanha (ex.: resposta do `turn/start` perdida) não impede a revogação, senão o projeto ficaria preso até um reinício. Ele aparece em "Precisa de você" como *Execução sem acesso no Cockpit*: projeto, VM, quantidade, desde quando, sem IDs nem conteúdo. Conta só o run mais recente de cada sessão e ignora `vm_stopped`. Autorizar de novo devolve o controle. Processos órfãos de projetos sem acesso (revogados ou reservados) também ficam listados, só com PID e VM | `src/dashboard.ts`, `public/app.js` |
+| `interrupt` aceita um run que este processo ainda acompanha, qualquer que seja o status gravado. Uma decisão de aprovação perdida não deixa mais o projeto sem interromper, reconciliar nem revogar | `src/execution.ts` |
+| `reconcile` relê a autorização no mesmo tick dos seus efeitos: não revive run em projeto revogado ou reservado | `src/execution.ts` |
 | Revogar não apaga nada: sessões, runs e histórico voltam ao autorizar de novo | `RuntimeStore` inalterado |
 | A autorização é relida de forma síncrona antes de criar um run (depois da revalidação da VM) ou uma sessão (antes e depois do provider) | `src/execution.ts`, `src/server.ts` |
 | Processo órfão de projeto **reservado** continua visível em "Precisa de você" (PID, VM, `reserved: true`), sem sessão nem histórico | `src/dashboard.ts` |
@@ -73,6 +76,7 @@ Cada camada abaixo basta sozinha para fechar todas as rotas que estão acima del
 
 **Persistência** (`src/grant-store.ts`, `<data>/runtime-<modo>/grants.sqlite`):
 - arquivo próprio no diretório `runtime-<modo>/`, que precisa ser nosso e 0700 (o mesmo exigido pelo banco de runtime). Criado `O_EXCL` com 0600, nunca através de link;
+- o dispositivo/inode do arquivo e do diretório que passaram nas checagens são fixados. Depois de o SQLite abrir, precisam ser os mesmos, e o arquivo continua privado;
 - `-wal`, `-shm` e `-journal` precisam estar ausentes, ou ser arquivos regulares nossos, sem bits de grupo/outros e com um único link. São verificados **antes** de abrir, porque o SQLite reaplica um journal "quente" ao abrir;
 - um hard link, dono = UID do processo, sem bits de grupo/outros;
 - `application_id` próprio e schema exato, incluindo os triggers de auditoria; toda linha validada na abertura. Divergência recusa a partida (`grant_store_denied`, 78);
@@ -126,15 +130,18 @@ As novas chaves entram em `SERVICE_ENV_KEYS` e só são gravadas por `service in
 4. O arquivo `runtime-<modo>/grants.sqlite` pode ficar: é ignorado. Ao reintegrar, as concessões gravadas voltam a valer, exceto as de projetos reservados, removidas na partida com auditoria.
 5. Sessões, runs e histórico não são alterados por esta mudança em nenhum sentido.
 
+**Nota:** builds intermediários desta branch (`ec814fd`…`8ed353c`, nunca integrados) gravavam em `<data>/grants-<modo>.sqlite`. Esse arquivo é ignorado (falha segura: nenhuma concessão), não migrado.
+
 ## 6. Riscos residuais
 
-1. **Requisição em voo.** Criar run e criar sessão releem a autorização antes do efeito. Ações que só reduzem risco (interromper, reconciliar, decidir) já iniciadas podem terminar. A revogação não é um "kill switch" de processos despachados.
+1. **Revogação não é "kill switch".** Ela fecha o acesso pelo Cockpit e é recusada enquanto há trabalho vivo comprovado ou operação em andamento. Um turno incerto (`unknown`, não acompanhado) pode continuar na VM depois dela. Fica visível (§2) e não é encerrado.
 2. **Mesmo UID.** Pode editar o SQLite de forma consistente, como já pode ler a credencial. Fora do modelo de ameaça (ADR-0002).
 3. **Identidade é o nome.** Um diretório removido e recriado com o mesmo nome continua autorizado. Um diretório renomeado **não** leva a autorização junto.
 4. **Auditoria sem tela.** Só SQLite e journal.
 5. **Isolamento do `e0-recovery`.** A verificação lê só o ambiente do Cockpit alvo. A verificação pela API (`other_vms_runnable`) continua detectando VMs executáveis extras.
 6. **Um operador.** Múltiplos operadores continuam fora de escopo.
-7. **Run `unknown` não bloqueia a revogação.** A reconciliação fica inacessível até autorizar de novo (nada é apagado). Bloquear impediria revogar para sempre quando o provider não confirma.
+7. **Run `unknown` não acompanhado não bloqueia a revogação.** Fica listado, sem conteúdo. A reconciliação exige autorizar de novo, o que é impossível para um projeto reservado: nele o alerta permanece até o run deixar de ser o mais recente da sessão. Não há "dispensar" nesta MVP.
+12. **Envio concorrente em run `unknown`** (anterior a esta branch): `unknown` não entra na exclusividade por projeto, então outra sessão do mesmo projeto pode iniciar um turno. É uma regra das fases E4/F2, não alterada aqui.
 8. **Processos depois da revogação.** Um app-server do Codex ou um processo ocioso do Claude de um projeto revogado continua vivo até o tempo ocioso do adapter, sem ser listado. Nada é enviado a ele, porque toda rota está fechada.
 9. **`COCKPIT_UI_GRANTS` off → on.** Com `off` o store não é aberto. Ao voltar para `on`, as concessões gravadas antes voltam a valer, exceto as de projetos reservados, removidas na partida com auditoria.
 10. **Reserva observável.** Conceder um reservado responde 403 `project_reserved`; um nome desconhecido, 404. O catálogo lista projetos reservados descobertos com o estado das VMs. Aceito para um operador único (P-D1).

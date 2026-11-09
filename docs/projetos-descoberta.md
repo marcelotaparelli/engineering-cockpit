@@ -70,6 +70,8 @@ sqlite3 -readonly "<data>/runtime-host/grants.sqlite" 'SELECT * FROM grant_audit
 | `tests/project-grants.test.ts` | Store 0600, schema exato, persistência, auditoria append-only (UPDATE/DELETE recusados), recusa de symlink (arquivo e diretório), arquivo compartilhado, banco estranho e linha adulterada, limite de 256. Regras: reservado nunca concedível, configuração nunca revogável, conjunto vivo (principal antigo vê concessão e revogação), concessão gravada que virou reservada não vale. Config/serviço: vazio aceito só com UI ligada. Catálogo: só diretórios + autorizados, status por provider, sem VM-fantasma |
 | `tests/project-grants-http.test.ts` | Descoberta **real** sobre diretório temporário (com symlink para fora e nome inválido): 401 sem sessão; Origin, CSRF, prova, nonce repetido, corpo errado e GET recusados sem efeito; reservado 403; symlink, VM sem diretório e nome inventado 404; descoberta caindo 503 sem conceder; concessão vale na hora para a sessão aberta, é auditada sem segredo e persiste; revogação recusada com run ativo, efetiva depois (sessão e run voltam a 404), reconcedida traz a sessão de volta; stream SSE já aberto para de entregar eventos do projeto revogado (com controle positivo e teste de mutação: falha se o stream congelar os grants) |
 | `tests/project-grants-startup.test.ts` | `src/index.ts` real (mock) **sem** `COCKPIT_ALLOWED_PROJECTS`: catálogo, autorizar, abrir sessão Codex **e** Claude Code, auditoria no log sem a credencial, arquivo 0600, persistência após SIGTERM + restart; `COCKPIT_UI_GRANTS=off` com lista vazia recusa a partida e com lista não permite autorizar. **Reinícios com reserva nova:** concessão gravada de `demo` + restart com `COCKPIT_RESERVED_VMS=codex-demo` → removida com auditoria, sessão e histórico 404, `claude-demo` recusada, nova concessão 403; restart sem a reserva → não volta sozinha; `COCKPIT_ALLOWED_PROJECTS=demo` + `COCKPIT_RESERVED_PROJECTS=demo` → ignorado e registrado; `codex-vault` (VM inexistente) reserva `vault` |
+| `tests/project-grants-live.test.ts` | 3ª/4ª verificação, provider simulado: (1) `turn/start` com resposta perdida, run `unknown` e turno vivo → revogação efetiva, mas *Execução sem acesso* listada sem IDs nem prompt; autorizar de novo devolve o run. (2) Revogação durante reconcile → 409; reconcile com autorização perdida no serviço → nada muda, nada é revivido. (3) Decisão de aprovação perdida → `interrupt` aceito (antes 409, projeto preso) → revogação. (4) Alerta só para o run mais recente de cada sessão, sem `vm_stopped`; órfão de projeto revogado listado com PID e sem sessão |
+| `tests/project-grants.test.ts` (troca do arquivo) | Troca do store por um arquivo com hard link, 0644 e concessão plantada em **cada** `lstat` da sequência de abertura (subprocesso `tests/support/grant-store-swap.ts`): sempre recusada ou inócua |
 | Ajustados à P-D4 | `f1-config` (lista efetiva cobre os 3 providers; reservar `codex-alpha` reserva `claude-alpha` no `ExecutionService` e no guarda do argv do Claude, sem casar prefixo), `e3-claude-execution` (projeto de desenvolvimento oculto e 404, não mais listado), `f1-systemd-smoke` (+3 casos: VM irmã reservada, projeto reservado, `codex-engineering-cockpit`), `e4-process-ledger` (stub de segurança trocado por `LocalSecurity` real), `discovery`/`host-check`/startup (fixture `vault`) |
 | `tests/project-grants-race.test.ts` | Revogação durante a espera de `startRun` (revalidação da VM) → 404, **nenhum** run criado; durante `openSession` → 404, nenhuma sessão criada (achado 2 da 1ª revisão). Revogação com turno ainda vivo e run `unknown` (decisão de aprovação com entrega ambígua) → 409 `project_busy`; aceita quando o turno termina (F1 da 2ª revisão). Ambos falham sem a correção |
 | `tests/project-reservations.test.ts` | P-D4 com descoberta real e pilha HTTP + execução real (providers simulados). **Derivação:** `codex-beta` reserva `beta` para os 3 providers, sufixo inteiro, nunca prefixo; valores vazios não liberam `engineering-cockpit`. **Matriz de rotas** com sessão, run `unknown` e aprovação pendente criados antes da reserva: sessão, histórico, envio, run, interromper, reconciliar e decidir → 404; inventário, VM, threads, `POST /api/sessions` (Claude e Codex), aprovações, painel, catálogo e SSE (com controle positivo) fechados; `revalidate` recusa antes de qualquer spawn; a concessão por configuração do projeto reservado é ignorada; o processo órfão do projeto reservado continua visível e não é encerrado. **Revogação** de sessões, runs e aprovações existentes, também para outra sessão do operador, sem apagar ou sinalizar nada. **Concorrência:** 16 concessões simultâneas = 1 mudança + 1 linha de auditoria; 20 concessões/revogações intercaladas terminam com memória = disco = última linha da auditoria, sem duas ações iguais seguidas. **CSRF na revogação:** ausente, de outra sessão, nonce repetido, content-type e Origin. **Sistema de arquivos:** diretório trocado por symlink, apagado, recriado, renomeado (a concessão não acompanha), symlink com nome válido não concedível, base trocada por symlink → 503 |
@@ -79,14 +81,17 @@ Resultados: §5.
 
 ## 5. Resultados (executados nesta VM de desenvolvimento, 2026-11-09)
 
+**Fechamento: SHA final na entrega (ver §7).** O aceite hermético foi rodado no SHA final, com árvore limpa:
+
 | Verificação | Resultado |
 |---|---|
-| Base `develop` `1ea3806`: `bun run typecheck` + `bun test` | 455 pass, 0 fail |
-| Branch final: `bun run typecheck` + `bun test` | typecheck limpo; **478 pass, 0 fail** (47 arquivos, ~143 s) |
-| Testes de regressão dos 3 achados da revisão | falham sem a correção (mutação: `git stash` de `src/`), passam com ela |
-| Teste do stream SSE | falha se o stream congelar os grants na abertura (mutação), passa com o conjunto vivo |
-| `scripts/projects-visual-check.ts` (Chromium headless, Cockpit **mock**) | 19/19 PASS: seletor como tela inicial, confirmação, autorizar, abrir Claude Code, voltar, 1440/1024/390 px sem overflow, revogar, console sem erro de JS/CSP, log sem credencial e com auditoria. Capturas em `docs/evidence/projetos-descoberta-mock/` |
-| `scripts/visual-check.ts` (fluxo de sessão existente) | 23/23 PASS, sem regressão |
+| `./scripts/cockpit f1-accept hermetic` | ver §7 (rodada final) |
+| `scripts/projects-visual-check.ts` (Chromium, mock, com `COCKPIT_RESERVED_VMS=codex-vault`) | 21/21. Capturas em `docs/evidence/projetos-descoberta-mock/` |
+| Mutação das camadas de reserva | removendo **só** os grants efetivos **ou só** `LocalSecurity.allows`, a matriz de rotas continua fechada; removendo as duas, falha. Isso revelou que a lista de sessões do painel, o replay e os eventos ao vivo do SSE dependiam só da 1ª camada; corrigido |
+| Mutação dos achados das revisões | todos os testes de regressão dos achados das rodadas 1–4 falham com o código anterior à correção e passam com ela |
+| `brand-visual-check` | pegou uma regressão do MVP (cabeçalho de 3 linhas em 390 px), corrigida |
+
+**MVP (rodada anterior, `bc0cfd4`):** 478 pass. `projects-visual-check` 19/19 e `visual-check` 23/23.
 
 **Não executado (de propósito):**
 - nada no Arch;
@@ -95,9 +100,66 @@ Resultados: §5.
 
 O modo host foi exercitado só com descoberta real sobre diretório temporário e uma saída do `msb list` sintética (`tests/project-grants-http.test.ts`).
 
-## 6. Revisão de segurança independente
+## 6. Revisões de segurança independentes
 
-**Quem e como:** um agente revisor novo (Claude), sem acesso às conclusões do implementador. Recebeu o diff `1ea3806..8fa2df0`, as alegações a verificar e o modelo de ameaça (ADR-0002/0003, `m0b1b-threat-model.md`). Rodou somente leitura no repositório, com PoCs em diretório temporário, sem tocar em VM, `msb`, serviço ou credencial. Não houve revisão pelo Codex nesta tarefa. É uma revisão Claude independente, a mesma forma aceita pelo Tech Lead como exceção na F1.
+Todas por agentes revisores novos (Claude), sem acesso às conclusões do implementador:
+- somente leitura no repositório;
+- PoCs em diretório temporário;
+- sem VM, `msb`, serviço ou credencial.
+
+Não houve revisão pelo Codex nesta tarefa: é a mesma forma aceita pelo Tech Lead como exceção na F1.
+
+### 6.0 Terceira e quarta rodadas (verificação das correções)
+
+**3ª rodada** (`9e5a6e8..8ed353c`): F2 e F3 confirmados. Reproduziu:
+- **alto:** turno com resposta de `turn/start` perdida, run `unknown`, revogação ocultando trabalho vivo;
+- **alto:** revogação durante reconcile, que revivia o run num projeto revogado;
+- **médio:** decisão perdida deixando o projeto sem interromper, reconciliar nem revogar até reiniciar;
+- **baixos:** inode, caminho antigo.
+
+Corrigidos em `a558dac`:
+- retenção de projeto em toda operação com efeito;
+- rechecagem no `reconcile`;
+- trabalho incerto visível em vez de bloqueante;
+- `interrupt` de run acompanhado;
+- fixação de inode.
+
+**4ª rodada** (`754e723..a558dac`): **nenhum bloqueador**. Confirmou:
+- retenção no mesmo tick da autorização em todos os POSTs;
+- retenções sem vazamento (liberadas no `finally`, esperas limitadas);
+- `interrupt` de `unknown` sem violar E4/F2 (nunca alcança turno de órfão);
+- rechecagem do `reconcile`.
+
+Achados baixos corrigidos em `a1b03b7`:
+- inode fixado na leitura errada;
+- alerta contando runs que não podem mais rodar;
+- histórico e threads sem retenção;
+- órfãos de projeto revogado ocultos.
+
+### 6.1 Segunda revisão (fechamento, diff `1ea3806..9e5a6e8`, foco em persistência e rotas de autorização)
+
+**Resultado:** nenhum achado crítico ou alto. Achados corrigidos em `8ed353c`, cada um com teste que falha sem a correção:
+
+| # | Severidade | Achado | Correção |
+|---|---|---|---|
+| F1 | média | Revogação aceita com turno de provider ainda vivo e run `unknown` (decisão de aprovação com entrega ambígua): trabalho em voo sumia da interface | `ExecutionService.projectBusy`: recusa com turno acompanhado ou aprovação aberta no projeto |
+| F2 | média/baixa | Um `-journal` plantado ao lado do store (o diretório de dados não era verificado) era reaplicado pelo SQLite ao abrir, injetando concessão sem auditoria | Store movido para `runtime-<modo>/` (0700, nosso); diretório e `-wal/-shm/-journal` verificados antes de abrir |
+| F3 | baixa | `e3-homologation` ignorava as reservas da P-D4 | Lê as reservas do shell e do `cockpit.env` instalado, recusa (`e3_target_reserved`) e as repassa ao Cockpit lançado |
+| F4 | info | Histórico do Codex e lista de threads não rechecavam o grant depois da espera do provider | Rechecagem depois da espera |
+
+Os demais informativos viraram riscos residuais (ADR-0004 §6, itens 8–10).
+
+**Propriedades confirmadas pelo revisor:**
+- todas as proteções do POST;
+- concessão só de diretório real descoberto agora;
+- reserva derivada só do ambiente e de `vmIdentity`, aditiva, aplicada em todas as rotas, no `ExecutionService` e no guarda de argv do Claude;
+- concessões gravadas não contornam reserva nova nem voltam sozinhas;
+- correções da 1ª revisão intactas;
+- revogação compartilhada por todas as sessões e streams;
+- órfãos de projeto reservado só com PID e VM.
+
+### 6.2 Primeira revisão (MVP, diff `1ea3806..8fa2df0`)
+
 
 **Resultado:** nenhum achado crítico ou alto. Três defeitos reproduzidos, todos corrigidos neste branch, cada um com teste que falha sem a correção:
 
