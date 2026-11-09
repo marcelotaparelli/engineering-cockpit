@@ -19,17 +19,28 @@ import { ProcessLedger } from "./process-ledger.ts";
 import { FakeCodexTransport, fakeWorld } from "./fake-codex.ts";
 import { ClaudeCodeAdapter } from "./claude-adapter.ts";
 import { fakeClaudeSpawn, newFakeWorld, type FakeClaudeWorld } from "./fake-claude.ts";
+import { GrantStore } from "./grant-store.ts";
+import { ProjectGrants } from "./project-grants.ts";
 
 try {
   assertRuntime();
   const settings = config();
   if (settings.source === "host") assertArchHost();
-  const security = new LocalSecurity(settings.localCredential, settings.allowedProjects);
+  // Refused before any file is touched, as before: a bad credential; invalid configuration grants; and, without UI grants,
+  // an empty configuration (legacy rule). With UI grants the configuration may be empty: projects are authorized in the page.
+  LocalSecurity.assertCredential(settings.localCredential);
+  if (settings.grantsDatabasePath === null) ProjectGrants.fixed(settings.allowedProjects);
+  else ProjectGrants.validateConfig(settings.allowedProjects, settings.reservedProjects);
   assertNoSymlinks(settings.databasePath);
   await mkdir(dirname(settings.databasePath), { recursive: true });
   const store = new SnapshotStore(settings.databasePath);
   // Refuses to start (`runtime_database_in_use`) while another process holds this data directory's runtime database.
   const runtime = new RuntimeStore(settings.runtimeDatabasePath);
+  // Opened only after the runtime database lock is held: one Cockpit per data directory writes its grants.
+  const grantStore = settings.grantsDatabasePath ? new GrantStore(settings.grantsDatabasePath) : null;
+  const grants = grantStore ? ProjectGrants.managed({ config: settings.allowedProjects, reserved: settings.reservedProjects, store: grantStore })
+    : ProjectGrants.fixed(settings.allowedProjects);
+  const security = new LocalSecurity(settings.localCredential, grants);
   // E4: every real msb child is recorded; children a previous (crashed) Cockpit left running are reported and block their session/VM.
   const processes = new ProcessLedger(runtime);
   const spawn = processes.track(hostSpawn);
@@ -60,7 +71,7 @@ try {
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
     if (stopping) { console.log(JSON.stringify({ event: "shutdown.repeated_signal", outcome: signal })); return; }
     stopping = true;
-    void (async () => { server.stop(true); await execution.close().catch(() => {}); runtime.close(); store.close(); process.exit(0); })();
+    void (async () => { server.stop(true); await execution.close().catch(() => {}); runtime.close(); store.close(); grantStore?.close(); process.exit(0); })();
   });
 } catch (error) {
   // F1: a refused startup (configuration, credential file, host, database owned by another instance, port) is not transient.

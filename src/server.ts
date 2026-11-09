@@ -1,10 +1,14 @@
-import { SafeError, safeCode, type Snapshot } from "./model.ts";
+import { SafeError, safeCode, vmIdentity, type Snapshot } from "./model.ts";
 import type { Discovery } from "./discovery.ts";
 import { LocalSecurity, type LocalPrincipal } from "./local-security.ts";
 import type { RuntimeStore, RunRecord, SessionRecord } from "./runtime-store.ts";
 import type { ExecutionService } from "./execution.ts";
 import type { EventHub } from "./event-hub.ts";
 import { buildDashboard } from "./dashboard.ts";
+import { buildCatalog } from "./catalog.ts";
+
+/** One line per effective grant change (journald on the service). The durable record is the GrantStore audit table. */
+export interface GrantAuditLog { event: "project_grant"; action: "grant" | "revoke"; project: string; actor: string; request_id: string; at: string }
 
 export interface RequestLog {
   event: "request" | "security_denied" | "auth_succeeded" | "auth_failed" | "csrf_denied" | "replay_denied" | "authz_denied";
@@ -24,6 +28,7 @@ export interface ServerOptions {
   execution?: ExecutionService;
   hub?: EventHub;
   log?: (entry: RequestLog) => void;
+  audit?: (entry: GrantAuditLog) => void;
   heartbeatMs?: number;
 }
 const assets: Record<string, { body: string | ArrayBuffer; type: string }> = {};
@@ -44,7 +49,7 @@ for (const name of BRAND_IMAGES) {
 const ID = "([A-Za-z0-9][A-Za-z0-9._:-]{0,127})";
 type RouteName =
   | "/" | "/app.js" | "/style.css" | "/brand/:image" | "/api/health" | "/api/auth/login" | "/api/auth/logout" | "/api/auth/session"
-  | "/api/vms" | "/api/projects" | "/api/vms/:id" | "/api/projects/:id" | "/api/vms/:id/threads" | "/api/dashboard" | "/api/events"
+  | "/api/vms" | "/api/projects" | "/api/vms/:id" | "/api/projects/:id" | "/api/catalog" | "/api/projects/:id/grant" | "/api/projects/:id/revoke" | "/api/vms/:id/threads" | "/api/dashboard" | "/api/events"
   | "/api/sessions" | "/api/sessions/:id" | "/api/sessions/:id/history" | "/api/sessions/:id/runs"
   | "/api/runs/:id" | "/api/runs/:id/interrupt" | "/api/runs/:id/reconcile" | "/api/approvals" | "/api/approvals/:id/decision";
 const ROUTES: ReadonlyArray<{ name: RouteName; method: "GET" | "POST"; pattern: RegExp }> = [
@@ -61,6 +66,9 @@ const ROUTES: ReadonlyArray<{ name: RouteName; method: "GET" | "POST"; pattern: 
   { name: "/api/vms/:id/threads", method: "GET", pattern: new RegExp(`^/api/vms/${ID}/threads$`) },
   { name: "/api/vms/:id", method: "GET", pattern: new RegExp(`^/api/vms/${ID}$`) },
   { name: "/api/projects/:id", method: "GET", pattern: /^\/api\/projects\/([a-z0-9][a-z0-9_-]{0,62})$/ },
+  { name: "/api/catalog", method: "GET", pattern: /^\/api\/catalog$/ },
+  { name: "/api/projects/:id/grant", method: "POST", pattern: /^\/api\/projects\/([a-z0-9][a-z0-9_-]{0,62})\/grant$/ },
+  { name: "/api/projects/:id/revoke", method: "POST", pattern: /^\/api\/projects\/([a-z0-9][a-z0-9_-]{0,62})\/revoke$/ },
   { name: "/api/dashboard", method: "GET", pattern: /^\/api\/dashboard$/ },
   { name: "/api/events", method: "GET", pattern: /^\/api\/events$/ },
   { name: "/api/sessions", method: "POST", pattern: /^\/api\/sessions$/ },
@@ -114,7 +122,7 @@ async function readLogin(request: Request): Promise<unknown> {
   return body.credential;
 }
 const CONFLICTS = new Set(["idempotency_key_conflict", "project_busy", "session_busy", "run_version_conflict", "approval_conflict", "approval_expired",
-  "run_not_interruptible", "target_unavailable", "invalid_run_transition", "orphan_process_alive"]);
+  "run_not_interruptible", "target_unavailable", "invalid_run_transition", "orphan_process_alive", "grant_from_config", "grant_limit_reached", "grants_read_only"]);
 function errorStatus(code: string): number {
   if (code === "authentication_required" || code === "authentication_failed") return 401;
   if (code === "auth_rate_limited") return 429;
@@ -122,7 +130,7 @@ function errorStatus(code: string): number {
   if (code === "method_not_allowed") return 405;
   if (code === "query_not_allowed" || code === "content_type_denied" || code === "invalid_body" || code === "invalid_prompt" ||
     code === "invalid_idempotency_key" || code === "idempotency_key_required" || code === "invalid_history_cursor" || code === "invalid_limit") return 400;
-  if (code === "request_origin_denied" || code === "csrf_denied" || code === "replay_denied") return 403;
+  if (code === "request_origin_denied" || code === "csrf_denied" || code === "replay_denied" || code === "project_reserved") return 403;
   if (CONFLICTS.has(code)) return 409;
   if (/^(provider|rpc|transport|msb)_/.test(code)) return 502;
   return 500;
@@ -163,6 +171,7 @@ function historyQuery(params: URLSearchParams): { before: string | undefined; li
 
 export function startServer(options: ServerOptions): Bun.Server<undefined> {
   const log = options.log ?? (entry => console.log(JSON.stringify(entry)));
+  const audit = options.audit ?? (entry => console.log(JSON.stringify(entry)));
   const heartbeatMs = options.heartbeatMs ?? 15_000;
   const requireRuntime = (): RuntimeStore => { if (!options.runtime) throw new SafeError("resource_not_found"); return options.runtime; };
   const requireExecution = (): ExecutionService => { if (!options.execution) throw new SafeError("resource_not_found"); return options.execution; };
@@ -171,7 +180,6 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
     const store = requireRuntime();
     if (!options.hub) throw new SafeError("resource_not_found");
     const hub = options.hub;
-    const projects = [...principal.grants];
     let cursor = lastEventId !== null && /^(0|[1-9][0-9]{0,15})$/.test(lastEventId) ? Number(lastEventId) : store.lastSequence();
     let cleanup = () => {};
     const encoder = new TextEncoder();
@@ -191,7 +199,8 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           if (closed) return;
           try {
             for (;;) {
-              const rows = store.replayForProjects(projects, cursor, 200);
+              // The live grant set, read on every flush: a project revoked meanwhile stops streaming at once.
+              const rows = store.replayForProjects([...principal.grants], cursor, 200);
               for (const row of rows) {
                 cursor = row.sequence;
                 send(`id: ${row.sequence}\nevent: journal\ndata: ${JSON.stringify({ sequence: row.sequence, type: row.type, run_id: row.runId,
@@ -358,6 +367,44 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           options.security.authorizeRun(store, principal, approval.runId);
           const decided = await requireExecution().decide(approval, body.decision, body.expected_version as number, answers);
           return json({ approval_id: decided.approvalId, status: decided.status, version: decided.version });
+        }
+        if (route === "/api/catalog") {
+          let snapshot: Snapshot | null = null;
+          let discoveryError: string | null = null;
+          try { snapshot = await (options.discovery.cached?.() ?? options.discovery.refresh()); } catch (error) { discoveryError = safeCode(error); }
+          return json(buildCatalog({ snapshot, discoveryError, grants: options.security.grants, execution: options.execution, source: options.source }));
+        }
+        if (route === "/api/projects/:id/grant" || route === "/api/projects/:id/revoke") {
+          // Authorizing is a deliberate act on ONE project: the body repeats its name (no blind or mistargeted request).
+          exact(body, ["confirm"]);
+          if (body.confirm !== param) throw new SafeError("invalid_body");
+          const grants = options.security.grants;
+          if (!grants.mutable) throw new SafeError("grants_read_only");
+          const action = route === "/api/projects/:id/grant" ? "grant" as const : "revoke" as const;
+          const record = { actor: options.security.auditActor(principal), requestId, at: new Date().toISOString() };
+          let changed: boolean;
+          if (action === "grant") {
+            if (grants.reserved(param)) throw new SafeError("project_reserved");
+            // Authoritative observation (never the display cache): only a directory that exists now, under the projects base,
+            // without links in its path, can be authorized. Discovery failing grants nothing.
+            let snapshot: Snapshot;
+            try { snapshot = await options.discovery.refresh(); } catch (error) { status = 503; throw error; }
+            if (!snapshot.projects.includes(param)) throw new SafeError("resource_not_found");
+            changed = grants.grant(param, record);
+          } else {
+            const source = grants.source(param);
+            if (source === "config") throw new SafeError("grant_from_config");
+            if (source !== "ui") throw new SafeError("resource_not_found");
+            // Never hide work in flight: a run (or approval) still active, or a process left by a crash, keeps the grant.
+            if (options.runtime?.activeRunForProject(param)) throw new SafeError("project_busy");
+            if ((options.execution?.orphanProcesses() ?? []).some(orphan => { try { return vmIdentity(orphan.vmName).project === param; } catch { return false; } })) {
+              throw new SafeError("orphan_process_alive");
+            }
+            changed = grants.revoke(param, record);
+          }
+          if (changed) audit({ event: "project_grant", action, project: param, actor: record.actor, request_id: requestId, at: record.at });
+          const source = grants.source(param);
+          return json({ project: param, action, changed, authorized: source !== null, grant: source });
         }
         if (route === "/api/dashboard") {
           const store = requireRuntime();

@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { SafeError, validProject, type Snapshot, type Vm } from "./model.ts";
+import { SafeError, type Snapshot, type Vm } from "./model.ts";
 import type { RuntimeStore, RunRecord, SessionRecord } from "./runtime-store.ts";
+import { ProjectGrants } from "./project-grants.ts";
 
 /**
  * F1 sliding session: a session ends after IDLE_MS without OPERATOR activity, and at most SESSION_MAX_MS after login,
@@ -41,7 +42,7 @@ export interface LocalPrincipal { readonly grants: ReadonlySet<string>; readonly
 
 export class LocalSecurity {
   readonly #credentialDigest: Buffer;
-  readonly #grants: ReadonlySet<string>;
+  readonly #grants: ProjectGrants;
   readonly #sessions = new Map<string, LocalSession>();
   readonly #failures: number[] = [];
   readonly #now: () => number;
@@ -49,14 +50,15 @@ export class LocalSecurity {
   readonly #maxMs: number;
   readonly #maxNonces: number;
 
-  constructor(credential: string, projects: readonly string[], now: () => number = Date.now,
+  /**
+   * `projects`: a fixed, non-empty list (configuration only, legacy) or a ProjectGrants (configuration ∪ UI grants, may start
+   * empty). Either way every principal reads the same live grant set: a revocation applies to the next check of every session.
+   */
+  constructor(credential: string, projects: readonly string[] | ProjectGrants, now: () => number = Date.now,
     limits: { idleMs?: number; maxMs?: number; maxNoncesPerEpoch?: number } = {}) {
     if (!tokenPattern.test(credential)) throw new SafeError("local_credential_required");
-    if (projects.length === 0 || projects.some(project => !validProject(project)) || new Set(projects).size !== projects.length) {
-      throw new SafeError("local_grants_required");
-    }
+    this.#grants = projects instanceof ProjectGrants ? projects : ProjectGrants.fixed(projects);
     this.#credentialDigest = digest(credential);
-    this.#grants = new Set(projects);
     this.#now = now;
     this.#idleMs = limits.idleMs ?? SESSION_IDLE_MS;
     this.#maxMs = limits.maxMs ?? SESSION_MAX_MS;
@@ -65,6 +67,9 @@ export class LocalSecurity {
       throw new SafeError("invalid_session_limits");
     }
   }
+
+  /** The startup check of the local credential (64 lowercase hex), without building anything. */
+  static assertCredential(credential: string): void { if (!tokenPattern.test(credential)) throw new SafeError("local_credential_required"); }
 
   /** Cookie lifetime: the absolute ceiling (the server enforces the idle deadline itself). */
   get cookieMaxAgeSeconds(): number { return Math.floor(this.#maxMs / 1000); }
@@ -104,7 +109,7 @@ export class LocalSecurity {
     if (!proofHeader || !noncePattern.test(proofHeader) || !equal(digest(proofHeader), digest(session.proof))) {
       throw new SafeError("authentication_required");
     }
-    return { grants: this.#grants, session };
+    return { grants: this.#grants.view, session };
   }
 
   csrf(principal: LocalPrincipal, token: string | null, nonce: string | null): void {
@@ -127,6 +132,14 @@ export class LocalSecurity {
   touch(principal: LocalPrincipal): void {
     if (!this.isActive(principal)) return;
     principal.session.lastActivityAt = this.#now();
+  }
+
+  /** The grant authority shared by every principal (configuration ∪ UI grants). */
+  get grants(): ProjectGrants { return this.#grants; }
+
+  /** Opaque, stable reference to a session for audit records: never the cookie, proof or CSRF value itself. */
+  auditActor(principal: LocalPrincipal): string {
+    return `local_operator:${createHash("sha256").update(`cockpit-audit:${principal.session.id}`, "utf8").digest("hex").slice(0, 16)}`;
   }
 
   logout(principal: LocalPrincipal): void { this.#sessions.delete(principal.session.id); }

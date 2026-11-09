@@ -134,7 +134,10 @@ test("install: the operator's current credential can be imported from the enviro
 
 test("install: invalid or unsafe settings are refused before anything is written", async () => {
   const cases: Array<[Record<string, string>, string]> = [
-    [{ COCKPIT_ALLOWED_PROJECTS: "" }, "local_grants_required"],
+    [{ COCKPIT_ALLOWED_PROJECTS: "", COCKPIT_UI_GRANTS: "off" }, "local_grants_required"],
+    [{ COCKPIT_ALLOWED_PROJECTS: "demo,demo" }, "local_grants_required"],
+    [{ COCKPIT_UI_GRANTS: "maybe" }, "invalid_ui_grants"],
+    [{ COCKPIT_RESERVED_PROJECTS: "Bad" }, "invalid_reserved_projects"],
     [{ COCKPIT_ALLOWED_PROJECTS: "Demo" }, "local_grants_required"],
     [{ PORT: "0" }, "service_port_required"],
     [{ PORT: "99999" }, "invalid_port"],

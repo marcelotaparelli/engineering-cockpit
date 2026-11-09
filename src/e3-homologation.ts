@@ -147,7 +147,8 @@ export async function prepareE3Homologation(overrides?: E3PrepareOverrides): Pro
     launch: {
       url: `http://127.0.0.1:${port}`, token, tokenGenerated: provided === undefined,
       env: { ...inherited, COCKPIT_MODE: "host", COCKPIT_HOST_CONFIRMED: "yes", COCKPIT_PROJECTS_BASE: base, COCKPIT_ALLOWED_PROJECTS: project,
-        COCKPIT_DATA_DIR: dataDir, PORT: String(port), COCKPIT_LOCAL_TOKEN: token },
+        // The data directory is reused between runs: UI grants stay off so the ACL is exactly the test project, every time.
+        COCKPIT_UI_GRANTS: "off", COCKPIT_DATA_DIR: dataDir, PORT: String(port), COCKPIT_LOCAL_TOKEN: token },
     },
   };
 }

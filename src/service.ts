@@ -18,7 +18,7 @@ export const DEFAULT_SERVICE_PORT = "8787";
 const TEMPLATE = new URL("../tools/systemd/cockpit.service", import.meta.url);
 /** Keys the service environment file may hold. Never COCKPIT_LOCAL_TOKEN. */
 export const SERVICE_ENV_KEYS = ["COCKPIT_MODE", "COCKPIT_HOST_CONFIRMED", "COCKPIT_PROJECTS_BASE", "COCKPIT_ALLOWED_PROJECTS", "PORT", "COCKPIT_DATA_DIR",
-  "COCKPIT_RESERVED_VMS", "COCKPIT_LOCAL_TOKEN_FILE", "PATH", "LANG"] as const;
+  "COCKPIT_RESERVED_VMS", "COCKPIT_RESERVED_PROJECTS", "COCKPIT_UI_GRANTS", "COCKPIT_LOCAL_TOKEN_FILE", "PATH", "LANG"] as const;
 type ServiceKey = typeof SERVICE_ENV_KEYS[number];
 /** Paths written into the unit or the environment file: absolute, no whitespace, quotes, `%` (unit specifiers), `$` or `\`. */
 export const SAFE_PATH = /^\/[A-Za-z0-9._+@\/-]*$/;
@@ -126,6 +126,8 @@ export function serviceSettings(env: Record<string, string | undefined>, paths: 
     PORT: env.PORT ?? DEFAULT_SERVICE_PORT,
     ...(env.COCKPIT_DATA_DIR !== undefined ? { COCKPIT_DATA_DIR: env.COCKPIT_DATA_DIR } : {}),
     ...(env.COCKPIT_RESERVED_VMS !== undefined ? { COCKPIT_RESERVED_VMS: env.COCKPIT_RESERVED_VMS } : {}),
+    ...(env.COCKPIT_RESERVED_PROJECTS !== undefined ? { COCKPIT_RESERVED_PROJECTS: env.COCKPIT_RESERVED_PROJECTS } : {}),
+    ...(env.COCKPIT_UI_GRANTS !== undefined ? { COCKPIT_UI_GRANTS: env.COCKPIT_UI_GRANTS } : {}),
     COCKPIT_LOCAL_TOKEN_FILE: paths.tokenFile,
     PATH: servicePath(env, mode, root),
     ...(env.LANG && SAFE_VALUE.test(env.LANG) ? { LANG: env.LANG } : {}),
@@ -139,8 +141,9 @@ export function serviceSettings(env: Record<string, string | undefined>, paths: 
 export function validateSettings(values: Record<string, string | undefined>): ReturnType<typeof config> {
   if (!values.COCKPIT_LOCAL_TOKEN_FILE) throw new SafeError("local_credential_file_required");
   const settings = config({ ...values }, () => "f".repeat(64));
-  // Same rule as the Cockpit start: the grants must be explicit and valid (LocalSecurity refuses anything else).
-  if (settings.allowedProjects.length === 0 || settings.allowedProjects.some(project => !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(project)) ||
+  // Same rule as the Cockpit start: configuration grants must be valid (ProjectGrants refuses anything else). They may be empty
+  // when UI grants are on (projects are then authorized from the authenticated page); with UI grants off they are required.
+  if ((settings.allowedProjects.length === 0 && settings.grantsDatabasePath === null) || settings.allowedProjects.some(project => !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(project)) ||
     new Set(settings.allowedProjects).size !== settings.allowedProjects.length) throw new SafeError("local_grants_required");
   if (settings.port === 0) throw new SafeError("service_port_required");
   return settings;
@@ -356,7 +359,7 @@ export async function doctor(options: { env: Record<string, string | undefined>;
 
   let settings: ReturnType<typeof config> | null = null;
   if (values) {
-    try { settings = validateSettings(values); add("config", "PASS", `modo ${settings.source}, porta ${settings.port}, ${settings.allowedProjects.length} projeto(s), reservadas: ${settings.reservedVms.join(",") || "nenhuma"}`); }
+    try { settings = validateSettings(values); add("config", "PASS", `modo ${settings.source}, porta ${settings.port}, ${settings.allowedProjects.length} projeto(s) na configuração, autorização pela interface ${settings.grantsDatabasePath ? "ligada" : "desligada"}, reservadas: ${settings.reservedVms.join(",") || "nenhuma"}`); }
     catch (error) { add("config", "FAIL", safeCode(error)); }
     const dirs = (values.PATH ?? "").split(":");
     const has = (name: string) => dirs.some(dir => { try { return statSync(join(dir, name)).isFile(); } catch { return false; } });

@@ -3,10 +3,16 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SafeError, vmIdentity } from "./model.ts";
 import { DEFAULT_RESERVED_VMS } from "./claude-protocol.ts";
+import { reservedProjects } from "./project-grants.ts";
 
 export interface Config {
   source: "mock" | "host"; projectsBase: string; databasePath: string; runtimeDatabasePath: string; port: number; localCredential: string;
+  /** Configuration grants (`COCKPIT_ALLOWED_PROJECTS`). May be empty: projects can then be authorized from the UI. */
   allowedProjects: string[];
+  /** Projects the UI never authorizes: the development project (D8) plus `COCKPIT_RESERVED_PROJECTS`. */
+  reservedProjects: string[];
+  /** UI grants persisted here; null when `COCKPIT_UI_GRANTS=off` (configuration grants only, as before). */
+  grantsDatabasePath: string | null;
   /** VMs the Cockpit never operates (listed as `unsupported`): the development VM (D8) plus `COCKPIT_RESERVED_VMS`. */
   reservedVms: string[];
 }
@@ -25,7 +31,10 @@ export function config(env: Record<string, string | undefined> = process.env, re
   const tokenFile = env.COCKPIT_LOCAL_TOKEN_FILE;
   if (tokenFile !== undefined && env.COCKPIT_LOCAL_TOKEN !== undefined) throw new SafeError("local_credential_ambiguous");
   const localCredential = tokenFile !== undefined ? readCredentialFile(tokenFile) : env.COCKPIT_LOCAL_TOKEN ?? "";
-  const allowedProjects = (env.COCKPIT_ALLOWED_PROJECTS ?? "").split(",");
+  // Unset or empty = no configuration grant (projects are then authorized from the UI). Any other malformed value is refused later.
+  const allowedProjects = env.COCKPIT_ALLOWED_PROJECTS === undefined || env.COCKPIT_ALLOWED_PROJECTS === "" ? [] : env.COCKPIT_ALLOWED_PROJECTS.split(",");
+  const uiGrants = env.COCKPIT_UI_GRANTS ?? "on";
+  if (uiGrants !== "on" && uiGrants !== "off") throw new SafeError("invalid_ui_grants");
   // Optional isolated state directory (tests/visual checks). Absolute, no traversal; symlinks are refused by the stores.
   const dataDir = env.COCKPIT_DATA_DIR;
   if (dataDir !== undefined && (!dataDir.startsWith("/") || dataDir.split("/").includes(".."))) throw new SafeError("invalid_data_dir");
@@ -38,6 +47,8 @@ export function config(env: Record<string, string | undefined> = process.env, re
     port: Number(port),
     localCredential,
     allowedProjects,
+    reservedProjects: reservedProjects(env.COCKPIT_RESERVED_PROJECTS),
+    grantsDatabasePath: uiGrants === "on" ? data(`grants-${mode}.sqlite`) : null,
     reservedVms: reservedVms(env.COCKPIT_RESERVED_VMS),
   };
 }
