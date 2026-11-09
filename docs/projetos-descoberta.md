@@ -190,3 +190,36 @@ A flag `reserved` no modo fixo agora respeita `COCKPIT_RESERVED_PROJECTS`.
 - partida com `COCKPIT_UI_GRANTS=off` inalterada;
 - e3 e smoke isolados;
 - nenhuma criação ou partida de VM.
+
+## 7. Rodada final e parecer
+
+**Aceite no commit `4c97b53`, árvore limpa** (`./scripts/cockpit f1-accept hermetic`, `CHROMIUM=/usr/bin/chromium`): **overall PASS**.
+
+| Etapa | Resultado |
+|---|---|
+| typecheck | limpo |
+| suíte completa | 497 pass, 0 fail |
+| drill E4 | PASS |
+| `visual-check` | 23/23 |
+| `brand-visual-check` | 23/23 |
+| `f1-visual-check` | 12/12 |
+| `f1-browser-acceptance` | 52/52 |
+| `artifact --check` | PASS |
+
+`projects-visual-check`: 21/21.
+
+Os relatórios estão em `docs/evidence/projetos-descoberta-hermetic/`. O commit seguinte só acrescenta este §7 e esses relatórios (documentação, fora do manifesto); `artifact --check` foi conferido de novo nele.
+
+**Base:** `develop` `1ea3806`, com 455 testes. A branch avança por fast-forward.
+
+**Não executado (de propósito):**
+- nada no Arch;
+- nada contra o serviço da porta 8787, VMs reais, `msb`, credenciais ou bancos reais;
+- nenhum prompt real.
+
+O modo host só foi exercitado com descoberta real sobre diretório temporário e saída sintética do `msb list`.
+
+**Parecer: GO condicionado** a duas coisas:
+1. **Decisão do Tech Lead sobre o ajuste da P-D3:** a reserva vence também `COCKPIT_ALLOWED_PROJECTS` (ADR-0004 §7).
+2. **Conferência do `cockpit.env` do Arch antes do restart** (§3). Pela P-D4, um projeto em uso que divide o nome com uma VM reservada ficará bloqueado.
+

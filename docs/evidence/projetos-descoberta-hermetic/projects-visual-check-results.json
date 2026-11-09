@@ -1,0 +1,92 @@
+{
+  "at": "2026-11-09T10:12:16.149Z",
+  "mode": "mock",
+  "results": [
+    {
+      "check": "1. após o login, a tela inicial é o seletor de projetos",
+      "pass": true
+    },
+    {
+      "check": "1. projetos descobertos listados, autorizado primeiro",
+      "pass": true,
+      "detail": "demo,lab,vault /  / "
+    },
+    {
+      "check": "1. demo autorizado pela configuração",
+      "pass": true
+    },
+    {
+      "check": "1. lab descoberto e NÃO autorizado",
+      "pass": true
+    },
+    {
+      "check": "1. lab sem VM: não oferece criar, manda usar o launcher",
+      "pass": true
+    },
+    {
+      "check": "1. lab: nenhum agente pode ser aberto antes de autorizar",
+      "pass": true
+    },
+    {
+      "check": "1. P-D4: vault reservado (derivado de COCKPIT_RESERVED_VMS=codex-vault), sem Autorizar e sem agente utilizável",
+      "pass": true
+    },
+    {
+      "check": "1. demo: Claude Code e Codex prontos",
+      "pass": true
+    },
+    {
+      "check": "2. autorizar pede confirmação explícita",
+      "pass": true
+    },
+    {
+      "check": "2. lab autorizado pela interface",
+      "pass": true
+    },
+    {
+      "check": "2. mensagem de sucesso",
+      "pass": true
+    },
+    {
+      "check": "3. escolher Claude Code abre a sessão da VM existente",
+      "pass": true
+    },
+    {
+      "check": "4. em 390px o caminho de volta (Projetos no cabeçalho da sessão) está visível",
+      "pass": true
+    },
+    {
+      "check": "4. botão Projetos volta ao seletor",
+      "pass": true
+    },
+    {
+      "check": "5. seletor 1440px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "5. seletor 1024px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "5. seletor 390px sem overflow horizontal",
+      "pass": true
+    },
+    {
+      "check": "6. revogar (com confirmação) devolve lab a não autorizado",
+      "pass": true
+    },
+    {
+      "check": "sem erros de JavaScript/CSP no console",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "7. logs sem credencial",
+      "pass": true
+    },
+    {
+      "check": "7. concessão e revogação auditadas no log",
+      "pass": true
+    }
+  ]
+}
