@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-09T09:07:39.519Z",
+  "at": "2026-11-09T09:24:12.879Z",
   "mode": "mock",
   "results": [
     {
@@ -9,7 +9,7 @@
     {
       "check": "1. projetos descobertos listados, autorizado primeiro",
       "pass": true,
-      "detail": "demo,lab /  / "
+      "detail": "demo,lab,vault /  / "
     },
     {
       "check": "1. demo autorizado pela configuração",
@@ -25,6 +25,10 @@
     },
     {
       "check": "1. lab: nenhum agente pode ser aberto antes de autorizar",
+      "pass": true
+    },
+    {
+      "check": "1. P-D4: vault reservado (derivado de COCKPIT_RESERVED_VMS=codex-vault), sem Autorizar e sem agente utilizável",
       "pass": true
     },
     {
@@ -45,6 +49,10 @@
     },
     {
       "check": "3. escolher Claude Code abre a sessão da VM existente",
+      "pass": true
+    },
+    {
+      "check": "4. em 390px o caminho de volta (Projetos no cabeçalho da sessão) está visível",
       "pass": true
     },
     {
