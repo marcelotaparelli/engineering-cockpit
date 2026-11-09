@@ -49,6 +49,8 @@ export interface World {
   ghostOrphan: boolean;
   /** The dashboard answers an error (no `attention` list) once the orphan's process is gone. */
   dashboardUnreadableAfterRelease: boolean;
+  /** `systemctl stop` takes this long before the Cockpit is gone (a real SIGTERM is not instantaneous): keeps the server answering meanwhile. */
+  stopDelayMs: number;
   /** Initial status of the in-flight run (`completed` = the real turn was too fast to be killed in flight). */
   initialRunStatus: string;
   /** Extra text the journal contains (a leak). */
@@ -104,7 +106,7 @@ export class FakeSystemd {
       orphanPid: null, msbPid: null, extraExecPid: null, listPid: null, crashes: 0, orphanKind: provider === "claude" ? "claude_session" : "codex_app_server",
       blockSends: true, partial: "grows", afterCrash: "preserved", blockedSendCreatesRun: false, claudeReconcileResolves: false, codexOwnerAliveReconcile: "refuse",
       reconcileSpawnsExec: false, postRelease: "completed", agentText: "", textAtCrash: "", controlGroup: null, connections: 0, reconcileTransientChild: false, extraArgvUnreadable: false, runUnbound: false, historyUnreadable: false,
-      ghostOrphan: false, dashboardUnreadableAfterRelease: false, initialRunStatus: "running", journalExtra: "", pidReused: false, deactivatingShows: 0, hook: null, timeline: [], ...overrides };
+      ghostOrphan: false, dashboardUnreadableAfterRelease: false, stopDelayMs: 0, initialRunStatus: "running", journalExtra: "", pidReused: false, deactivatingShows: 0, hook: null, timeline: [], ...overrides };
     this.world.runStatus = this.world.initialRunStatus;
   }
   unitFile = () => join(this.xdg, "systemd/user", SMOKE_UNIT);
@@ -224,7 +226,7 @@ export class FakeSystemd {
       case "show": return { code: 0, stdout: [`FragmentPath=${this.unitFile()}`, `ActiveState=${this.#deactivating > 0 ? (this.#deactivating--, "deactivating") : this.state.active}`, `MainPID=${this.state.mainPid}`, `NRestarts=${this.state.restarts}`, `ExecMainStatus=${this.state.execMainStatus}`,
         `SubState=${this.state.active === "active" ? "running" : "dead"}`, "Result=success", `ControlGroup=${this.world.controlGroup ?? `/user.slice/${SMOKE_UNIT}`}`, "NoNewPrivileges=yes", "KillMode=process", "Restart=on-failure", "RestartPreventExitStatus=78"].join("\n") + "\n" };
       case "start": return { code: this.#start() ? 0 : 1, stdout: "" };
-      case "stop": await this.#stopServer(); this.state.active = "inactive"; this.state.mainPid = 0; this.state.execMainStatus = 0;
+      case "stop": if (this.world.stopDelayMs) await Bun.sleep(this.world.stopDelayMs); await this.#stopServer(); this.state.active = "inactive"; this.state.mainPid = 0; this.state.execMainStatus = 0;
         // the Cockpit ends its own children on an orderly stop
         for (const pid of [this.world.msbPid, this.world.extraExecPid, this.world.listPid]) if (pid && alive(pid)) signalSleeper(pid, "SIGTERM"); // a real `msb list` is short-lived and gone by then
         return { code: 0, stdout: "" };

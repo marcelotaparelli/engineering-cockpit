@@ -264,20 +264,24 @@ describe.skipIf(process.platform !== "linux")("F2-M2 Claude proof, end to end", 
   });
 
   /** Runs the Claude proof and fires the interrupt when the smoke makes the request `at`; returns the report and what was printed. */
-  async function interrupted(at: string): Promise<{ report: SmokeReport; fake: FakeSystemd; xdg: string; logs: string[]; firedAt: number }> {
+  // The stand-in's `systemctl stop` is slow on purpose: a real SIGTERM takes a while, so the Cockpit still answers while the cleanup runs.
+  // Without that, a smoke that kept going after the interrupt would be saved by the dead server, not by its own refusal.
+  async function interrupted(at: string, onRun?: (argv: readonly string[], fire: () => void) => void): Promise<{ report: SmokeReport; fake: FakeSystemd; xdg: string; logs: string[]; firedAt: number }> {
     let interrupt: (() => Promise<void>) | null = null;
     const logs: string[] = [];
     let firedAt = -1;
     const log = spyOn(console, "log").mockImplementation(((line: unknown) => { logs.push(String(line)); }) as typeof console.log);
     try {
-      const fake: FakeSystemd = new FakeSystemd(true, { hook: entry => { if (entry === at && interrupt) { const fire = interrupt; interrupt = null; firedAt = fake.world.timeline.length; void fire(); } } }, "claude");
+      const fireNow = () => { if (!interrupt) return; const fire = interrupt; interrupt = null; firedAt = fake.world.timeline.length; void fire(); };
+      const fake: FakeSystemd = new FakeSystemd(true, { stopDelayMs: 1500, hook: entry => { if (entry === at) fireNow(); } }, "claude");
+      const run: typeof fake.run = async argv => { onRun?.(argv, fireNow); return fake.run(argv); };
       const xdg = join(work, `run-${++counter}`);
       await mkdir(xdg, { mode: 0o700 });
       fake.xdg = xdg;
       const root = await bareRoot(join(work, `root-${counter}`), "none");
       const env = { COCKPIT_F1_SMOKE_CONFIRMED: "yes", COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_PROJECTS_BASE: "/srv/projects", XDG_RUNTIME_DIR: xdg, PATH: bin,
         COCKPIT_SMOKE_ORPHAN_PROOF: "yes", COCKPIT_SMOKE_QUOTA_CONFIRMED: "yes" };
-      const report = await runSystemdSmoke({ env, run: fake.run, proc: fake.proc, root, timeoutsMs: quick, onInterrupt: handler => { interrupt = handler; return () => {}; } });
+      const report = await runSystemdSmoke({ env, run, proc: fake.proc, root, timeoutsMs: quick, onInterrupt: handler => { interrupt = handler; return () => {}; } });
       return { report, fake, xdg, logs, firedAt };
     } finally { log.mockRestore(); }
   }
@@ -309,6 +313,15 @@ describe.skipIf(process.platform !== "linux")("F2-M2 Claude proof, end to end", 
     expect(report.overall).toBe("FAIL");
     expect(check(report, "orphan_turn_started")).toMatchObject({ status: "FAIL", reason: "interrupted" });
     expect(status(report).cleanup).toBe("PASS");
+  });
+
+  test("an interrupt just before the crash step: the Cockpit is NOT SIGKILLed afterwards, and the report waits for the whole cleanup", async () => {
+    const { report, fake } = await interrupted("never", (argv, fire) => { if (argv.join(" ").includes("--property=MainPID,NRestarts")) fire(); });
+    expect(fake.calls.some(argv => argv.includes("--kill-whom=main"))).toBe(false);
+    expect(check(report, "crash_restart")).toMatchObject({ status: "FAIL", reason: "interrupted" });
+    expect(status(report).cleanup).toBe("PASS"); // returned only after the shared cleanup finished
+    expect(fake.world.prompts).toHaveLength(1);
+    expect(fake.world.timeline.filter(entry => entry === "POST /api/sessions/ses-proof/runs")).toHaveLength(1); // no probe
   });
 
   test("a dashboard that cannot be read after the orphan ended is NOT_VERIFIED for the release, never a PASS", async () => {
