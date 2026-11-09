@@ -6,7 +6,7 @@
 ## 1. Experiência
 
 1. O operador abre o Cockpit e entra com a credencial local, como antes.
-2. Sem agente selecionado, o painel central mostra **Projetos**: todo diretório válido da pasta de projetos, com filtro e os autorizados primeiro. O botão **Projetos** no topo volta a essa tela a qualquer momento.
+2. Sem agente selecionado, o painel central mostra **Projetos**: todo diretório válido da pasta de projetos, com filtro e os autorizados primeiro. O botão **Projetos** no topo (ou no cabeçalho da sessão, em telas estreitas) volta a essa tela a qualquer momento.
 3. Cada cartão mostra:
    - o estado: *Autorizado*, *Autorizado · configuração*, *Não autorizado* ou *Reservado*;
    - um botão por agente: **Claude Code** e **Codex**.
@@ -21,6 +21,10 @@
 
    Uma VM parada com sessões anteriores ainda abre o histórico.
 6. **Revogar acesso** (só para concessões da interface) também pede confirmação. Não apaga nada.
+7. **Projeto reservado** (P-D4): `engineering-cockpit`, os de `COCKPIT_RESERVED_PROJECTS` e o projeto de qualquer VM de `COCKPIT_RESERVED_VMS`.
+   - Aparece como *Reservado*, sem "Autorizar" e com todos os agentes desativados.
+   - Se também está em `COCKPIT_ALLOWED_PROJECTS`, o cartão diz que essa entrada não tem efeito.
+   - Nada dele é aberto, executado ou exibido. Um processo órfão dele continua visível em "Precisa de você", com PID, e o Cockpit nunca o encerra.
 
 ## 2. API
 
@@ -34,7 +38,13 @@ Valores de `status` de um agente: `ready`, `stopped`, `absent`, `reserved`, `uns
 
 ## 3. Operação no Arch (quando o Tech Lead decidir integrar)
 
-**Instalação existente.** Nenhuma mudança obrigatória em `cockpit.env`: `COCKPIT_ALLOWED_PROJECTS` continua valendo, e seus projetos aparecem como *Autorizado · configuração*. Os demais diretórios aparecem para autorizar. Depois do merge, a nova versão só entra em uso com `./scripts/cockpit service restart`, que o operador executa (a restart revoga as sessões HTTP, como sempre). Na primeira partida, o arquivo `<data>/grants-host.sqlite` (0600) é criado.
+Migração, compatibilidade com `COCKPIT_ALLOWED_PROJECTS` e rollback: **[ADR-0004 §5](adr-0004-descoberta-e-autorizacao-de-projetos.md#5-migração-compatibilidade-e-rollback)**.
+
+**Antes do restart, conferir em `cockpit.env`** se algum projeto de `COCKPIT_ALLOWED_PROJECTS` coincide com o projeto de uma VM de `COCKPIT_RESERVED_VMS` ou com `COCKPIT_RESERVED_PROJECTS`. Pela P-D4 ele ficará bloqueado. Leitura apenas:
+
+```sh
+grep -E '^COCKPIT_(ALLOWED_PROJECTS|RESERVED_VMS|RESERVED_PROJECTS)=' ~/.config/engineering-cockpit/cockpit.env
+```
 
 **Instalação nova sem lista de projetos:**
 
@@ -42,20 +52,16 @@ Valores de `status` de um agente: `ready`, `stopped`, `absent`, `reserved`, `uns
 COCKPIT_PROJECTS_BASE=$HOME/sandboxes/agent/projects ./scripts/cockpit service install
 ```
 
-Sem `COCKPIT_ALLOWED_PROJECTS`, os projetos são autorizados na página.
+**Desligar a autorização pela página:** `COCKPIT_UI_GRANTS=off` em `cockpit.env` + restart. As concessões gravadas são ignoradas, não apagadas. As reservas continuam valendo.
 
-**Desligar:** `COCKPIT_UI_GRANTS=off` em `cockpit.env` + restart. Volta ao comportamento anterior; as concessões gravadas são ignoradas, não apagadas.
-
-**Proteger mais projetos:** `COCKPIT_RESERVED_PROJECTS=a,b` em `cockpit.env`. `engineering-cockpit` é sempre reservado.
+**Reservar:** `COCKPIT_RESERVED_PROJECTS=a,b`, ou `COCKPIT_RESERVED_VMS=codex-a`, que reserva o projeto `a` inteiro. `engineering-cockpit` é sempre reservado.
 
 **Ler a auditoria (somente leitura):**
 
 ```sh
-sqlite3 -readonly "<data>/grants-host.sqlite" 'SELECT * FROM grant_audit ORDER BY seq DESC LIMIT 20'
-./scripts/cockpit service logs | grep project_grant
+sqlite3 -readonly "<data>/runtime-host/grants.sqlite" 'SELECT * FROM grant_audit ORDER BY seq DESC LIMIT 20'
+./scripts/cockpit service logs | grep -E 'project_grant(_ignored)?'
 ```
-
-**Rollback:** voltar ao commit anterior e reiniciar. A versão anterior não lê `grants-*.sqlite`, então valem só os projetos de `COCKPIT_ALLOWED_PROJECTS`, que precisa voltar a ser não vazio.
 
 ## 4. Testes automatizados
 
@@ -63,8 +69,10 @@ sqlite3 -readonly "<data>/grants-host.sqlite" 'SELECT * FROM grant_audit ORDER B
 |---|---|
 | `tests/project-grants.test.ts` | Store 0600, schema exato, persistência, auditoria append-only (UPDATE/DELETE recusados), recusa de symlink (arquivo e diretório), arquivo compartilhado, banco estranho e linha adulterada, limite de 256. Regras: reservado nunca concedível, configuração nunca revogável, conjunto vivo (principal antigo vê concessão e revogação), concessão gravada que virou reservada não vale. Config/serviço: vazio aceito só com UI ligada. Catálogo: só diretórios + autorizados, status por provider, sem VM-fantasma |
 | `tests/project-grants-http.test.ts` | Descoberta **real** sobre diretório temporário (com symlink para fora e nome inválido): 401 sem sessão; Origin, CSRF, prova, nonce repetido, corpo errado e GET recusados sem efeito; reservado 403; symlink, VM sem diretório e nome inventado 404; descoberta caindo 503 sem conceder; concessão vale na hora para a sessão aberta, é auditada sem segredo e persiste; revogação recusada com run ativo, efetiva depois (sessão e run voltam a 404), reconcedida traz a sessão de volta; stream SSE já aberto para de entregar eventos do projeto revogado (com controle positivo e teste de mutação: falha se o stream congelar os grants) |
-| `tests/project-grants-startup.test.ts` | `src/index.ts` real (mock) **sem** `COCKPIT_ALLOWED_PROJECTS`: catálogo, autorizar, abrir sessão Codex **e** Claude Code, auditoria no log sem a credencial, arquivo 0600, persistência após SIGTERM + restart; `COCKPIT_UI_GRANTS=off` com lista vazia recusa a partida e com lista não permite autorizar |
-| `tests/project-grants-race.test.ts` | Revogação durante a espera de `startRun` (revalidação da VM) → 404, **nenhum** run criado; durante `openSession` → 404, nenhuma sessão criada (achado 2 da revisão; falha sem a correção) |
+| `tests/project-grants-startup.test.ts` | `src/index.ts` real (mock) **sem** `COCKPIT_ALLOWED_PROJECTS`: catálogo, autorizar, abrir sessão Codex **e** Claude Code, auditoria no log sem a credencial, arquivo 0600, persistência após SIGTERM + restart; `COCKPIT_UI_GRANTS=off` com lista vazia recusa a partida e com lista não permite autorizar. **Reinícios com reserva nova:** concessão gravada de `demo` + restart com `COCKPIT_RESERVED_VMS=codex-demo` → removida com auditoria, sessão e histórico 404, `claude-demo` recusada, nova concessão 403; restart sem a reserva → não volta sozinha; `COCKPIT_ALLOWED_PROJECTS=demo` + `COCKPIT_RESERVED_PROJECTS=demo` → ignorado e registrado; `codex-vault` (VM inexistente) reserva `vault` |
+| Ajustados à P-D4 | `f1-config` (lista efetiva cobre os 3 providers; reservar `codex-alpha` reserva `claude-alpha` no `ExecutionService` e no guarda do argv do Claude, sem casar prefixo), `e3-claude-execution` (projeto de desenvolvimento oculto e 404, não mais listado), `f1-systemd-smoke` (+3 casos: VM irmã reservada, projeto reservado, `codex-engineering-cockpit`), `e4-process-ledger` (stub de segurança trocado por `LocalSecurity` real), `discovery`/`host-check`/startup (fixture `vault`) |
+| `tests/project-grants-race.test.ts` | Revogação durante a espera de `startRun` (revalidação da VM) → 404, **nenhum** run criado; durante `openSession` → 404, nenhuma sessão criada (achado 2 da 1ª revisão). Revogação com turno ainda vivo e run `unknown` (decisão de aprovação com entrega ambígua) → 409 `project_busy`; aceita quando o turno termina (F1 da 2ª revisão). Ambos falham sem a correção |
+| `tests/project-reservations.test.ts` | P-D4 com descoberta real e pilha HTTP + execução real (providers simulados). **Derivação:** `codex-beta` reserva `beta` para os 3 providers, sufixo inteiro, nunca prefixo; valores vazios não liberam `engineering-cockpit`. **Matriz de rotas** com sessão, run `unknown` e aprovação pendente criados antes da reserva: sessão, histórico, envio, run, interromper, reconciliar e decidir → 404; inventário, VM, threads, `POST /api/sessions` (Claude e Codex), aprovações, painel, catálogo e SSE (com controle positivo) fechados; `revalidate` recusa antes de qualquer spawn; a concessão por configuração do projeto reservado é ignorada; o processo órfão do projeto reservado continua visível e não é encerrado. **Revogação** de sessões, runs e aprovações existentes, também para outra sessão do operador, sem apagar ou sinalizar nada. **Concorrência:** 16 concessões simultâneas = 1 mudança + 1 linha de auditoria; 20 concessões/revogações intercaladas terminam com memória = disco = última linha da auditoria, sem duas ações iguais seguidas. **CSRF na revogação:** ausente, de outra sessão, nonce repetido, content-type e Origin. **Sistema de arquivos:** diretório trocado por symlink, apagado, recriado, renomeado (a concessão não acompanha), symlink com nome válido não concedível, base trocada por symlink → 503 |
 | `tests/frontend.test.ts` (+5) | Tela inicial = seletor; ordem; botões desativados com o motivo; reservado sem "Autorizar"; confirmação antes de qualquer POST (cancelar não envia); um único POST com CSRF/nonce e corpo `{confirm}`; erros em linguagem simples; nomes/estados só como texto (sem injeção de marcação); "Projetos" volta ao seletor; login pelo formulário também abre o seletor |
 
 Resultados: §5.
