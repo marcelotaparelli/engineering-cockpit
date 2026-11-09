@@ -1,0 +1,44 @@
+F2-M3 preparation — negative controls of the pre-execution review fixes (2026-11-09, this Debian VM, Bun 1.4.4, stand-ins only)
+
+Method: each mutation is applied to src/f1-systemd-smoke.ts at the fix commit, the listed test files run, the file is restored with
+`git checkout`. "detected" = at least one test fails. Round 1 ran against d7b160a's tests. Round 2 ran after d079532 (stand-in
+`systemctl stop` takes 1.5 s like a real SIGTERM; new "interrupt just before the crash step" scenario).
+
+Round 1 (tests of d7b160a)
+A | installed service reserved list ignored | (fail) F2-M3: a VM reserved only in the INSTALLED service's env file is refused too (read-only), and an unreadable file fails closed (fail) F2-M3: the installed reserved list (plus the shell's) is passed on to the smoke Cockpit, which then refuses those VMs as well  8 pass  2 fail 
+B | unreadable service env file treated as empty (fail-open) | (fail) F2-M3: a VM reserved only in the INSTALLED service's env file is refused too (read-only), and an unreadable file fails closed  9 pass  1 fail 
+C | reserved list not passed to the smoke Cockpit | (fail) F2-M3: the installed reserved list (plus the shell's) is passed on to the smoke Cockpit, which then refuses those VMs as well  9 pass  1 fail 
+D | client ignores the interrupt (no refusal, no abort) |  36 pass  0 fail 
+E | handler does not abort the main flow |  46 pass  0 fail 
+F | cleanup not shared (finally returns while the interrupt cleans) |  46 pass  0 fail 
+G | orphan_released: unreadable dashboard counted as empty list | (fail) F2-M2 Claude proof, end to end > a dashboard that cannot be read after the orphan ended is NOT_VERIFIED for the release, never a PASS  35 pass  1 fail 
+H | journal without --since | (fail) F2-M2 Claude proof, end to end > the journal check reads only this run (journalctl --since the moment the unit was created)  35 pass  1 fail 
+I | no guard before the SIGKILL of the main process |  36 pass  0 fail 
+J | no guard before writing the unit (interrupt before creation) |  46 pass  0 fail 
+
+Round 1 result: A B C G H detected. D E F I NOT detected: the stand-in stopped its server instantly, so a smoke that kept going after
+the interrupt was saved by the dead server, not by its own refusal (a real SIGTERM takes time). J is unreachable by construction:
+there is no `await` between registering the interrupt handler and creating the unit, so no signal can be handled in between; the
+guard there is defensive only.
+
+Round 2 (tests of d079532), the four undetected mutations again
+D | client ignores the interrupt (no refusal, no abort) | (fail) F2-M2 Claude proof, end to end > an interrupt while the session is being created: the real prompt is NEVER sent afterwards  36 pass  1 fail 
+E | handler does not abort the main flow | (fail) F2-M2 Claude proof, end to end > an interrupt in the middle of the proof stops the run, cleans up once and returns what was observed (printed ONCE, by the caller) (fail) F2-M2 Claude proof, end to end > an interrupt while the session is being created: the real prompt is NEVER sent afterwards (fail) F2-M2 Claude proof, end to end > an interrupt just before the crash step: the Cockpit is NOT SIGKILLed afterwards, and the report waits for the whole cleanup  44 pass  3 fail 
+F | cleanup not shared (finally returns while the interrupt cleans) | (fail) F2-M2 Claude proof, end to end > an interrupt in the middle of the proof stops the run, cleans up once and returns what was observed (printed ONCE, by the caller) (fail) F2-M2 Claude proof, end to end > an interrupt while the session is being created: the real prompt is NEVER sent afterwards (fail) F2-M2 Claude proof, end to end > an interrupt just before the crash step: the Cockpit is NOT SIGKILLed afterwards, and the report waits for the whole cleanup  44 pass  3 fail 
+I | no guard before the SIGKILL of the main process | (fail) F2-M2 Claude proof, end to end > an interrupt just before the crash step: the Cockpit is NOT SIGKILLed afterwards, and the report waits for the whole cleanup  36 pass  1 fail 
+
+Round 2 result: D E F I detected. All 9 reachable mutations detected; J documented as unreachable. Source restored after each
+mutation (`git status` clean for src/).
+
+Round 3 (fixes of the second independent review, commit 0bd0b25; restored from a saved copy after each mutation, `cmp` confirmed)
+K | smoke uses the attached runner | (fail) F2-M3: the smoke runs systemctl/journalctl in their own session, so a second Ctrl+C in the terminal cannot kill the cleanup's `systemctl stop`  11 pass  1 fail 
+L | terminate ignores the abort | (fail) F2-M3: after an interrupt `terminate` sends nothing, even to a process of the unit's own cgroup (the cleanup ends the cgroup through systemd)  11 pass  1 fail 
+M | set promotes to PASS after the interrupt |  49 pass  0 fail 
+N | abort during the body read returns an empty answer |  49 pass  0 fail 
+O | unusable HOME skips the installed list (fail-open) | (fail) F2-M3: a VM reserved only in the INSTALLED service's env file is refused too (read-only), and an unreadable file fails closed  11 pass  1 fail 
+Q | any read error counts as absent (fail-open) | (fail) F2-M3: a VM reserved only in the INSTALLED service's env file is refused too (read-only), and an unreadable file fails closed  11 pass  1 fail 
+M (again, after the new "interrupt during the orderly stop" scenario) | set promotes to PASS after the interrupt | (fail) F2-M2 Claude proof, end to end > an interrupt during the orderly stop: that step keeps its `interrupted` mark (never promoted to PASS afterwards)  0 pass  1 fail
+
+Round 3 result: K L M O Q detected (M after the new scenario). N (abort while a response BODY is being read) is NOT detected: timing it
+needs a stand-in that streams a body slowly. Impact if it regressed: only the labels of individual checks in an INTERRUPTED report
+(overall stays FAIL, cleanup unchanged); no request, start or signal depends on it.

@@ -1,7 +1,7 @@
 # F2 — Prova com provider real
 
 **Branch:** `feat/f2-real-provider-proof`, a partir do `develop` `4e4bd9d`. **Escopo:** §7 do [master plan v2](master-plan.md), lacunas **L4** e **L8**, mais a prova estruturada com provider real que a L1 deixou para a F2 e o critério V1 §8.3.
-**Estado (2026-11-09):** marcos **F2-M1 e F2-M2 implementados e verificados nesta VM** (Debian, modo simulado, sem prompt real). Nada da F2 foi executado no Arch: o drill com Claude real (L8) está **pronto para homologação** (§5, procedimento no fim da seção) e ainda **não foi executado**.
+**Estado (2026-11-09):** marcos **F2-M1 e F2-M2 implementados e verificados nesta VM** (Debian, modo simulado, sem prompt real). A **F2-M3** (§8) está **preparada**: o escopo foi confirmado, os achados da revisão pré-execução foram corrigidos e o procedimento do Arch foi refeito. Nada da F2 foi executado no Arch. O drill com Claude real (L8) e a prova Codex (F1-P1) **não foram executados** e dependem da autorização e da execução do operador (§8.3).
 
 ## 1. Escopo real (master plan §7 F2, sem acréscimos)
 
@@ -34,7 +34,7 @@ Esforço previsto no plano: 1–2 dias mais 30 min do operador, com quota mínim
 | --- | --- | --- | --- | --- |
 | **F2-M1** | L4/D10: `reconcile` devolve `unconfirmed`/`orphan_owns_turn` enquanto houver app-server Codex órfão vivo na VM. Não abre conexão ao lado do órfão, não reata, não trava o projeto. Texto na interface, runbook e E4 §2/§10 | Resolve um beco sem saída real do uso diário sem gastar quota nem depender do Arch. É pré-requisito para a prova Codex do M2 conferir a reconciliação | executor, nesta VM | **feito** (este documento, §4) |
 | F2-M2 | Runner do drill, estendendo a prova F1-P1 em vez de criar outro: (a) a checagem `reconcile_orphan_owns_turn` na prova Codex; (b) um modo Claude na mesma unit isolada: 1 prompt longo sem ferramentas na VM Claude **de teste**, SIGKILL, restart, depois confere parcial preservada e incompleta, run `unknown`, órfão `claude_session` listado, envio na mesma sessão recusado (409), reconciliação `provider_cannot_confirm`, e liberação após o fim do órfão. Mesmo contrato do smoke: confirmação por efeito, 0/1/2, limpeza em Ctrl+C, nunca contra o serviço de uso diário. Testes herméticos com `msb` e Claude simulados | Transforma os 30 min manuais do operador em um comando. O risco (gasto de quota, sinal em processos) já foi resolvido e revisado no F1-P1, e é reutilizado | executor, nesta VM | **feito, hermético** (§5): falta a execução no Arch |
-| F2-M3 | Execução no Arch pelo operador (um comando por provider, 1 prompt cada), registro em `docs/evidence/e4-claude-real-arch.md` e `docs/evidence/f2-codex-orphan-arch.md` separando executado de atestado. Atualização do master plan §5/§6/§14 em commit próprio | Só faz sentido com o runner pronto e revisado. Depende do operador e de quota | operador + executor | a fazer |
+| F2-M3 | Execução no Arch pelo operador (um comando por provider, 1 prompt cada), registro em `docs/evidence/e4-claude-real-arch.md` e `docs/evidence/f2-codex-orphan-arch.md` separando executado de atestado. Atualização do master plan §5/§6/§14 em commit próprio | Só faz sentido com o runner pronto e revisado. Depende do operador e de quota | operador + executor | **preparada** (§8): falta a execução no Arch |
 
 A F1-P1 (órfãos reais sob o systemd) coincide com a metade Codex do M3 e pode ser fechada na mesma execução, como a própria evidência da F1 previa.
 
@@ -145,29 +145,9 @@ A ordem é fixa e testada: o envio de prova e a reconciliação acontecem **ante
 - **A forma exata das respostas do Cockpit real** é coberta pelo teste de contrato (parsers e veredictos rodados contra o servidor, o `ExecutionService`, o ledger e o painel reais, em processo; o stand-in usado nos testes de ponta a ponta não pode ter campo que o servidor real não tem). O "kill" ali é a emulação do E4 (segundo `RuntimeStore` no mesmo arquivo), porque um processo não se mata sozinho.
 - **O sinal de que o bloqueio some** é o painel do próprio Cockpit; não se envia outro prompt depois da liberação (seria um segundo turno real, possivelmente ao lado de um processo ainda vivo dentro da VM). O desbloqueio é coberto de forma determinística pelos testes do E4.
 
-### Procedimento mínimo e seguro no Arch (não executado aqui)
+### Procedimento mínimo e seguro no Arch
 
-Pré-condições: uma VM de **teste** do provider, ligada, com login feito, **sem turno em andamento e que ninguém use**. Nunca `claude-engineering-cockpit`. Nada abaixo para, reinicia ou altera o Cockpit da porta 8787, as VMs de uso, `~/.config/engineering-cockpit` ou `data/`.
-
-```sh
-# 1. Sem VM e sem quota (seguro): o checkout da branch e a verificação local
-git worktree add ~/sandboxes/agent/worktrees/cockpit-f2 feat/f2-real-provider-proof && cd ~/sandboxes/agent/worktrees/cockpit-f2 \
-  && ./scripts/cockpit bootstrap && ./scripts/cockpit e4-homologation && ./scripts/cockpit artifact --check
-
-# 2. Smoke base com a VM Claude de teste: só leitura, sem prompt, sem quota
-COCKPIT_F1_SMOKE_CONFIRMED=yes COCKPIT_SMOKE_VM=claude-<teste> COCKPIT_PROJECTS_BASE="$HOME/sandboxes/agent/projects" \
-  ./scripts/cockpit f1-systemd-smoke; echo "exit=$?"
-
-# 3. Prova com Claude real: 1 prompt real (+ a sonda, que deve ser recusada). Gasta quota. Só com autorização
-COCKPIT_F1_SMOKE_CONFIRMED=yes COCKPIT_SMOKE_VM=claude-<teste> COCKPIT_PROJECTS_BASE="$HOME/sandboxes/agent/projects" \
-  COCKPIT_SMOKE_ORPHAN_PROOF=yes COCKPIT_SMOKE_QUOTA_CONFIRMED=yes ./scripts/cockpit f1-systemd-smoke; echo "exit=$?"
-
-# 4. A mesma prova com uma VM Codex de teste (fecha o F1-P1 e confere o M1 sob o systemd real). Gasta quota. Só com autorização
-COCKPIT_F1_SMOKE_CONFIRMED=yes COCKPIT_SMOKE_VM=codex-<teste> COCKPIT_PROJECTS_BASE="$HOME/sandboxes/agent/projects" \
-  COCKPIT_SMOKE_ORPHAN_PROOF=yes COCKPIT_SMOKE_QUOTA_CONFIRMED=yes ./scripts/cockpit f1-systemd-smoke; echo "exit=$?"
-```
-
-Saída: JSON no stdout; `exit` 0 = PASS, 1 = FAIL, 2 = NOT_VERIFIED. Traga o JSON inteiro (ele não contém prompt, texto do modelo nem credencial). Os passos 3 e 4 são independentes. Se algo for interrompido (Ctrl+C), a unit e os arquivos são removidos, e um remanescente de queda de energia é removido na execução seguinte; a remoção manual está em `docs/f1-operacao-diaria.md` §6. Os registros do M3 são `docs/evidence/e4-claude-real-arch.md` e `docs/evidence/f2-codex-orphan-arch.md`, separando executado de atestado.
+**Substituído pelo procedimento da §8.3**, revisado na preparação da M3. A versão anterior deste bloco tinha um defeito que impedia a execução: o passo 1 (`git worktree add … feat/f2-real-provider-proof`) falha no Arch, porque o repositório é compartilhado e a branch já está em uso no worktree `/worktrees/cockpit-f2` desta VM. Os remédios usuais seriam perigosos: `git worktree prune` apagaria o registro de todos os worktrees desta VM, e `--force` poria a mesma branch em dois checkouts. A §8.3 usa `--detach` num commit fixo e grava as saídas onde o executor as lê.
 
 ### Revisão independente do M2
 
@@ -175,7 +155,7 @@ Feita por outro agente (Claude), em modo só leitura, sem receber as conclusões
 
 | # | Sev. | Achado | Tratamento |
 | --- | --- | --- | --- |
-| M1 | média | "Nenhum filho `msb exec` novo" podia passar sem observar nada: dois instantâneos perdem um filho que nasce e morre dentro da chamada; cgroup desconhecido ou argv ilegível contavam como zero | **corrigido**: amostragem do cgroup a cada 20 ms **durante** a chamada, mais os contadores do próprio Cockpit antes/depois (`provider_connections`, `runs_dispatched`: sem corrida). Observação incompleta é NOT_VERIFIED; cgroup desconhecido falha fechado. Um defeito real no watcher novo (contagens lidas antes da amostra final) foi achado pelo teste de argv ilegível e corrigido |
+| M1 | média | "Nenhum filho `msb exec` novo" podia passar sem observar nada: dois instantâneos perdem um filho que nasce e morre dentro da chamada; cgroup desconhecido ou argv ilegível contavam como zero | **corrigido**: amostragem do cgroup a cada 20 ms **durante** a chamada, mais o painel do próprio Cockpit antes/depois (`runs_dispatched` é contador; `provider_connections` é o número de conexões abertas **naquele instante**, não um contador: uma conexão que abre e fecha dentro da chamada não aparece nele. Redação corrigida na preparação da M3, §8). Observação incompleta é NOT_VERIFIED; cgroup desconhecido falha fechado. Um defeito real no watcher novo (contagens lidas antes da amostra final) foi achado pelo teste de argv ilegível e corrigido |
 | M2 | média | Run sem id do provider (`provider_run_unbound`) ou ledger ilegível davam FAIL ou PASS enganosos | **corrigido**: NOT_VERIFIED nas duas fases; o Codex só passa um `unknown` não confirmado quando o motivo é `provider_reports_unknown` |
 | M3 | média | A limpeza lia o estado uma vez logo após o SIGKILL e podia relatar `unit_deactivating` ou `cgroup_not_empty` falsos | **corrigido**: espera limitada até a unit e o cgroup assentarem |
 | M4 | média | `terminate` só revalidava o cgroup e `isMsb`: um PID reutilizado por um `msb list` no mesmo cgroup podia receber sinal | **corrigido**: antes de cada sinal confere o tempo de início do kernel (o mesmo critério do ledger) e que ainda é filho `msb exec` |
@@ -191,7 +171,7 @@ Feita por outro agente (Claude), em modo só leitura, sem receber as conclusões
 
 - **O M2 não foi executado no Arch.** Tudo acima é lógica provada com simuladores e contrato. O que só o Arch responde: se um filho `msb exec` real sobrevive ao SIGKILL do Cockpit sob o systemd (se não sobreviver, os checks de órfão saem NOT_VERIFIED, não PASS); o que o Claude e o Codex reais transmitem e devolvem; como o `argv` do `msb` aparece em `/proc`.
 - **Encerrar o órfão não prova nada sobre a VM.** O smoke encerra o `msb exec` do **host**; o agente dentro da VM pode continuar o turno e terminar sozinho, gastando a quota desse turno. A evidência registra `inside_vm: not_observed`. Use uma VM de teste sem outro uso.
-- **Observação de filhos tem limite.** Um filho que nasce e morre entre duas amostras de 20 ms não é visto pelo cgroup; o contador `provider_connections` do próprio Cockpit cobre esse caso, e a falta de qualquer um dos dois sinais torna o check NOT_VERIFIED.
+- **Observação de filhos tem limite.** Um filho que nasce e morre entre duas amostras de 20 ms não é visto pelo cgroup, e `provider_connections` (conexões abertas no instante da leitura) também não o vê. O que sustenta o PASS é a própria resposta: `orphan_owns_turn` (Codex) e `provider_cannot_confirm` (Claude) são devolvidos **antes** de qualquer contato com o provider (`src/execution.ts` `reconcile`), e `runs_dispatched` (contador) prova que nada foi despachado. A falta de qualquer leitura torna o check NOT_VERIFIED.
 - **Resíduo se o próprio smoke levar SIGKILL.** A unit e o cgroup são removidos na execução seguinte, mas `.cache/f1-systemd-smoke/run-*` (credencial e `data/` do smoke) fica até `rm -rf .cache/f1-systemd-smoke`.
 - **O relatório traz o nome da VM de teste** (e portanto o projeto), como no F1-D. Não traz prompt, texto do modelo nem credencial.
 - **Uma ferramenta pedida pelo Claude** deixa o run em `awaiting_approval` (o smoke nunca aprova): o parcial sai NOT_VERIFIED.
@@ -210,3 +190,122 @@ Feita por outro agente (Claude), em modo só leitura, sem receber as conclusões
 - **P1 (respondida).** O modo Claude roda na **mesma** unit isolada do smoke F1-D: o Tech Lead pediu para reutilizar o smoke isolado existente. É o caminho já revisado, e também prova o Claude sob `NoNewPrivileges`.
 - **P2.** A L1 pede "prova estruturada com provider real" de aprovação e `AskUserQuestion`. O §7 só detalha o drill de queda. Incluir no M2 um passo opcional com uma aprovação real e uma pergunta real (mais 1–2 prompts) ou deixar a L1 como atestado? Recomendação: deixar fora do M2 e decidir no M3, porque aumenta o gasto de quota e exige um humano clicando.
 - **P3.** Depois de um reinício, um turno Codex lido como `running` por uma conexão que não o iniciou deve ser reatado (comportamento do E0, mantido) ou ficar `unknown` (`turn_owner_gone`) até o turno terminar? Recomendação: decidir com a evidência do M3, que registra o que o Codex real devolve para um turno cujo dono morreu. Sem essa observação, qualquer escolha é palpite.
+
+## 8. F2-M3 — preparação da homologação real (feita nesta VM; execução no Arch pendente)
+
+### 8.1 Escopo confirmado (master plan §7 F2 e §8.3, sem acréscimos)
+
+| Entra na M3 | Quem | Estado |
+| --- | --- | --- |
+| Drill L8 com Claude real (1 prompt + a sonda que deve ser recusada) na unit isolada do smoke, sob o systemd do Arch | operador (passo 3 da §8.3) | **não executado** |
+| Mesma prova com Codex real: fecha a F1-P1 e confere o M1 (`orphan_owns_turn`) sob o systemd real | operador (passo 4) | **não executado** |
+| Registros `docs/evidence/e4-claude-real-arch.md` e `docs/evidence/f2-codex-orphan-arch.md`, gerados a partir do JSON salvo, separando executado de atestado | executor | aguarda os passos 3 e 4 |
+| Atualização do master plan §5/§6/§14 em commit próprio | executor | aguarda os registros |
+| Decisão P3 com a evidência do passo 4 (`reconcile_after_release` do Codex) | Tech Lead | aguarda o passo 4 |
+
+**Fica fora da M3:** a prova real de aprovação e de `AskUserQuestion` (P2: recomendação mantida, a L1 continua como atestado e só vira prova se o Tech Lead pedir 1–2 prompts a mais), tiles e "ciente" (F4), CI (F3), reaper de conexões Codex, OpenCode.
+
+**Limite de autorização respeitado nesta preparação:** os passos 3 e 4 gastam quota e mandam SIGKILL a um Cockpit isolado. Por isso só rodam no Arch, pelo operador, com autorização explícita. Esta VM não tem gerenciador systemd de usuário nem `msb`, e ela mesma é a VM reservada `claude-engineering-cockpit`. Nesta preparação não houve prompt real, sinal a processo do host, contato com a porta 8787 nem leitura ou escrita de `~/.config/engineering-cockpit`, `data/` ou credenciais.
+
+### 8.2 Revisão independente pré-execução e correções
+
+Feita por outro agente (Claude), só leitura, sem receber as conclusões do autor, com foco em "o que acontece se o operador rodar o procedimento literalmente no Arch". Ele rodou 82 testes do smoke e da prova: 82 pass. A revisão pelo Codex continua não feita (CLI sem login nesta VM).
+
+| # | Sev. | Achado | Tratamento |
+| --- | --- | --- | --- |
+| H1 | alta | O passo 1 do procedimento antigo falha no Arch: a branch já está em uso num worktree desta VM (reproduzido com git 2.39, inclusive com o worktree "prunable"). Os remédios usuais são perigosos (`prune` apaga o registro dos worktrees desta VM; `--force` põe a branch em dois checkouts). O nome da branch também não fixa o commit testado | **corrigido**: §8.3 usa `worktree add --detach` num commit fixo, confere o `HEAD` e grava o commit ao lado do JSON. Proibido `prune`/`--force` |
+| M1 | média | A recusa de VM reservada só olhava `COCKPIT_RESERVED_VMS` do **shell**. A lista normalmente fica no `cockpit.env` do serviço instalado, e uma VM de uso reservada só ali podia receber um prompt real | **corrigido**: o smoke lê (só leitura) `COCKPIT_RESERVED_VMS` de `~/.config/engineering-cockpit/cockpit.env` e soma ao do shell. Um arquivo que existe mas não é legível ou válido recusa a execução (`service_env_unreadable`, falha fechada). A lista também é passada ao Cockpit do smoke. 2 testes |
+| M2 | média | Ctrl+C não parava o fluxo principal: o prompt real ainda podia sair depois da interrupção. Um segundo Ctrl+C cortava a limpeza ao meio, o JSON saía duas vezes e a saída era 130 | **corrigido**: a interrupção aborta a requisição em voo e recusa qualquer requisição, início, SIGKILL ou sinal seguinte. A limpeza é **uma** promessa compartilhada (o `finally` espera a mesma). Sinais seguintes são ignorados durante a limpeza. O relatório sai **uma vez**, pelo chamador, com `interrupted` e saída 1. 2 testes (interrupção durante a criação da sessão: **nenhum** prompt enviado) |
+| L1 | baixa | `orphan_released` podia dar PASS com o painel ilegível (401/500 virava "lista vazia") | **corrigido**: só uma lista legível sem o órfão libera; no prazo, ilegível dá NOT_VERIFIED `orphan_list_unreadable`. 1 teste |
+| L2 | baixa | `journal_clean` lia o journal de execuções anteriores (passo 4 logo após o 3) | **corrigido**: `journalctl --since @<início desta execução>`. 1 teste |
+| L3 | baixa | O documento chamava `provider_connections` de contador | **corrigido na redação** (§5): é o número de conexões no instante da leitura. O veredito já era correto, porque a recusa vem antes de qualquer contato com o provider |
+| L4 | baixa | O passo 2 provavelmente sai com 2 (nenhum sobrevivente), e o script dizia "2 = nada foi criado" | **corrigido**: comentário do script e regra de decisão da §8.4 |
+
+**Segunda revisão independente, só das correções** (`e77c9ba..d079532`, outro agente Claude, só leitura, 47/47 testes). Nenhum bloqueador. Correções no commit `0bd0b25`:
+
+| # | Sev. | Achado | Tratamento |
+| --- | --- | --- | --- |
+| R1 | média | Um segundo Ctrl+C no terminal ainda matava o `systemctl stop` da limpeza: os filhos `systemctl`/`journalctl` estavam no grupo de processos do terminal | **corrigido**: o smoke roda esses comandos em sessão própria (`defaultRunner({ detached: true })`; o padrão compartilhado dos comandos `service` não muda). Teste com o id de sessão real em `/proc` |
+| R2 | baixa | `terminate()` ainda podia mandar SIGTERM/SIGKILL depois da interrupção (dentro do cgroup da unit, mas contra o requisito) | **corrigido**: não sinaliza nada depois da interrupção. Teste |
+| R3 | baixa | Uma interrupção durante a leitura do corpo virava resposta vazia "200" e podia rotular checagens de forma errada num relatório interrompido | **corrigido**. **Sem teste** (exige um corpo transmitido devagar no stand-in); impacto restrito aos rótulos de um relatório já FAIL |
+| R4 | baixa | Uma etapa marcada `interrupted` podia ser sobrescrita por PASS | **corrigido**: depois da interrupção nenhuma etapa do fluxo principal vira PASS (a limpeza continua relatando). Teste |
+| R5 | baixa | `installedReservedVms` falhava aberto com HOME/XDG_CONFIG_HOME inválidos ou caminho ilegível | **corrigido**: só `ENOENT` é "ausente"; o resto recusa (`service_env_unreadable`). 2 testes |
+| R6 | baixa | `journalctl --since @<segundos>` depende do relógio: um salto para trás durante a execução dá falso FAIL `journal_without_listening` | **mantido**: falha fechada (nunca PASS falso). O stand-in ignora `--since`, então o teste confere só o argumento. Endurecimento possível: cursor (`--show-cursor`/`--after-cursor`) |
+
+Fica um intervalo mínimo não coberto: um Ctrl+C entre o fim da limpeza e a impressão do relatório perde a impressão. A limpeza já terminou nesse ponto.
+
+Checado pelo revisor e sem achado: sinais só dentro do cgroup da unit, com revalidação de identidade; nenhuma referência à unit da porta 8787, a `~/.config` (exceto a leitura acima) ou a `data/`; `NoNewPrivileges=yes`, `KillMode=process`, `RestartPreventExitStatus=78` e `UMask=0077` vêm do template sem mudança e o NoNewPrivs é conferido em `/proc`; exatamente dois `POST …/runs` possíveis, sem laço de repetição; reinício e reconciliação não reenviam (o reatamento Codex é `thread/resume`, não um turno novo); execuções seguidas não se atrapalham. Observação: o `daemon-reload` do smoke recarrega a definição em disco de todas as units do usuário, inclusive a da porta 8787, **sem** reiniciá-la. É o mesmo comportamento já aceito no F1-D.
+
+### 8.3 Procedimento no Arch (revisado; passos 0–2 sem quota, 3–4 só com autorização)
+
+Pré-condições, conferidas pelo operador: uma VM **de teste** por provider, ligada, com login feito, **ociosa e sem outro uso**. Nunca `claude-engineering-cockpit`, nunca uma VM listada em `COCKPIT_RESERVED_VMS`. As candidatas já usadas em homologações anteriores são `claude-cockpit-e2-test` e `codex-cockpit-e0-test`; o operador confirma se ainda existem e servem. Nada abaixo para, reinicia ou reconfigura o Cockpit da porta 8787, as VMs de uso, `~/.config/engineering-cockpit` ou `data/`.
+
+```sh
+# 0. Uma vez (seguro). NUNCA `git worktree prune` nem `--force` no Arch: o repositório é compartilhado com a VM de desenvolvimento.
+# Edite só estas três linhas: o commit entregue e as VMs de teste confirmadas.
+COMMIT=COLE_O_COMMIT; CLAUDE_VM=claude-cockpit-e2-test; CODEX_VM=codex-cockpit-e0-test
+REPO=~/sandboxes/agent/projects/engineering-cockpit
+git -C "$REPO" worktree add --detach ~/sandboxes/agent/worktrees/cockpit-f2 "$COMMIT"
+cd ~/sandboxes/agent/worktrees/cockpit-f2 && test "$(git rev-parse HEAD)" = "$(git -C "$REPO" rev-parse "$COMMIT")" && echo commit-ok
+OUT="$REPO/.cache/f2-m3"; mkdir -p -m 700 "$OUT"; git rev-parse HEAD > "$OUT/commit"   # .cache/ é ignorado pelo git; o executor lê daqui
+systemctl --user show engineering-cockpit.service -p ActiveState,MainPID,NRestarts > "$OUT/service-8787-before.txt"
+smoke() { env COCKPIT_F1_SMOKE_CONFIRMED=yes COCKPIT_PROJECTS_BASE="$HOME/sandboxes/agent/projects" "$@" ./scripts/cockpit f1-systemd-smoke; }   # bash e zsh
+
+# 1. Seguro: verificação local do commit (sem VM, sem quota, sem portas fixas)
+./scripts/cockpit bootstrap && ./scripts/cockpit e4-homologation > "$OUT/1-e4-homologation.log" 2>&1; echo "exit=$?" | tee "$OUT/1-e4.exit"
+./scripts/cockpit artifact --check | tee "$OUT/1-artifact.log"
+
+# 2. Portão sem quota: smoke base com cada VM de teste (só leitura no provider, sem prompt)
+smoke COCKPIT_SMOKE_VM="$CLAUDE_VM" > "$OUT/2-claude-base.json"; echo "exit=$?" | tee "$OUT/2-claude-base.exit"
+smoke COCKPIT_SMOKE_VM="$CODEX_VM"  > "$OUT/2-codex-base.json";  echo "exit=$?" | tee "$OUT/2-codex-base.exit"
+
+# 3. SÓ COM AUTORIZAÇÃO (gasta quota: 1 prompt real + a sonda, que deve ser recusada). Prova Claude (L8)
+smoke COCKPIT_SMOKE_VM="$CLAUDE_VM" COCKPIT_SMOKE_ORPHAN_PROOF=yes COCKPIT_SMOKE_QUOTA_CONFIRMED=yes > "$OUT/3-claude-proof.json"; echo "exit=$?" | tee "$OUT/3-claude-proof.exit"
+
+# 4. SÓ COM AUTORIZAÇÃO (gasta quota). Prova Codex (F1-P1 + M1 sob systemd real; evidência para a P3)
+smoke COCKPIT_SMOKE_VM="$CODEX_VM" COCKPIT_SMOKE_ORPHAN_PROOF=yes COCKPIT_SMOKE_QUOTA_CONFIRMED=yes > "$OUT/4-codex-proof.json"; echo "exit=$?" | tee "$OUT/4-codex-proof.exit"
+
+# Depois de cada passo, e no fim: o serviço da porta 8787 continua o mesmo processo
+systemctl --user show engineering-cockpit.service -p ActiveState,MainPID,NRestarts > "$OUT/service-8787-after.txt"; diff "$OUT/service-8787-before.txt" "$OUT/service-8787-after.txt" && echo service-8787-intacto
+```
+
+**Pare** se `commit-ok` não aparecer no passo 0, se o passo 1 não sair com `exit=0` e `PASS artifact manifest`, ou se o passo 2 não passar pelo portão da §8.4. Os JSON não contêm prompt, texto do modelo nem credencial. Eles contêm o nome da VM de teste. `$OUT` fica no checkout compartilhado, então o executor lê os arquivos desta VM e gera os registros: o operador não precisa colar nada. Se algo for interrompido (Ctrl+C), o smoke para, limpa e grava o relatório com `interrupted` (saída 1). Um remanescente de queda de energia é removido na execução seguinte; `.cache/f1-systemd-smoke/run-*` do worktree do Arch fica até `rm -rf` manual (§6).
+
+### 8.4 Regras de decisão, combinadas antes de gastar quota (para o Tech Lead ratificar)
+
+| Resultado | Leitura | Ação |
+| --- | --- | --- |
+| Passo 2: todas as checagens PASS, exceto `orphan_ledger` NOT_VERIFIED `no_surviving_msb_child` (saída 2) | esperado: as sondas são curtas e terminam junto com o Cockpit, como no F1-D | segue para o passo 3/4 (com autorização) |
+| Passo 2: qualquer FAIL, ou NOT_VERIFIED em `preconditions`, `msb_list` ou `msb_exec` | ambiente ou VM sem condição | **não** gastar quota; trazer o JSON |
+| Passos 3/4: `overall` PASS | L8 (Claude) e F1-P1 + M1 (Codex) provados sob o systemd real | registrar; F2 pode ser encerrada |
+| `orphan_turn_started`, `run_unknown_after_crash`, `reconcile_conservative` (Claude) PASS, mas as checagens de órfão NOT_VERIFIED `no_surviving_msb_child` | evidência real de que o `msb exec` **não** sobrevive ao SIGKILL do Cockpit sob o systemd. Sem órfão não há bloqueio nem posse do turno; a recuperação conservadora (run `unknown`, sem reenvio) é o que vale | **CONDITIONAL GO**: registrar como achado. O §8.3 do V1 ("órfãos visíveis e bloqueando") passa a ser "não ocorrem sob o systemd", decisão do Tech Lead. Não repetir para "forçar" o órfão |
+| `partial_preserved` NOT_VERIFIED (`no_partial_text_before_kill`), ou `orphan_turn_started` NOT_VERIFIED (turno terminou antes do kill) | o modelo não transmitiu texto a tempo, ou foi rápido demais | no máximo **uma** repetição, com nova autorização |
+| Codex `reconcile_after_release` NOT_VERIFIED `reattached_running_after_owner_ended` | é o caso aberto da P3, observado com Codex real | não é falha da M3; leva à decisão P3 com essa evidência |
+| Qualquer FAIL nos passos 3/4 | defeito real ou ambiente inesperado | **NO-GO**: não repetir sem análise do JSON (cada repetição gasta quota) |
+| `service-8787-intacto` ausente | o serviço diário mudou durante a janela | investigar antes de qualquer conclusão. O smoke não o toca (revisado); pode ser um reinício alheio |
+
+### 8.5 Verificações executadas nesta preparação (automáticas, nesta VM, Bun 1.4.4, simuladores)
+
+Veja [`docs/evidence/f2-m3-2026-11-09/`](evidence/f2-m3-2026-11-09/).
+
+| Verificação | Resultado |
+| --- | --- |
+| `./scripts/cockpit f1-accept hermetic` em `e77c9ba` (antes das correções, árvore limpa) | **PASS**: 446/0, drill E4 PASS, Chromium 23/23, 23/23, 12/12, 52/52, `artifact` PASS |
+| Testes do smoke, da prova e do serviço após as correções (`f1-systemd-smoke`, `f2-provider-proof`, `f1-orphan-proof`, `f2-proof-contract`, `f2-proof`, `service`) | **94 pass / 0 fail**, 3 execuções seguidas |
+| `./scripts/cockpit f1-accept hermetic` no commit final do código (`931107e`, árvore limpa) | **PASS**: 455/0 (446 + 9 novos), drill E4 PASS, Chromium 23/23, 23/23, 12/12, 52/52, `artifact` PASS. Uma execução anterior no mesmo commit deu FAIL só no `brand-visual-check` (0/0, `Uncaught` no login). É uma intermitência **pré-existente** no script de teste: reproduzida no `develop` `4e4bd9d` (1 falha em 6) e na F2 (2 em 5), causa identificada e fora do escopo da F2 ([`brand-visual-check-flake.txt`](evidence/f2-m3-2026-11-09/brand-visual-check-flake.txt)). Relevante para o CI da F3. [`hermetic-report.md`](evidence/f2-m3-2026-11-09/hermetic-report.md) |
+| Controles negativos das correções (3 rodadas) | **14 de 15 mutações alcançáveis detectadas.** A rodada 1 revelou que o stand-in "salvava" a corrida do Ctrl+C ao parar o servidor na hora. O stand-in passou a parar em 1,5 s, como um SIGTERM real, e as 4 mutações não detectadas passaram a ser. Não detectada: R3, sem efeito em requisição, sinal ou limpeza. Uma 16ª (guarda antes de criar a unit) é inalcançável por construção. [`mutations.txt`](evidence/f2-m3-2026-11-09/mutations.txt) |
+| Procedimento §8.3 | `bash -n` sem erro. A função `smoke()` foi conferida com um `scripts/cockpit` substituto: variáveis e argumentos chegam como esperado. O defeito H1 foi reproduzido com git 2.39 num repositório descartável, e `--detach` funciona |
+| Vazamentos | nenhum processo `sleep` nem Chromium novo depois das execuções; `/workspace` segue em `develop` `4e4bd9d` sem alteração rastreada; nenhuma porta 8787 contatada |
+
+**Não executado:** nada no Arch; nenhum prompt real; nenhum `systemctl`, `msb`, `codex` ou `claude` real; nenhuma leitura do `~/.config` real (os testes usam diretórios temporários).
+
+### 8.6 Parecer e próxima ação
+
+**CONDITIONAL GO** para a homologação real no Arch. O runner e o procedimento estão prontos e revisados duas vezes, sem achado aberto acima de baixo. A F2 **não** está encerrada: falta a prova real, que só o operador pode executar e autorizar. Condições para o GO:
+
+1. o operador confirma as VMs de teste (ociosas, com login, fora de `COCKPIT_RESERVED_VMS`) e autoriza o gasto de quota dos passos 3 e 4;
+2. os passos 0–2 passam pelos portões da §8.4 antes de qualquer prompt real;
+3. os resultados dos passos 3 e 4 são lidos pelas regras da §8.4, ratificadas pelo Tech Lead **antes** da execução;
+4. depois: registros em `docs/evidence/`, master plan §5/§6/§14 em commit próprio e decisão P3.
+
+**Próxima ação mínima:** o operador roda no Arch os passos 0–2 da §8.3 (sem quota). Se os portões passarem e houver autorização, roda os passos 3 e 4 no mesmo terminal. Nada precisa ser colado: o executor lê `$OUT` pelo checkout compartilhado e gera os registros.

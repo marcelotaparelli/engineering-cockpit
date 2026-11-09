@@ -1,0 +1,22 @@
+Pre-existing intermittent failure of scripts/brand-visual-check.ts (NOT introduced by F2; found during the F2-M3 preparation, 2026-11-09)
+
+Symptom: `error: Uncaught !document.getElementById('login').hidden` at scripts/brand-visual-check.ts:49, 0/0 checks, ~0.3 s.
+Cause (by reading): `until()` (line 52) polls `js()`, which THROWS when the evaluated expression throws; while the page is still
+loading, `document.getElementById('login')` is null, so `.hidden` raises a TypeError and the whole script aborts instead of polling again.
+
+Isolated reruns (Bun 1.4.4, CHROMIUM=/usr/bin/chromium, default TMPDIR):
+  feat/f2-real-provider-proof 931107e  run 1: FAIL Uncaught
+  feat/f2-real-provider-proof 931107e  run 2: PASS
+  feat/f2-real-provider-proof 931107e  run 3: PASS
+  feat/f2-real-provider-proof 931107e  run 4: PASS
+  feat/f2-real-provider-proof 931107e  run 5: FAIL Uncaught
+  develop 4e4bd9d (worktree cockpit-f1-accept)  run 1: PASS
+  develop 4e4bd9d (worktree cockpit-f1-accept)  run 2: PASS
+  develop 4e4bd9d (worktree cockpit-f1-accept)  run 3: FAIL Uncaught
+  develop 4e4bd9d (worktree cockpit-f1-accept)  run 4: PASS
+  develop 4e4bd9d (worktree cockpit-f1-accept)  run 5: PASS
+  develop 4e4bd9d (worktree cockpit-f1-accept)  run 6: PASS
+
+The F2 commits do not touch scripts/brand-visual-check.ts; public/ differs from develop only by the two M1 text lines in public/app.js
+(orphan_owns_turn / orphan_check_unavailable messages), which the login wait does not reach.
+Fix (test-only, out of the F2 scope; relevant for F3 CI): make `until()` treat an exception as "not yet".
