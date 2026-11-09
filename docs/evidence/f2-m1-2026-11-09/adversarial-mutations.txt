@@ -1,0 +1,35 @@
+# Mutações do código de produção contra tests/f2-m1-adversarial.test.ts (executado automaticamente na VM de desenvolvimento)
+# 2026-11-09T06:03:26Z, Bun 1.4.4. Cada mutação é aplicada, testada e revertida com git checkout; o esperado é pelo menos 1 FAIL.
+
+## base (sem mutação): esperado 0 fail
+ 8 pass
+ 0 fail
+
+## MUT-1: a reconciliação com órfão sinaliza o PID do órfão (SIGTERM)
+(fail) F2-M1 adversarial: recovery never signals, never resends, never guesses > no process is signalled by recovery, reconcile, a blocked send, an interrupt or an orderly close: the orphan and a bystander stay
+(fail) F2-M1 adversarial: recovery never signals, never resends, never guesses > static guard: only reviewed files signal a process by PID, and the recovery, execution, HTTP, dashboard and store code contain no
+ 6 pass
+ 2 fail
+
+## MUT-2: o ledger trata qualquer PID vivo como órfão (ignora o start time)
+(fail) F2-M1 adversarial: recovery never signals, never resends, never guesses > a ledger row whose PID was reused by a stranger is forgotten, never treated as the orphan, never signalled, and does not block th
+ 7 pass
+ 1 fail
+
+## MUT-3: a reconciliação deixa de consultar o ledger (comportamento anterior à F2)
+(fail) F2-M1 adversarial: recovery never signals, never resends, never guesses > no process is signalled by recovery, reconcile, a blocked send, an interrupt or an orderly close: the orphan and a bystander stay
+(fail) F2-M1 adversarial: recovery never signals, never resends, never guesses > eight concurrent reconciles while the orphan lives all get the same refusal and open no connection [57.51ms]
+(fail) F2-M1 adversarial: recovery never signals, never resends, never guesses > the answer survives further restarts: a third Cockpit on the same database still finds the orphan and still refuses [69.18ms]
+(fail) F2-M1 adversarial: recovery never signals, never resends, never guesses > an operator without a grant for the project gets 404 and learns nothing about the orphan; one with the grant gets the closed-voca
+ 4 pass
+ 4 fail
+
+## MUT-4: o envio deixa de ser bloqueado pelo órfão
+(fail) F2-M1 adversarial: recovery never signals, never resends, never guesses > no process is signalled by recovery, reconcile, a blocked send, an interrupt or an orderly close: the orphan and a bystander stay
+(fail) F2-M1 adversarial: recovery never signals, never resends, never guesses > nothing is resent while the orphan lives: the same key replays the original run, a changed prompt on that key conflicts, a new ke
+ 6 pass
+ 2 fail
+
+## restaurado: esperado 0 fail
+ 8 pass
+ 0 fail

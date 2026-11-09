@@ -1,17 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { RuntimeStore, type RunRecord } from "../src/runtime-store.ts";
+import { RuntimeStore } from "../src/runtime-store.ts";
 import { ProcessLedger, type OrphanProcess } from "../src/process-ledger.ts";
-import { ExecutionService, type ExecutionLog } from "../src/execution.ts";
-import { CodexAppServerAdapter } from "../src/codex-adapter.ts";
-import { FakeCodexTransport, FakeCodexWorld } from "../src/fake-codex.ts";
 import { EventHub } from "../src/event-hub.ts";
 import { LocalSecurity } from "../src/local-security.ts";
 import { startServer } from "../src/server.ts";
-import type { MsbChild, MsbSpawn } from "../src/msb-transport.ts";
-import type { Snapshot } from "../src/model.ts";
+import { cleanups, closeOrphanWorld, cockpit, CODEX_ARGV, credential, deadIdentity, quiet, sleepSpawn, snapshot, tempStore, turnInFlight, turnStatus, until } from "./support/codex-orphan.ts";
+import type { FakeCodexWorld } from "../src/fake-codex.ts";
 
 /**
  * F2 (L4, decision D10) — a Codex run left `unknown` while the app-server of the previous Cockpit is still alive on the VM.
@@ -24,76 +18,7 @@ import type { Snapshot } from "../src/model.ts";
  * The orphan is a REAL process (`sleep`) recorded by a "crashed" ledger, so liveness comes from the real /proc; the provider is
  * the deterministic fake App Server, whose world (threads, turns) survives the Cockpit like the VM does.
  */
-const credential = "f".repeat(64);
-const CODEX_ARGV = (vm: string) => ["msb", "exec", "--stream", vm, "--", "codex", "app-server", "--listen", "stdio://"];
-const quiet = () => {};
-const children: Bun.Subprocess[] = [];
-const cleanups: Array<() => Promise<void> | void> = [];
-afterEach(async () => {
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-  for (const child of children.splice(0)) { try { child.kill("SIGKILL"); } catch { /* gone */ } await child.exited; }
-});
-
-/** Runs `sleep` whatever the msb argv says: a real, controllable stand-in for the surviving `msb exec … codex app-server`. */
-const sleepSpawn: MsbSpawn = () => {
-  const child = Bun.spawn(["sleep", "60"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  children.push(child);
-  return child as unknown as MsbChild;
-};
-async function deadIdentity(): Promise<{ pid: number; startTicks: string }> {
-  const gone = Bun.spawn(["true"]);
-  await gone.exited;
-  return { pid: gone.pid, startTicks: "1" };
-}
-async function until<T>(read: () => T | Promise<T>, done: (value: T) => boolean, timeoutMs = 3000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = await read();
-    if (done(value)) return value;
-    if (Date.now() > deadline) throw new Error(`timeout; last=${JSON.stringify(value)}`);
-    await Bun.sleep(10);
-  }
-}
-
-const snapshot = (): Snapshot => ({ source: "mock", host_verification: "not_verified", observed_at: new Date().toISOString(), projects: ["alpha", "beta"],
-  vms: [
-    { vm_name: "codex-alpha", project: "alpha", provider: "codex", state: "running", orphaned: false },
-    { vm_name: "codex-beta", project: "beta", provider: "codex", state: "running", orphaned: false },
-  ] });
-
-/** One "VM" world per VM name, shared by every Cockpit instance of a test (the provider state outlives the Cockpit). */
-function cockpit(store: RuntimeStore, worlds: Map<string, FakeCodexWorld>, processes?: ConstructorParameters<typeof ExecutionService>[0]["processes"]) {
-  const transports: Array<{ vmName: string; transport: FakeCodexTransport }> = [];
-  const logs: ExecutionLog[] = [];
-  const adapter = new CodexAppServerAdapter(target => {
-    let world = worlds.get(target.vmName);
-    if (!world) { world = new FakeCodexWorld(); worlds.set(target.vmName, world); }
-    const transport = new FakeCodexTransport(world, { delayMs: 2 });
-    transports.push({ vmName: target.vmName, transport });
-    return transport;
-  });
-  const execution = new ExecutionService({ store, adapter, hub: new EventHub(), refresh: async () => snapshot(), log: entry => { logs.push(entry); }, ...(processes ? { processes } : {}) });
-  cleanups.push(() => execution.close());
-  return { execution, transports, logs };
-}
-
-async function tempStore(): Promise<{ path: string; open: () => RuntimeStore }> {
-  const dir = await mkdtemp(join(tmpdir(), "cockpit-f2-"));
-  cleanups.push(() => rm(dir, { recursive: true, force: true }));
-  const path = join(dir, "runtime", "runtime.sqlite");
-  return { path, open: () => { const store = new RuntimeStore(path); cleanups.push(() => store.close()); return store; } };
-}
-
-/** A Codex turn still in progress on the VM: the fake App Server keeps an "elicit" turn open until it is interrupted. */
-async function turnInFlight(execution: ExecutionService, store: RuntimeStore, vmName = "codex-alpha", project = "alpha") {
-  const target = await execution.revalidate(vmName, project);
-  const session = await execution.openSession(target, "new");
-  const { run } = await execution.startRun(session, "elicit: tarefa longa que segue rodando na VM", `key-${crypto.randomUUID()}`);
-  const bound = await until(() => store.getRun(run.runId)!, value => value.status === "running" && value.providerRunId !== null);
-  return { session, run: bound };
-}
-const turnStatus = (world: FakeCodexWorld, run: RunRecord) =>
-  [...world.threads.values()].flatMap(thread => thread.turns).find(turn => turn.id === run.providerRunId)?.status;
+afterEach(closeOrphanWorld);
 
 describe.skipIf(process.platform !== "linux")("F2 (L4/D10): reconcile never reattaches a run owned by an orphaned Codex app-server", () => {
   test("Cockpit crash with a turn in flight: the restarted Cockpit keeps the run unknown (orphan_owns_turn), spawns nothing, locks nothing; ending the orphan restores the normal path", async () => {
