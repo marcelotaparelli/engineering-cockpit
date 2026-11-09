@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { readHostVmList } from "./adapter.ts";
 import { ClaudeCodeAdapter } from "./claude-adapter.ts";
 import { assertClaudeTarget } from "./claude-protocol.ts";
+import { reservations } from "./reservations.ts";
+import { installedServiceValue } from "./service.ts";
 import { assertArchHost, hostFacts, type HostFacts } from "./host.ts";
 import { SafeError, safeCode, validProject, vmIdentity } from "./model.ts";
 import type { MsbSpawn } from "./msb-transport.ts";
@@ -71,13 +73,18 @@ export async function prepareE3Homologation(overrides?: E3PrepareOverrides): Pro
   try { assertRuntime(); set("runtime", "PASS", null); } catch (error) { set("runtime", "FAIL", safeCode(error)); return done(); }
 
   // Explicit authorization, Arch host, exclusive test VM. Nothing below runs without every gate.
-  let vm: string; let project: string; let port: number;
+  let vm: string; let project: string; let port: number; let reservedVmsValue = ""; let reservedProjectsValue = "";
   try {
     assertArchHost(env, overrides?.facts ?? hostFacts());
     if (env.COCKPIT_E3_CONFIRMED !== "yes") throw new SafeError("e3_confirmation_required");
     vm = env.COCKPIT_E3_VM ?? "";
     if (!vm) throw new SafeError("e3_target_required");
     assertClaudeTarget(vm); // refuses non-Claude VMs and claude-engineering-cockpit
+    // P-D4: the operator's reservations (shell and installed service, read-only) reserve whole projects; never prompt one of them.
+    const union = (key: "COCKPIT_RESERVED_VMS" | "COCKPIT_RESERVED_PROJECTS") =>
+      [...new Set([...(env[key] ?? "").split(","), ...installedServiceValue(env, key).split(",")].map(name => name.trim()).filter(Boolean))].join(",");
+    reservedVmsValue = union("COCKPIT_RESERVED_VMS"); reservedProjectsValue = union("COCKPIT_RESERVED_PROJECTS");
+    if (reservations(reservedVmsValue, reservedProjectsValue).vms.includes(vm)) throw new SafeError("e3_target_reserved");
     if (!/^claude-cockpit-e2[a-z0-9_-]*$/.test(vm)) throw new SafeError("e3_target_not_isolated");
     project = vmIdentity(vm).project;
     if (!validProject(project)) throw new SafeError("e3_target_invalid");
@@ -148,7 +155,8 @@ export async function prepareE3Homologation(overrides?: E3PrepareOverrides): Pro
       url: `http://127.0.0.1:${port}`, token, tokenGenerated: provided === undefined,
       env: { ...inherited, COCKPIT_MODE: "host", COCKPIT_HOST_CONFIRMED: "yes", COCKPIT_PROJECTS_BASE: base, COCKPIT_ALLOWED_PROJECTS: project,
         // The data directory is reused between runs: UI grants stay off so the ACL is exactly the test project, every time.
-        COCKPIT_UI_GRANTS: "off", COCKPIT_DATA_DIR: dataDir, PORT: String(port), COCKPIT_LOCAL_TOKEN: token },
+        COCKPIT_UI_GRANTS: "off", COCKPIT_DATA_DIR: dataDir,
+        ...(reservedVmsValue ? { COCKPIT_RESERVED_VMS: reservedVmsValue } : {}), ...(reservedProjectsValue ? { COCKPIT_RESERVED_PROJECTS: reservedProjectsValue } : {}), PORT: String(port), COCKPIT_LOCAL_TOKEN: token },
     },
   };
 }

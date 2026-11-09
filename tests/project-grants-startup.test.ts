@@ -47,7 +47,7 @@ test("no configured project: discover → authorize in the page → open Codex a
   const claude = await api.post("/api/sessions", { vm_name: "claude-demo", mode: "new" });
   expect(claude.status).toBe(201);
   expect(claude.body).toMatchObject({ project: "demo", vm_name: "claude-demo", provider: "claude" });
-  expect((await stat(join(harness.dataDir, "grants-mock.sqlite"))).mode & 0o777).toBe(0o600);
+  expect((await stat(join(harness.dataDir, "runtime-mock", "grants.sqlite"))).mode & 0o777).toBe(0o600);
   const logs = cockpit.logs();
   expect(logs).toContain('"event":"project_grant","action":"grant","project":"demo"');
   expect(logs).not.toContain(harness.token);
@@ -75,7 +75,7 @@ test("UI grants off: the configuration must still grant a project, and nothing c
   expect(view.ui_grants).toBe(false);
   expect(view.projects.map((project: { name: string; can_authorize: boolean }) => [project.name, project.can_authorize])).toEqual([["demo", false], ["lab", false], ["vault", false]]);
   expect(await api.post("/api/projects/lab/grant", { confirm: "lab" })).toEqual({ status: 409, body: expect.objectContaining({ error: { code: "grants_read_only" } }) });
-  expect(await Bun.file(join(configured.dataDir, "grants-mock.sqlite")).exists()).toBe(false);
+  expect(await Bun.file(join(configured.dataDir, "runtime-mock", "grants.sqlite")).exists()).toBe(false);
   await cockpit.stop("SIGTERM");
 });
 

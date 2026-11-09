@@ -6,7 +6,7 @@ import { reservations } from "./reservations.ts";
 import { classifyChild, procProbe } from "./process-ledger.ts";
 import { blockersOf, CLAUDE_PROOF_PROMPT, code as closedCode, countRuns, hasEnoughPartial, judgeBlockedSend, judgePartialPreserved, judgeReconcileAfterRelease,
   judgeReconcileWhileOwnerAlive, parseOrphans, parseReconcile, parseReliability, readRunTranscript, type ProofProvider, type RunTranscript, type Verdict } from "./f2-proof.ts";
-import { defaultRunner, isLink, newToken, parseEnvFile, portBusy, renderEnvFile, renderUnit, repoRoot, SAFE_PATH, servicePath, servicePaths, type Runner } from "./service.ts";
+import { defaultRunner, installedServiceValue, isLink, newToken, parseEnvFile, portBusy, renderEnvFile, renderUnit, repoRoot, SAFE_PATH, servicePath, servicePaths, type Runner } from "./service.ts";
 
 /**
  * F1-D — real systemd smoke on the Arch host (operator-run; never on the development VM).
@@ -486,19 +486,9 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
   return report;
 }
 
-/**
- * `COCKPIT_RESERVED_VMS` of the INSTALLED service (`~/.config/engineering-cockpit/cockpit.env`, read-only), or "" when there is no
- * installed service (no file, or no HOME/XDG_CONFIG_HOME to locate it). A file that exists but cannot be read or parsed is refused:
- * the smoke must not guess which VMs the operator reserved before it sends a real prompt.
- */
+/** A reservation key of the INSTALLED service's cockpit.env (read-only), or "": see `installedServiceValue` in service.ts. */
 export function installedReservedVms(env: Record<string, string | undefined>, key: "COCKPIT_RESERVED_VMS" | "COCKPIT_RESERVED_PROJECTS" = "COCKPIT_RESERVED_VMS"): string {
-  if (!env.XDG_CONFIG_HOME && !env.HOME) return ""; // nowhere to look: no installed service can be located
-  let file: string;
-  try { file = servicePaths(env).envFile; } catch { throw new SafeError("service_env_unreadable"); } // HOME/XDG_CONFIG_HOME set but unusable
-  let text: string;
-  try { text = readFileSync(file, "utf8"); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""; throw new SafeError("service_env_unreadable"); } // only "absent" is absent
-  try { return parseEnvFile(text)[key] ?? ""; } catch { throw new SafeError("service_env_unreadable"); }
+  return installedServiceValue(env, key);
 }
 
 /**

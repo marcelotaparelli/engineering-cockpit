@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareE3Homologation, type E3PrepareOverrides } from "../src/e3-homologation.ts";
@@ -63,12 +63,29 @@ describe("E3 homologation preparation (isolated Cockpit, explicit authorization)
     [{ COCKPIT_E3_PORT: "8787" }, "e3_port_reserved"],
     [{ COCKPIT_E3_PORT: "80" }, "e3_port_invalid"],
     [{ COCKPIT_PROJECTS_BASE: "relative" }, "host_projects_base_required"],
+    // P-D4 (review round 2, F3): a reserved sibling VM or a reserved project makes the test VM a reserved target.
+    [{ COCKPIT_RESERVED_VMS: "codex-cockpit-e2-test" }, "e3_target_reserved"],
+    [{ COCKPIT_RESERVED_PROJECTS: "cockpit-e2-test" }, "e3_target_reserved"],
   ])("gate %p refuses before touching anything (%s)", async (env, reason) => {
     const { overrides, world } = setup(env as Record<string, string | undefined>);
     const { report, launch } = await prepareE3Homologation(overrides);
     expect(launch).toBeNull();
     expect(check(report, "host_consent")).toMatchObject({ status: "NOT_VERIFIED", reason });
     expect(world.spawned).toHaveLength(0);
+  });
+
+  test("P-D4: reservations of the INSTALLED service are honoured too, and every reservation reaches the launched Cockpit", async () => {
+    const xdg = mkdtempSync(join(tmpdir(), "e3-xdg-"));
+    mkdirSync(join(xdg, "engineering-cockpit"));
+    writeFileSync(join(xdg, "engineering-cockpit", "cockpit.env"), "PORT=8787\nCOCKPIT_RESERVED_VMS=codex-cockpit-e2-test\n", { mode: 0o600 });
+    const installed = setup({ XDG_CONFIG_HOME: xdg });
+    const refused = await prepareE3Homologation(installed.overrides);
+    expect(refused.launch).toBeNull();
+    expect(check(refused.report, "host_consent")).toMatchObject({ status: "NOT_VERIFIED", reason: "e3_target_reserved" });
+    expect(installed.world.spawned).toHaveLength(0);
+    const other = await prepareE3Homologation(setup({ COCKPIT_RESERVED_VMS: "codex-other", COCKPIT_RESERVED_PROJECTS: "vault" }).overrides);
+    expect(other.report.ready).toBe(true);
+    expect(other.launch!.env).toMatchObject({ COCKPIT_RESERVED_VMS: "codex-other", COCKPIT_RESERVED_PROJECTS: "vault", COCKPIT_UI_GRANTS: "off" });
   });
 
   test("non-Arch host is refused", async () => {

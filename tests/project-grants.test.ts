@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GrantStore, MAX_UI_GRANTS } from "../src/grant-store.ts";
@@ -144,7 +144,7 @@ test("config: empty or unset COCKPIT_ALLOWED_PROJECTS means no configuration gra
   expect(config({ ...base, COCKPIT_ALLOWED_PROJECTS: "" }).allowedProjects).toEqual([]);
   expect(config({ ...base, COCKPIT_ALLOWED_PROJECTS: "demo,lab" }).allowedProjects).toEqual(["demo", "lab"]);
   expect(config({ ...base, COCKPIT_ALLOWED_PROJECTS: "demo," }).allowedProjects).toEqual(["demo", ""]); // still refused by the grants
-  expect(config(base).grantsDatabasePath).toBe("/srv/cockpit-data/grants-mock.sqlite");
+  expect(config(base).grantsDatabasePath).toBe("/srv/cockpit-data/runtime-mock/grants.sqlite"); // inside the private runtime directory
   expect(config({ ...base, COCKPIT_UI_GRANTS: "off" }).grantsDatabasePath).toBeNull();
   expect(() => config({ ...base, COCKPIT_UI_GRANTS: "yes" })).toThrow("invalid_ui_grants");
   expect(config({ ...base, COCKPIT_RESERVED_PROJECTS: "secret-lab" }).reservedProjects).toEqual(["engineering-cockpit", "secret-lab"]);
@@ -192,11 +192,36 @@ test("catalog: discovered directories and authorized projects only; per-provider
   store.close();
 });
 
-test("data directory: the grants file is created next to the other stores, never through a link", async () => {
+test("data directory: the grants file lives in the private runtime directory (0700, ours); a shared directory is refused", async () => {
   const dir = join(work, "data-dir");
-  await mkdir(dir, { mode: 0o700 });
+  await mkdir(join(dir, "runtime-mock"), { recursive: true, mode: 0o700 });
   const settings = config({ COCKPIT_LOCAL_TOKEN: credential, COCKPIT_DATA_DIR: dir });
   const store = new GrantStore(settings.grantsDatabasePath!);
   store.close();
-  expect((await stat(join(dir, "grants-mock.sqlite"))).isFile()).toBe(true);
+  expect((await stat(join(dir, "runtime-mock", "grants.sqlite"))).isFile()).toBe(true);
+  const shared = join(work, "shared-dir");
+  await mkdir(shared, { mode: 0o700 });
+  await chmod(shared, 0o755);
+  expect(() => new GrantStore(join(shared, "grants.sqlite"))).toThrow("grant_store_denied");
+  expect(await Bun.file(join(shared, "grants.sqlite")).exists()).toBe(false); // refused before anything is created
+});
+
+test("store: a planted hot journal / WAL (shared mode, extra link, not a file) is refused BEFORE SQLite could replay it", async () => {
+  // Independent security review round 2, finding F2 (reproduced before the fix): a foreign `-journal` next to the store was
+  // rolled back into it on open, injecting a grant with no audit row.
+  for (const [suffix, plant] of [
+    ["-journal", async (path: string) => { await writeFile(path, "x", { mode: 0o644 }); await chmod(path, 0o644); }],
+    ["-wal", async (path: string) => { await writeFile(path, "x", { mode: 0o600 }); await link(path, path + ".second"); }],
+    ["-shm", async (path: string) => { await mkdir(path, { mode: 0o700 }); }],
+  ] as const) {
+    const path = fresh();
+    new GrantStore(path).close();
+    await plant(path + suffix);
+    expect(() => new GrantStore(path)).toThrow("grant_store_denied");
+  }
+  // A private regular sidecar of ours (a real crash leftover) is still accepted.
+  const path = fresh();
+  new GrantStore(path).close();
+  await writeFile(path + "-journal", "", { mode: 0o600 });
+  expect(() => new GrantStore(path).close()).not.toThrow();
 });

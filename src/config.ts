@@ -54,7 +54,8 @@ export function config(env: Record<string, string | undefined> = process.env, re
     localCredential,
     allowedProjects,
     reservedProjects: reserved.projects,
-    grantsDatabasePath: uiGrants === "on" ? data(`grants-${mode}.sqlite`) : null,
+    // Inside the runtime directory, which the RuntimeStore keeps private (0700, ours) and locked to one Cockpit.
+    grantsDatabasePath: uiGrants === "on" ? data(`runtime-${mode}/grants.sqlite`) : null,
     reservedVms: reserved.vms,
   };
 }

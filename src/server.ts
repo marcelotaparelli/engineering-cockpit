@@ -338,6 +338,8 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           const session = options.security.authorizeSession(requireRuntime(), principal, param);
           const { before, limit } = historyQuery(url.searchParams);
           const page = await requireExecution().history(session, before, limit);
+          // Re-checked after the provider wait: a revocation or reservation meanwhile serves nothing.
+          if (!options.security.allows(principal, session.target.projectId)) throw new SafeError("resource_not_found");
           return json({ session_id: session.sessionId, items: page.items, runs: page.runs, next_cursor: page.nextCursor });
         }
         if (route === "/api/sessions/:id/runs") {
@@ -397,7 +399,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
             if (source === "config") throw new SafeError("grant_from_config");
             if (source !== "ui") throw new SafeError("resource_not_found");
             // Never hide work in flight: a run (or approval) still active, or a process left by a crash, keeps the grant.
-            if (options.runtime?.activeRunForProject(param)) throw new SafeError("project_busy");
+            if (options.runtime?.activeRunForProject(param) || options.execution?.projectBusy(param)) throw new SafeError("project_busy");
             if ((options.execution?.orphanProcesses() ?? []).some(orphan => { try { return vmIdentity(orphan.vmName).project === param; } catch { return false; } })) {
               throw new SafeError("orphan_process_alive");
             }
@@ -431,7 +433,9 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           const vm = options.security.authorizeVm(snapshot, principal, param);
           const execution = requireExecution();
           const target = await execution.revalidate(vm.vm_name, vm.project);
-          return json({ vm_name: vm.vm_name, threads: await execution.listThreads(target) });
+          const threads = await execution.listThreads(target);
+          if (!options.security.allows(principal, vm.project)) throw new SafeError("resource_not_found"); // revoked while waiting
+          return json({ vm_name: vm.vm_name, threads });
         }
         if (route === "/api/sessions") {
           exact(body, ["vm_name", "mode"], ["thread_id"]);

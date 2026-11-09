@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { closeSync, lstatSync, openSync } from "node:fs";
+import { dirname } from "node:path";
 import { SafeError, validProject } from "./model.ts";
 import { assertNoSymlinks } from "./paths.ts";
 
@@ -33,11 +34,21 @@ export class GrantStore {
   constructor(path: string) {
     if (!path.startsWith("/") || path.split("/").includes("..")) throw new SafeError("grant_store_denied");
     assertNoSymlinks(path);
-    for (const suffix of ["-wal", "-shm", "-journal"]) assertNoSymlinks(path + suffix);
+    const uid = process.getuid?.();
+    // The directory must be private like the runtime database's (0700, ours): nobody else can plant a file next to the store.
+    const dir = (() => { try { return lstatSync(dirname(path)); } catch { throw new SafeError("grant_store_denied"); } })();
+    if (!dir.isDirectory() || (dir.mode & 0o077) !== 0 || (uid !== undefined && dir.uid !== uid)) throw new SafeError("grant_store_denied");
+    // SQLite replays a hot journal/WAL on open: a sidecar must be absent or a private regular file of ours with one link.
+    for (const suffix of ["-wal", "-shm", "-journal"]) {
+      assertNoSymlinks(path + suffix);
+      let side;
+      try { side = lstatSync(path + suffix); }
+      catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") continue; throw new SafeError("grant_store_denied"); }
+      if (!side.isFile() || side.nlink !== 1 || (side.mode & 0o077) !== 0 || (uid !== undefined && side.uid !== uid)) throw new SafeError("grant_store_denied");
+    }
     let created = false;
     try {
       const file = lstatSync(path);
-      const uid = process.getuid?.();
       if (!file.isFile() || file.nlink !== 1 || (file.mode & 0o077) !== 0 || (uid !== undefined && file.uid !== uid)) throw new SafeError("grant_store_denied");
       // A first start that died between creating the file and writing its schema leaves an empty private file: initialise it
       // (an empty file holds no grant, so nothing is lost or widened) instead of refusing every later start.

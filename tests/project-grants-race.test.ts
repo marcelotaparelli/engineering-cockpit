@@ -68,3 +68,59 @@ test("a revoke during startRun's wait creates no run; a revoke during openSessio
     server.stop(true); await execution.close().catch(() => {}); runtime.close(); store.close(); await rm(dir, { recursive: true, force: true });
   }
 });
+
+class AmbiguousDecisionTransport extends FakeCodexTransport {
+  // The decision DOES reach the provider (later) but the write reports failure → run `unknown` while the turn is still live.
+  override async respond(id: Parameters<FakeCodexTransport["respond"]>[0], result: unknown): Promise<void> {
+    setTimeout(() => { void super.respond(id, result); }, 300);
+    throw new Error("write timeout");
+  }
+}
+
+/**
+ * Independent security review round 2, finding F1 (reproduced before the fix): with the run `unknown` after
+ * `approval_delivery_unconfirmed`, revoke was accepted while the provider turn was still live, hiding work the operator could
+ * still interrupt or decide. Revoke must refuse while this process still follows a turn or holds an approval of the project.
+ */
+test("revoke is refused while a provider turn is still live, even when the run reads `unknown`; allowed once it ends", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cockpit-grant-live-"));
+  const runtime = new RuntimeStore(join(dir, "rt", "runtime.sqlite"));
+  const hub = new EventHub();
+  const world = new FakeCodexWorld();
+  const snapshot = (): Snapshot => ({ source: "mock", host_verification: "not_verified", observed_at: new Date().toISOString(), projects: ["alpha"],
+    vms: [{ vm_name: "codex-alpha", project: "alpha", provider: "codex", state: "running", orphaned: false }] });
+  const execution = new ExecutionService({ store: runtime, hub, log: () => {}, refresh: async () => snapshot(),
+    adapter: new CodexAppServerAdapter(() => new AmbiguousDecisionTransport(world, { delayMs: 3 })) });
+  const store = new GrantStore(join(dir, "grants.sqlite"));
+  const grants = ProjectGrants.managed({ config: [], reserved: reservedProjects(undefined), store });
+  const credential = "e".repeat(64);
+  const server = startServer({ source: "mock", port: 0, security: new LocalSecurity(credential, grants), runtime, execution, hub,
+    discovery: { refresh: async () => snapshot() }, log: () => {}, audit: () => {} });
+  const base = server.url.toString();
+  const origin = base.slice(0, -1);
+  try {
+    const login = await fetch(base + "api/auth/login", { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify({ credential }) });
+    const auth = { cookie: login.headers.get("set-cookie")!.split(";")[0]!, ...(await login.json() as { csrf: string; proof: string }) };
+    const headers = (extra: Record<string, string> = {}) => ({ Cookie: auth.cookie, "X-Session-Proof": auth.proof, "X-CSRF-Token": auth.csrf,
+      "X-Request-Nonce": crypto.randomUUID().replaceAll("-", "") + "xx", Origin: origin, "Content-Type": "application/json", ...extra });
+    const post = (path: string, body: unknown, extra: Record<string, string> = {}) => fetch(base + path, { method: "POST", body: JSON.stringify(body), headers: headers(extra) });
+    expect((await post("api/projects/alpha/grant", { confirm: "alpha" })).status).toBe(200);
+    const sessionId = (await (await post("api/sessions", { vm_name: "codex-alpha", mode: "new" })).json() as { session_id: string }).session_id;
+    const run = await (await post(`api/sessions/${sessionId}/runs`, { prompt: "pede approval" }, { "Idempotency-Key": "k-live-0001-abcdefghij" })).json() as { run_id: string };
+    let approvals: Array<{ approvalId: string; version: number }> = [];
+    for (let i = 0; i < 100 && approvals.length === 0; i++) { await Bun.sleep(20); approvals = (await (await fetch(base + "api/approvals", { headers: headers() })).json() as { approvals: typeof approvals }).approvals; }
+    expect(approvals).toHaveLength(1);
+    await post(`api/approvals/${approvals[0]!.approvalId}/decision`, { decision: "approve", expected_version: approvals[0]!.version });
+    expect(runtime.getRun(run.run_id)!.status).toBe("unknown");
+    expect(execution.projectBusy("alpha")).toBe(true);
+    const refused = await post("api/projects/alpha/revoke", { confirm: "alpha" });
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("project_busy");
+    expect(grants.source("alpha")).toBe("ui");
+    for (let i = 0; i < 200 && execution.projectBusy("alpha"); i++) await Bun.sleep(10); // the turn ends on its own
+    expect(execution.projectBusy("alpha")).toBe(false);
+    expect((await post("api/projects/alpha/revoke", { confirm: "alpha" })).status).toBe(200);
+  } finally {
+    server.stop(true); await execution.close().catch(() => {}); runtime.close(); store.close(); await rm(dir, { recursive: true, force: true });
+  }
+});

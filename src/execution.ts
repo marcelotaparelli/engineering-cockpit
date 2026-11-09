@@ -173,6 +173,21 @@ export class ExecutionService {
     return Boolean(adapter && (vmName === undefined || !adapter.acceptsTarget || adapter.acceptsTarget(vmName)));
   }
 
+  /**
+   * Live work of this process in a project: a provider turn still followed (whatever the durable status says, `unknown`
+   * included, e.g. after `approval_delivery_unconfirmed`) or an approval handle still open. Revoking it would hide work the
+   * operator can still interrupt or decide, so revocation refuses while this is true.
+   */
+  projectBusy(projectId: string): boolean {
+    for (const active of this.#active.values()) if (active.session.target.projectId === projectId) return true;
+    for (const approval of this.#approvals.values()) {
+      const run = this.#store.getRun(approval.runId);
+      const session = run ? this.#store.getSession(run.sessionId) : null;
+      if (!session || session.target.projectId === projectId) return true; // unknown owner: fail closed
+    }
+    return false;
+  }
+
   /** Why a VM is not operable, for display only: reserved by configuration/adapter, or a provider without adapter. */
   unsupportedReason(provider: Provider, vmName: string): "reserved" | "provider" | null {
     if (this.supports(provider, vmName)) return null;

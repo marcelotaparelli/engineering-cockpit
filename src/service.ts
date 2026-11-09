@@ -404,3 +404,18 @@ export function defaultRunner(options: { detached?: boolean } = {}): Runner {
     } catch { return { code: 127, stdout: "" }; }
   };
 }
+
+/**
+ * A reservation key (`COCKPIT_RESERVED_VMS` / `COCKPIT_RESERVED_PROJECTS`) of the INSTALLED service (`~/.config/engineering-cockpit/cockpit.env`, read-only), or "" when there is no
+ * installed service (no file, or no HOME/XDG_CONFIG_HOME to locate it). A file that exists but cannot be read or parsed is refused:
+ * the smoke must not guess which VMs the operator reserved before it sends a real prompt.
+ */
+export function installedServiceValue(env: Record<string, string | undefined>, key: "COCKPIT_RESERVED_VMS" | "COCKPIT_RESERVED_PROJECTS"): string {
+  if (!env.XDG_CONFIG_HOME && !env.HOME) return ""; // nowhere to look: no installed service can be located
+  let file: string;
+  try { file = servicePaths(env).envFile; } catch { throw new SafeError("service_env_unreadable"); } // HOME/XDG_CONFIG_HOME set but unusable
+  let text: string;
+  try { text = readFileSync(file, "utf8"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""; throw new SafeError("service_env_unreadable"); } // only "absent" is absent
+  try { return parseEnvFile(text)[key] ?? ""; } catch { throw new SafeError("service_env_unreadable"); }
+}
