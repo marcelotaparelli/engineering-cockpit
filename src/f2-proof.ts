@@ -127,17 +127,36 @@ export function parseReconcile(response: ProofResponse): ReconcileView {
 }
 const observed = (view: ReconcileView) => ({ http: view.http, run_status: view.status, result: view.result, reason_code: view.reason, error_code: view.errorCode });
 const EXPECTED_WHILE_OWNER_ALIVE: Readonly<Record<ProofProvider, string>> = { codex: "orphan_owns_turn", claude: "provider_cannot_confirm" };
+/** Answers that say the Cockpit could not even reach the question (no provider run id, ledger unreadable): nothing was observed about the owner. */
+const NOT_OBSERVED_REASONS: ReadonlySet<string> = new Set(["provider_run_unbound", "orphan_check_unavailable"]);
+
+/** The Cockpit's own counters (`GET /api/dashboard` → `reliability`): what the reconcile must NOT have moved. Null when absent. */
+export interface Reliability { providerConnections: number; runsDispatched: number }
+export function parseReliability(body: unknown): Reliability | null {
+  const reliability = object(object(body)?.reliability);
+  const connections = reliability?.provider_connections; const dispatched = reliability?.runs_dispatched;
+  return Number.isSafeInteger(connections) && Number.isSafeInteger(dispatched) ? { providerConnections: connections as number, runsDispatched: dispatched as number } : null;
+}
+/** What was watched while the reconcile ran. `unreadableChildren`: new `msb` processes whose argv could not be read, so they could not be classified. */
+export interface ReconcileWatch { newExecChildren: number; unreadableChildren: number; before: Reliability | null; after: Reliability | null; orphanAlive: boolean }
 
 /**
  * The reconcile asked while the surviving process may still own the turn. Conservative means: HTTP 200, the run still `unknown`,
- * `unconfirmed` with the documented reason, and (checked by the caller, from the unit's cgroup) no new `msb exec` child.
- * `spawnedExecChildren` > 0 is a failure even when the answer looks right: the point is that nothing is opened beside the owner.
+ * `unconfirmed` with the documented reason, and NOTHING OPENED BESIDE THE OWNER, observed two ways: the Cockpit's own counters
+ * (no new provider connection, no prompt dispatched: race-free) and the unit's cgroup sampled during the call (no new `msb exec`
+ * child: a child that lives and dies between samples can slip through, which is why the counters exist). PASS needs both
+ * observations complete; anything less is NOT_VERIFIED, never a PASS for lack of evidence.
  */
-export function judgeReconcileWhileOwnerAlive(provider: ProofProvider, view: ReconcileView, spawnedExecChildren: number): Verdict {
+export function judgeReconcileWhileOwnerAlive(provider: ProofProvider, view: ReconcileView, watch: ReconcileWatch): Verdict {
   const expected = EXPECTED_WHILE_OWNER_ALIVE[provider];
-  const evidence = { ...observed(view), expected_reason_code: expected, new_msb_exec_children: spawnedExecChildren };
+  const evidence = { ...observed(view), expected_reason_code: expected, orphan_alive: watch.orphanAlive, new_msb_exec_children: watch.newExecChildren, unreadable_new_msb_children: watch.unreadableChildren,
+    provider_connections_before: watch.before?.providerConnections ?? null, provider_connections_after: watch.after?.providerConnections ?? null };
+  if (view.result === "unconfirmed" && view.reason !== null && NOT_OBSERVED_REASONS.has(view.reason)) return { status: "NOT_VERIFIED", reason: `reconcile_${view.reason}`, evidence };
   if (view.http !== 200 || view.status !== "unknown" || view.result !== "unconfirmed" || view.reason !== expected) return { status: "FAIL", reason: "reconcile_not_conservative", evidence };
-  if (spawnedExecChildren > 0) return { status: "FAIL", reason: "reconcile_spawned_msb_exec_child", evidence };
+  if (watch.newExecChildren > 0) return { status: "FAIL", reason: "reconcile_spawned_msb_exec_child", evidence };
+  if (watch.before && watch.after && watch.after.providerConnections > watch.before.providerConnections) return { status: "FAIL", reason: "reconcile_opened_provider_connection", evidence };
+  if (watch.before && watch.after && watch.after.runsDispatched > watch.before.runsDispatched) return { status: "FAIL", reason: "reconcile_dispatched_a_run", evidence };
+  if (watch.unreadableChildren > 0 || !watch.before || !watch.after) return { status: "NOT_VERIFIED", reason: "child_observation_incomplete", evidence };
   return { status: "PASS", reason: null, evidence };
 }
 
@@ -151,6 +170,7 @@ export function judgeReconcileWhileOwnerAlive(provider: ProofProvider, view: Rec
  */
 export function judgeReconcileAfterRelease(provider: ProofProvider, view: ReconcileView, orphanExisted: boolean): Verdict {
   const evidence = { ...observed(view), orphan_existed: orphanExisted };
+  if (view.result === "unconfirmed" && view.reason !== null && NOT_OBSERVED_REASONS.has(view.reason)) return { status: "NOT_VERIFIED", reason: `reconcile_${view.reason}`, evidence };
   if (provider === "claude") {
     if (view.http === 200 && view.status === "unknown" && view.result === "unconfirmed" && view.reason === "provider_cannot_confirm") return { status: "PASS", reason: null, evidence };
     if (view.http === 200 && view.status !== null && view.status !== "unknown") return { status: "FAIL", reason: "claude_run_resolved_without_evidence", evidence };
@@ -159,7 +179,7 @@ export function judgeReconcileAfterRelease(provider: ProofProvider, view: Reconc
   if (view.http !== 200) return { status: "NOT_VERIFIED", reason: `reconcile_http_${view.http}_${view.errorCode ?? "no_code"}`, evidence };
   if (view.result === "unconfirmed" && view.reason === "orphan_owns_turn") return { status: "FAIL", reason: "orphan_still_owns_turn_after_release", evidence };
   if (view.result === "confirmed" && (view.status === "completed" || view.status === "failed" || view.status === "interrupted")) return { status: "PASS", reason: null, evidence };
-  if (view.result === "unconfirmed" && view.status === "unknown") return { status: "PASS", reason: null, evidence };
+  if (view.result === "unconfirmed" && view.status === "unknown" && view.reason === "provider_reports_unknown") return { status: "PASS", reason: null, evidence };
   if (view.result === "confirmed" && view.status === "running") return { status: "NOT_VERIFIED", reason: "reattached_running_after_owner_ended", evidence };
   return { status: "FAIL", reason: "reconcile_after_release_unexpected", evidence };
 }

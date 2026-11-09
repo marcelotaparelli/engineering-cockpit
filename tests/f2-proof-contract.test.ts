@@ -5,12 +5,12 @@ import { ExecutionService } from "../src/execution.ts";
 import { ClaudeCodeAdapter } from "../src/claude-adapter.ts";
 import { EventHub } from "../src/event-hub.ts";
 import { blockersOf, CLAUDE_PROOF_PROMPT, countRuns, hasEnoughPartial, judgeBlockedSend, judgePartialPreserved, judgeReconcileAfterRelease, judgeReconcileWhileOwnerAlive, parseOrphans,
-  parseReconcile, readRunTranscript, type ProofHttp } from "../src/f2-proof.ts";
+  parseReconcile, parseReliability, readRunTranscript, type ProofHttp } from "../src/f2-proof.ts";
 import { PROOF_PROBE_PROMPT, PROOF_PROMPT } from "../src/f1-systemd-smoke.ts";
 import type { Snapshot } from "../src/model.ts";
 import { closeHarnesses, harness } from "./support/e4-harness.ts";
 import { cleanups, closeOrphanWorld, crashWithOrphan, deadIdentity, quiet, serve, sleepSpawn, turnStatus, until } from "./support/codex-orphan.ts";
-import { FakeSystemd, historyAgentItem, historyUserItem, orphanItem, reconcileBody, runBody, sessionBody } from "./support/fake-systemd.ts";
+import { FakeSystemd, historyAgentItem, historyUserItem, orphanItem, reconcileBody, reliabilityBody, runBody, sessionBody } from "./support/fake-systemd.ts";
 
 /**
  * CONTRACT: the parsers and verdicts the isolated smoke uses (src/f2-proof.ts) are run here against the REAL stack — real HTTP
@@ -31,6 +31,7 @@ const asProof = (api: Api): ProofHttp => ({
   get: async path => { const response = await api.get(path); return { status: response.status, body: await response.json().catch(() => ({})) }; },
   post: async (path, payload, headers) => { const response = await api.post(path, payload, headers); return { status: response.status, body: await response.json().catch(() => ({})) }; },
 });
+const quiet2 = { newExecChildren: 0, unreadableChildren: 0, before: { providerConnections: 0, runsDispatched: 0 }, after: { providerConnections: 0, runsDispatched: 0 }, orphanAlive: true };
 const key = () => `f2contract-${crypto.randomUUID()}`;
 const keys = (value: unknown) => Object.keys(value as Record<string, unknown>);
 const subset = (small: unknown, big: unknown) => keys(small).filter(name => !keys(big).includes(name));
@@ -96,10 +97,14 @@ describe.skipIf(process.platform !== "linux")("F2 contract: the smoke's Claude p
     expect(judgeBlockedSend(blocked, countRuns(sessionBody2))).toMatchObject({ status: "PASS", evidence: { runs_in_session: 1 } });
 
     // ---- reconcile_conservative: Claude cannot confirm after a restart, and nothing is spawned (the spawn above would throw)
+    const countersBefore = parseReliability((await http2.get("api/dashboard")).body);
     const reconcileRaw = await api2.post(`api/runs/${runId}/reconcile`, {}).then(response => response.json()) as Record<string, unknown>;
+    const countersAfter = parseReliability((await http2.get("api/dashboard")).body);
+    expect(countersBefore).not.toBeNull(); // the real dashboard exposes what the verdict reads
     const view = parseReconcile({ status: 200, body: reconcileRaw });
     expect(view).toEqual({ http: 200, status: "unknown", result: "unconfirmed", reason: "provider_cannot_confirm", errorCode: null });
-    expect(judgeReconcileWhileOwnerAlive("claude", view, 0)).toMatchObject({ status: "PASS" });
+    expect(countersAfter).toEqual(countersBefore); // the real Cockpit opened no connection and dispatched nothing
+    expect(judgeReconcileWhileOwnerAlive("claude", view, { ...quiet2, before: countersBefore, after: countersAfter })).toMatchObject({ status: "PASS", evidence: { provider_connections_before: 0, provider_connections_after: 0 } });
 
     // ---- orphan_released + reconcile_after_release: the process ends; the Cockpit's own view releases; Claude still cannot confirm
     orphan.kill("SIGKILL");
@@ -117,6 +122,7 @@ describe.skipIf(process.platform !== "linux")("F2 contract: the smoke's Claude p
     expect(dashboard.attention.map(item => item.kind).sort()).toEqual(["orphan_process", "unknown_run"]); // the dashboard shows the lost run AND its orphan
     expect(subset(orphanItem(world, 1), dashboard.attention.find(item => item.kind === "orphan_process")!)).toEqual([]);
     expect(subset(runBody(world), runAfter)).toEqual([]);
+    expect(subset(reliabilityBody(world), (dashboard as unknown as { reliability: Record<string, unknown> }).reliability)).toEqual([]);
     const realSession = await api2.get(`api/sessions/${sessionId}`).then(response => response.json()) as { session: Record<string, unknown>; runs: Array<Record<string, unknown>> };
     expect(subset(sessionBody(world), realSession)).toEqual([]);
     expect(subset(sessionBody(world).session, realSession.session)).toEqual([]);
@@ -141,9 +147,12 @@ describe.skipIf(process.platform !== "linux")("F2 contract: the smoke's Codex ve
     const blocked = await http.post(`api/sessions/${sessionId}/runs`, { prompt: PROOF_PROBE_PROMPT }, { "Idempotency-Key": key() });
     expect(judgeBlockedSend(blocked, countRuns((await http.get(`api/sessions/${sessionId}`)).body))).toMatchObject({ status: "PASS" });
 
+    const before = parseReliability((await http.get("api/dashboard")).body);
     const owned = parseReconcile(await http.post(`api/runs/${w.run.runId}/reconcile`, {}));
+    const after = parseReliability((await http.get("api/dashboard")).body);
     expect(owned).toEqual({ http: 200, status: "unknown", result: "unconfirmed", reason: "orphan_owns_turn", errorCode: null });
-    expect(judgeReconcileWhileOwnerAlive("codex", owned, 0)).toMatchObject({ status: "PASS" });
+    expect(after).toEqual(before); // the refusal opened no provider connection (the smoke reads exactly this)
+    expect(judgeReconcileWhileOwnerAlive("codex", owned, { ...quiet2, before, after })).toMatchObject({ status: "PASS" });
     expect(w.after.transports).toEqual([]); // nothing opened beside the orphan
 
     // The orphan ends while the turn still reads as in progress on the VM: what the smoke must call the open L4 case.

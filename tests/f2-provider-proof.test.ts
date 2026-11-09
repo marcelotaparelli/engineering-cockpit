@@ -101,6 +101,7 @@ describe.skipIf(process.platform !== "linux")("F2-M2 Claude proof, end to end", 
       orphan_ledger: "NOT_VERIFIED", orphan_blocks_send: "NOT_VERIFIED", orphan_released: "NOT_VERIFIED", reconcile_after_release: "PASS", cleanup: "PASS" });
     expect(report.overall).toBe("NOT_VERIFIED");
     expect(check(report, "orphan_blocks_send").reason).toBe("no_surviving_msb_child");
+    expect(check(report, "reconcile_conservative").evidence).toMatchObject({ orphan_alive: false }); // a PASS that is NOT a proof about a live owner, and says so
     expect(fake.world.prompts).toEqual([CLAUDE_PROOF_PROMPT]);
     expect(signalled).toEqual([]); // the smoke signalled nothing: there was nothing of its own to end
   });
@@ -187,6 +188,102 @@ describe.skipIf(process.platform !== "linux")("F2-M2 Claude proof, end to end", 
       expect(await readdir(run.xdg)).toEqual([]);
       expect(run.fake.world.prompts).toEqual([]);
     }
+  });
+
+  test("a unit whose ControlGroup is not its own cannot be inspected: the reconcile check fails closed instead of passing for lack of children to see, and nothing is signalled", async () => {
+    const { report } = await smoke({ world: { controlGroup: "/somewhere/else.slice" } });
+    expect(check(report, "reconcile_conservative")).toMatchObject({ status: "FAIL", reason: "unit_cgroup_unknown" });
+    expect(report.overall).toBe("FAIL");
+    expect(signalled).toEqual([]); // `terminate` refuses a cgroup that is not the smoke unit's
+  });
+
+  const quick = { start: 1500, restart: 1000, settle: 150 };
+
+  test("a child that is born and dies inside the reconcile can slip past the cgroup sampling, but the Cockpit's own counters catch it: FAIL, not a vacuous PASS", async () => {
+    const { report } = await smoke({ world: { reconcileTransientChild: true } });
+    const verdict = check(report, "reconcile_conservative");
+    expect(verdict.status).toBe("FAIL");
+    expect(verdict.reason).toMatch(/^reconcile_(spawned_msb_exec_child|opened_provider_connection)$/);
+    expect(report.overall).toBe("FAIL");
+  });
+
+  test("a new msb child whose argv cannot be read cannot be classified: the safety claim is NOT_VERIFIED, never PASS", async () => {
+    const { report } = await smoke({ world: { reconcileSpawnsExec: true, extraArgvUnreadable: true } });
+    expect(check(report, "reconcile_conservative")).toMatchObject({ status: "NOT_VERIFIED", reason: "child_observation_incomplete", evidence: { unreadable_new_msb_children: 1 } });
+    expect(report.overall).toBe("NOT_VERIFIED");
+  });
+
+  test("a run the provider never bound (provider_run_unbound) says nothing about the owner: both reconcile checks are NOT_VERIFIED, not FAIL or PASS", async () => {
+    const { report } = await smoke({ world: { runUnbound: true } });
+    expect(check(report, "reconcile_conservative")).toMatchObject({ status: "NOT_VERIFIED", reason: "reconcile_provider_run_unbound" });
+    expect(check(report, "reconcile_after_release")).toMatchObject({ status: "NOT_VERIFIED", reason: "reconcile_provider_run_unbound" });
+    expect(report.overall).toBe("NOT_VERIFIED");
+  });
+
+  test("a history that cannot be read after the restart is a FAIL of the preservation check (the Cockpit could not show what it kept)", async () => {
+    const { report } = await smoke({ world: { historyUnreadable: true } });
+    expect(check(report, "partial_preserved")).toMatchObject({ status: "FAIL", reason: "history_unreadable_after_restart" });
+    expect(status(report)).toMatchObject({ orphan_blocks_send: "PASS", cleanup: "PASS" });
+  });
+
+  test("an orphan the Cockpit keeps listing after its process ended is a FAIL (orphan_still_listed_after_end), and cleanup still completes", async () => {
+    const { report, fake } = await smoke({ world: { ghostOrphan: true }, timeoutsMs: quick });
+    expect(check(report, "orphan_released")).toMatchObject({ status: "FAIL", reason: "orphan_still_listed_after_end" });
+    expect(status(report).cleanup).toBe("PASS");
+    expect(fake.cgroupPids()).toEqual([]);
+  });
+
+  test("a real turn that finished before the kill proves nothing about the Cockpit: NOT_VERIFIED (no crash was exercised), one prompt, nothing left behind", async () => {
+    const { report, fake, xdg } = await smoke({ world: { initialRunStatus: "completed" }, timeoutsMs: quick });
+    expect(check(report, "orphan_turn_started")).toMatchObject({ status: "NOT_VERIFIED", reason: "proof_turn_not_in_flight_completed" });
+    expect(status(report)).toMatchObject({ crash_restart: "NOT_VERIFIED", cleanup: "PASS" });
+    expect(report.overall).toBe("NOT_VERIFIED");
+    expect(fake.world.prompts).toEqual([CLAUDE_PROOF_PROMPT]);
+    expect(await readdir(join(xdg, "systemd/user"))).toEqual([]);
+  });
+
+  test("the journal must hold neither the prompts nor the start of the persisted partial text", async () => {
+    for (const leak of [CLAUDE_PROOF_PROMPT, PROOF_PROBE_PROMPT, "linha sobre o mar... linha sobre o mar..."]) {
+      const { report } = await smoke({ world: { journalExtra: `{"event":"x","detail":"${leak}"}\n` } });
+      expect(check(report, "journal_clean")).toMatchObject({ status: "FAIL", reason: "prompt_or_model_text_in_journal" });
+    }
+  });
+
+  test("a PID that was reused after it was listed is never signalled: the start time is re-checked before every signal", async () => {
+    const { report } = await smoke({ world: { pidReused: true }, timeoutsMs: quick });
+    expect(signalled).toEqual([]);
+    expect(check(report, "orphan_released")).toMatchObject({ status: "FAIL", reason: "orphan_still_listed_after_end" }); // it was not ended: the smoke refused to guess
+    expect(status(report).cleanup).toBe("PASS"); // the unit-wide kill, by cgroup, is what cleans up
+  });
+
+  test("a unit that is still `deactivating` for a moment after the kill is waited for: cleanup is PASS, not a false unit_deactivating", async () => {
+    const { report, fake } = await smoke({ world: { deactivatingShows: 3 } });
+    expect(check(report, "cleanup")).toMatchObject({ status: "PASS", reason: null });
+    expect(report.overall).toBe("PASS");
+    expect(fake.cgroupPids()).toEqual([]);
+  });
+
+  test("an interrupt in the middle of the proof cleans up and PRINTS what was observed (a real prompt may already have been spent)", async () => {
+    let interrupt: (() => Promise<void>) | null = null;
+    const logs: string[] = [];
+    const log = spyOn(console, "log").mockImplementation(((line: unknown) => { logs.push(String(line)); }) as typeof console.log);
+    try {
+      const fake = new FakeSystemd(true, { hook: entry => { if (entry === "POST /api/sessions/ses-proof/runs" && interrupt) { const fire = interrupt; interrupt = null; void fire(); } } }, "claude");
+      const xdg = join(work, `run-${++counter}`);
+      await mkdir(xdg, { mode: 0o700 });
+      fake.xdg = xdg;
+      const root = await bareRoot(join(work, `root-${counter}`), "none");
+      const env = { COCKPIT_F1_SMOKE_CONFIRMED: "yes", COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_PROJECTS_BASE: "/srv/projects", XDG_RUNTIME_DIR: xdg, PATH: bin,
+        COCKPIT_SMOKE_ORPHAN_PROOF: "yes", COCKPIT_SMOKE_QUOTA_CONFIRMED: "yes" };
+      const report = await runSystemdSmoke({ env, run: fake.run, proc: fake.proc, root, timeoutsMs: quick, onInterrupt: handler => { interrupt = handler; return () => {}; } });
+      expect(report.checks.find(item => item.reason === "interrupted")).toBeDefined();
+      expect(status(report).cleanup).toBe("PASS");
+      expect(await readdir(join(xdg, "systemd/user"))).toEqual([]);
+      expect(fake.cgroupPids()).toEqual([]);
+      const printed = logs.map(line => { try { return JSON.parse(line) as SmokeReport; } catch { return null; } }).find(item => item?.milestone === "F1-D-systemd-smoke");
+      expect(printed).toMatchObject({ overall: "FAIL", provider: "claude" });
+      expect(JSON.stringify(printed)).not.toContain(CLAUDE_PROOF_PROMPT);
+    } finally { log.mockRestore(); }
   });
 
   test("without the proof, a Claude VM runs the base smoke only and sends no prompt", async () => {

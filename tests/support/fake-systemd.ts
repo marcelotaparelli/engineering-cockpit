@@ -33,6 +33,30 @@ export interface World {
   /** Codex reconcile after the surviving child ended: what the (real) provider reports for the turn. */
   postRelease: "completed" | "running" | "unknown" | "still_owned";
   agentText: string; textAtCrash: string;
+  /** What `systemctl show` reports as ControlGroup. Default: the smoke unit's own. */
+  controlGroup: string | null;
+  /** The Cockpit's own counters (`dashboard.reliability`): connections opened and prompts dispatched. */
+  connections: number;
+  /** A reconcile while the owner lives starts and ends a child so quickly that sampling the cgroup can miss it (the counter still moves). */
+  reconcileTransientChild: boolean;
+  /** The extra `msb exec` child a reconcile opens has an unreadable argv. */
+  extraArgvUnreadable: boolean;
+  /** The reconcile answers `provider_run_unbound` (the run never got a provider id). */
+  runUnbound: boolean;
+  /** After the restart the history endpoint fails. */
+  historyUnreadable: boolean;
+  /** The dashboard keeps listing the orphan after its process is gone. */
+  ghostOrphan: boolean;
+  /** Initial status of the in-flight run (`completed` = the real turn was too fast to be killed in flight). */
+  initialRunStatus: string;
+  /** Extra text the journal contains (a leak). */
+  journalExtra: string;
+  /** `startTicks` of a listed PID changes after the first read (the PID was reused). */
+  pidReused: boolean;
+  /** The next N `systemctl show` answers report `deactivating` after a kill (a dying process is still listed for a few ms). */
+  deactivatingShows: number;
+  /** Called with every authenticated request ("METHOD /path"), e.g. to interrupt the smoke at a precise moment. */
+  hook: ((entry: string) => void) | null;
   /** Every request the smoke made, in order (tests add their own entries, e.g. signals, to order them against requests). */
   timeline: string[];
 }
@@ -58,6 +82,7 @@ export const orphanItem = (w: World, pid: number) => ({ kind: "orphan_process", 
 export const historyUserItem = (id: string, text: string) => ({ id, runId: "run-proof", kind: "user_message", status: null, text, command: null, exitCode: null, files: [] });
 export const historyAgentItem = (text: string, incomplete: boolean) => ({ id: "msg_1", runId: "run-proof", kind: "agent_message", status: "in_progress", text, command: null, exitCode: null, files: [],
   ...(incomplete ? { incomplete: true } : {}) });
+export const reliabilityBody = (w: World) => ({ provider_connections: w.connections, runs_dispatched: w.prompts.length });
 export const runBody = (w: World) => ({ run_id: "run-proof", session_id: "ses-proof", status: w.runStatus, reason_code: w.runReason, provider_bound: true });
 export const sessionBody = (w: World) => ({ session: { session_id: "ses-proof", vm_name: w.vm, provider: w.provider }, runs: Array.from({ length: w.runsInSession }, () => runBody(w)), approvals: [] });
 export const reconcileBody = (w: World, status: string, result: string, reason: string) =>
@@ -70,11 +95,15 @@ export class FakeSystemd {
   calls: string[][] = [];
   xdg = "";
   #pids = 5000;
+  #deactivating = 0;
+  #ticks = new Map<number, number>();
   constructor(readonly survivors: boolean, overrides: Partial<World> = {}, provider: "codex" | "claude" = overrides.provider ?? "codex") {
     this.world = { provider, vm: provider === "claude" ? "claude-demo" : "codex-demo", prompts: [], sessions: 0, runsInSession: 0, runStatus: "running", runReason: null,
       orphanPid: null, msbPid: null, extraExecPid: null, listPid: null, crashes: 0, orphanKind: provider === "claude" ? "claude_session" : "codex_app_server",
       blockSends: true, partial: "grows", afterCrash: "preserved", blockedSendCreatesRun: false, claudeReconcileResolves: false, codexOwnerAliveReconcile: "refuse",
-      reconcileSpawnsExec: false, postRelease: "completed", agentText: "", textAtCrash: "", timeline: [], ...overrides };
+      reconcileSpawnsExec: false, postRelease: "completed", agentText: "", textAtCrash: "", controlGroup: null, connections: 0, reconcileTransientChild: false, extraArgvUnreadable: false, runUnbound: false, historyUnreadable: false,
+      ghostOrphan: false, initialRunStatus: "running", journalExtra: "", pidReused: false, deactivatingShows: 0, hook: null, timeline: [], ...overrides };
+    this.world.runStatus = this.world.initialRunStatus;
   }
   unitFile = () => join(this.xdg, "systemd/user", SMOKE_UNIT);
   #settings() {
@@ -101,9 +130,10 @@ export class FakeSystemd {
       }
       if (!authed(request)) return Response.json({ error: { code: "unauthenticated" } }, { status: 401 });
       world.timeline.push(`${request.method} ${url.pathname}`);
+      world.hook?.(`${request.method} ${url.pathname}`);
       if (url.pathname === "/api/dashboard") {
-        const orphan = world.orphanPid !== null && alive(world.orphanPid) ? [orphanItem(world, world.orphanPid)] : [];
-        return Response.json({ discovery_error: null, vms: [{ vm_name: world.vm, vm_state: "running" }], attention: orphan });
+        const orphan = world.orphanPid !== null && (alive(world.orphanPid) || world.ghostOrphan) ? [orphanItem(world, world.orphanPid)] : [];
+        return Response.json({ discovery_error: null, vms: [{ vm_name: world.vm, vm_state: "running" }], attention: orphan, reliability: reliabilityBody(world) });
       }
       if (url.pathname === `/api/vms/${world.vm}/threads`) { ensureChild(); return Response.json({ vm_name: world.vm, threads: [] }); }
       if (url.pathname === "/api/sessions" && request.method === "POST") { world.sessions++; return Response.json({ session_id: "ses-proof" }, { status: 201 }); }
@@ -119,6 +149,7 @@ export class FakeSystemd {
         return Response.json({ run_id: "run-proof", status: "running" }, { status: 202 });
       }
       if (url.pathname === "/api/sessions/ses-proof/history" && request.method === "GET") {
+        if (world.crashes > 0 && world.historyUnreadable) return Response.json({ error: { code: "runtime_database_corrupt" } }, { status: 500 });
         const preCrash = world.crashes === 0;
         if (preCrash && world.partial === "grows") world.agentText += CHUNK;
         const user = (id: string) => historyUserItem(id, world.prompts[0] ?? "(prompt)");
@@ -140,10 +171,12 @@ export class FakeSystemd {
       }
       if (url.pathname === "/api/runs/run-proof" && request.method === "GET") return Response.json(runBody(world));
       if (url.pathname === "/api/runs/run-proof/reconcile" && request.method === "POST") {
-        if (world.reconcileSpawnsExec && this.#ownerAlive()) world.extraExecPid = spawnSleeper();
+        if (world.reconcileSpawnsExec && this.#ownerAlive()) { world.extraExecPid = spawnSleeper(); if (!world.extraArgvUnreadable) world.connections++; }
+        if (world.reconcileTransientChild && this.#ownerAlive()) { world.connections++; const quick = Bun.spawn(["sleep", "0.005"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" }); sleepers.push(quick); world.extraExecPid = quick.pid; await Bun.sleep(1); }
+        if (world.runUnbound) return Response.json(reconcileBody(world, "unknown", "unconfirmed", "provider_run_unbound"));
         const view = (status: string, result: string, reason: string) => Response.json(reconcileBody(world, status, result, reason));
         if (world.provider === "claude") return world.claudeReconcileResolves ? view("completed", "confirmed", "reconciled") : view("unknown", "unconfirmed", "provider_cannot_confirm");
-        if (this.#ownerAlive()) return world.codexOwnerAliveReconcile === "refuse" ? view("unknown", "unconfirmed", "orphan_owns_turn") : view("running", "confirmed", "reconciled");
+        if (this.#ownerAlive()) { if (world.codexOwnerAliveReconcile === "refuse") return view("unknown", "unconfirmed", "orphan_owns_turn"); world.connections++; return view("running", "confirmed", "reconciled"); }
         switch (world.postRelease) {
           case "completed": return view("completed", "confirmed", "reconciled");
           case "running": return view("running", "confirmed", "reconciled");
@@ -181,12 +214,12 @@ export class FakeSystemd {
     ? [this.state.mainPid, ...[this.world.msbPid, this.world.orphanPid, this.world.extraExecPid, this.world.listPid].filter((pid): pid is number => pid !== null && alive(pid))] : [];
   run: Runner = async argv => {
     this.calls.push([...argv]);
-    if (argv[0] === "journalctl") return { code: 0, stdout: '{"event":"listening","url":"http://127.0.0.1:1/"}\n' };
+    if (argv[0] === "journalctl") return { code: 0, stdout: '{"event":"listening","url":"http://127.0.0.1:1/"}\n' + this.world.journalExtra };
     const [, , command, ...rest] = argv;
     switch (command) {
       case "show-environment": return { code: 0, stdout: "PATH=/usr/bin\n" };
-      case "show": return { code: 0, stdout: [`FragmentPath=${this.unitFile()}`, `ActiveState=${this.state.active}`, `MainPID=${this.state.mainPid}`, `NRestarts=${this.state.restarts}`, `ExecMainStatus=${this.state.execMainStatus}`,
-        `SubState=${this.state.active === "active" ? "running" : "dead"}`, "Result=success", `ControlGroup=/user.slice/${SMOKE_UNIT}`, "NoNewPrivileges=yes", "KillMode=process", "Restart=on-failure", "RestartPreventExitStatus=78"].join("\n") + "\n" };
+      case "show": return { code: 0, stdout: [`FragmentPath=${this.unitFile()}`, `ActiveState=${this.#deactivating > 0 ? (this.#deactivating--, "deactivating") : this.state.active}`, `MainPID=${this.state.mainPid}`, `NRestarts=${this.state.restarts}`, `ExecMainStatus=${this.state.execMainStatus}`,
+        `SubState=${this.state.active === "active" ? "running" : "dead"}`, "Result=success", `ControlGroup=${this.world.controlGroup ?? `/user.slice/${SMOKE_UNIT}`}`, "NoNewPrivileges=yes", "KillMode=process", "Restart=on-failure", "RestartPreventExitStatus=78"].join("\n") + "\n" };
       case "start": return { code: this.#start() ? 0 : 1, stdout: "" };
       case "stop": await this.#stopServer(); this.state.active = "inactive"; this.state.mainPid = 0; this.state.execMainStatus = 0;
         // the Cockpit ends its own children on an orderly stop
@@ -194,13 +227,14 @@ export class FakeSystemd {
         return { code: 0, stdout: "" };
       case "kill":
         if (rest.includes("--kill-whom=main")) { void this.#crash(); return { code: 0, stdout: "" }; }
-        await this.#stopServer(); this.state.active = "inactive"; this.state.mainPid = 0; return { code: 0, stdout: "" };
+        await this.#stopServer(); this.state.active = "inactive"; this.state.mainPid = 0; this.#deactivating = this.world.deactivatingShows; return { code: 0, stdout: "" };
       default: return { code: 0, stdout: "" };
     }
   };
   #execArgv(pid: number): string[] | null {
     const w = this.world;
     if (pid === w.listPid) return ["msb", "list", "--format", "json"];
+    if (pid === w.extraExecPid && w.extraArgvUnreadable) return null;
     if (pid !== w.msbPid && pid !== w.orphanPid && pid !== w.extraExecPid) return null;
     if (w.provider === "codex") return ["msb", "exec", "--stream", w.vm, "--", "codex", "app-server", "--listen", "stdio://"];
     // /proc shows whatever argv[0] the parent used: a full path here exercises the basename normalisation of the smoke.
@@ -215,5 +249,6 @@ export class FakeSystemd {
     alive,
     inGroup: (pid, group) => group.endsWith(`/${SMOKE_UNIT}`) && this.cgroupPids().includes(pid),
     argv: pid => this.#execArgv(pid),
+    startTicks: pid => { const reads = (this.#ticks.get(pid) ?? 0) + 1; this.#ticks.set(pid, reads); return this.world.pidReused && reads > 1 ? "200" : "100"; },
   };
 }

@@ -52,6 +52,8 @@ describe.skipIf(process.platform !== "linux")("F2-M1 adversarial: recovery never
     for (const name of ["execution.ts", "process-ledger.ts", "dashboard.ts", "server.ts", "runtime-store.ts", "local-security.ts"]) {
       expect(/\.kill\s*\(/.test(source(name)), `${name} must not signal anything`).toBe(false);
     }
+    // Nor may they run a `kill`/`pkill`/`killall` command (spawn(["kill", …]) is a signal too), anywhere but the two reviewed files (the smoke's `systemctl kill`, the E0 runner's step labels).
+    for (const name of files) if (name !== "f1-systemd-smoke.ts" && name !== "e0-recovery.ts") expect(/["'`](?:p?kill|killall)["'`]/.test(source(name)), `${name} must not run a kill command`).toBe(false);
   });
 
   test("a ledger row whose PID was reused by a stranger is forgotten, never treated as the orphan, never signalled, and does not block the reconcile", async () => {
@@ -140,7 +142,7 @@ describe.skipIf(process.platform !== "linux")("F2-M1 adversarial: recovery never
   });
 
   test("RESIDUAL, still open (master plan L4 / question P3): once the orphan has ended while the VM still reports the turn in progress, concurrent reconciles reattach it exactly once", async () => {
-    // This pins the documented E0 behaviour that F2-M1 deliberately does NOT change (docs/f2-prova-provider-real.md §5): after the
+    // This pins the documented E0 behaviour that F2-M1 deliberately does NOT change (docs/f2-prova-provider-real.md §6): after the
     // orphan is gone, the provider is asked, and a turn that still reads as in progress is reattached (running, nothing resent).
     // If P3 is decided differently, this test is the one to change, on purpose.
     const w = await crashWithOrphan();

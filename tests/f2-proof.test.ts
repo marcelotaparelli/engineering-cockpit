@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { agentChars, blockersOf, code, countRuns, hasEnoughPartial, judgeBlockedSend, judgePartialPreserved, judgeReconcileAfterRelease, judgeReconcileWhileOwnerAlive, MIN_PARTIAL_CHARS,
-  parseOrphans, parseReconcile, parseRunTranscript, type ReconcileView, type RunTranscript } from "../src/f2-proof.ts";
+  parseOrphans, parseReconcile, parseReliability, parseRunTranscript, type ReconcileView, type ReconcileWatch, type RunTranscript } from "../src/f2-proof.ts";
 
 /** F2-M2 — the pure parsers and verdicts of the provider proof: every branch, and hostile or malformed input. */
 const RUN = "run-1";
@@ -10,6 +10,8 @@ const user = (id = "u1") => ({ id, runId: RUN, kind: "user_message", status: nul
 const transcript = (body: unknown): RunTranscript => parseRunTranscript(body, RUN)!;
 const view = (over: Partial<ReconcileView> = {}): ReconcileView => ({ http: 200, status: "unknown", result: "unconfirmed", reason: "provider_cannot_confirm", errorCode: null, ...over });
 const long = "x".repeat(MIN_PARTIAL_CHARS);
+const counters = { providerConnections: 1, runsDispatched: 1 };
+const watch = (over: Partial<ReconcileWatch> = {}): ReconcileWatch => ({ newExecChildren: 0, unreadableChildren: 0, before: counters, after: counters, orphanAlive: true, ...over });
 
 describe("closed vocabulary", () => {
   test("only [a-z0-9_] codes pass; anything else is dropped so a surprise string can never reach a report", () => {
@@ -106,17 +108,44 @@ describe("reconcile", () => {
 
   describe("while the owner may live", () => {
     test("Codex needs orphan_owns_turn, Claude needs provider_cannot_confirm; both need 200, unknown, unconfirmed and no new msb exec child", () => {
-      expect(judgeReconcileWhileOwnerAlive("claude", view(), 0)).toMatchObject({ status: "PASS" });
-      expect(judgeReconcileWhileOwnerAlive("codex", view({ reason: "orphan_owns_turn" }), 0)).toMatchObject({ status: "PASS" });
-      expect(judgeReconcileWhileOwnerAlive("codex", view(), 0)).toMatchObject({ status: "FAIL", reason: "reconcile_not_conservative" }); // the wrong provider's reason
-      expect(judgeReconcileWhileOwnerAlive("claude", view({ reason: "orphan_owns_turn" }), 0)).toMatchObject({ status: "FAIL", reason: "reconcile_not_conservative" });
+      expect(judgeReconcileWhileOwnerAlive("claude", view(), watch())).toMatchObject({ status: "PASS" });
+      expect(judgeReconcileWhileOwnerAlive("codex", view({ reason: "orphan_owns_turn" }), watch())).toMatchObject({ status: "PASS" });
+      expect(judgeReconcileWhileOwnerAlive("codex", view(), watch())).toMatchObject({ status: "FAIL", reason: "reconcile_not_conservative" }); // the wrong provider's reason
+      expect(judgeReconcileWhileOwnerAlive("claude", view({ reason: "orphan_owns_turn" }), watch())).toMatchObject({ status: "FAIL", reason: "reconcile_not_conservative" });
     });
     for (const [name, over] of [["http error", { http: 409, errorCode: "project_busy" }], ["run resolved", { status: "completed", result: "confirmed", reason: "reconciled" }], ["reattached", { status: "running", result: "confirmed", reason: "reconciled" }],
       ["no codes", { status: null, result: null, reason: null }]] as Array<[string, Partial<ReconcileView>]>) {
-      test(`FAIL when ${name}`, () => expect(judgeReconcileWhileOwnerAlive("claude", view(over), 0)).toMatchObject({ status: "FAIL", reason: "reconcile_not_conservative" }));
+      test(`FAIL when ${name}`, () => expect(judgeReconcileWhileOwnerAlive("claude", view(over), watch())).toMatchObject({ status: "FAIL", reason: "reconcile_not_conservative" }));
     }
     test("an `msb exec` child opened by the reconcile fails it even when the answer is right", () => {
-      expect(judgeReconcileWhileOwnerAlive("claude", view(), 1)).toMatchObject({ status: "FAIL", reason: "reconcile_spawned_msb_exec_child", evidence: { new_msb_exec_children: 1 } });
+      expect(judgeReconcileWhileOwnerAlive("claude", view(), watch({ newExecChildren: 1 }))).toMatchObject({ status: "FAIL", reason: "reconcile_spawned_msb_exec_child", evidence: { new_msb_exec_children: 1 } });
+    });
+  });
+
+  describe("what the reconcile must not have moved (review: no vacuous PASS)", () => {
+    test("the Cockpit's own counters are read from the dashboard, or null", () => {
+      expect(parseReliability({ reliability: { provider_connections: 2, runs_dispatched: 1, other: 9 } })).toEqual({ providerConnections: 2, runsDispatched: 1 });
+      for (const body of [null, {}, { reliability: null }, { reliability: { provider_connections: 1 } }, { reliability: { provider_connections: "1", runs_dispatched: 1 } }, { reliability: { provider_connections: 1.5, runs_dispatched: 1 } }]) expect(parseReliability(body)).toBeNull();
+    });
+    test("a connection opened or a run dispatched during the reconcile is a FAIL even when no msb child was seen (a child can live and die between two samples)", () => {
+      expect(judgeReconcileWhileOwnerAlive("codex", view({ reason: "orphan_owns_turn" }), watch({ after: { providerConnections: 2, runsDispatched: 1 } }))).toMatchObject({ status: "FAIL", reason: "reconcile_opened_provider_connection" });
+      expect(judgeReconcileWhileOwnerAlive("codex", view({ reason: "orphan_owns_turn" }), watch({ after: { providerConnections: 1, runsDispatched: 2 } }))).toMatchObject({ status: "FAIL", reason: "reconcile_dispatched_a_run" });
+    });
+    test("an observation that is incomplete (unreadable child, missing counters) is NOT_VERIFIED, never PASS", () => {
+      expect(judgeReconcileWhileOwnerAlive("claude", view(), watch({ unreadableChildren: 1 }))).toMatchObject({ status: "NOT_VERIFIED", reason: "child_observation_incomplete" });
+      expect(judgeReconcileWhileOwnerAlive("claude", view(), watch({ before: null }))).toMatchObject({ status: "NOT_VERIFIED", reason: "child_observation_incomplete" });
+      expect(judgeReconcileWhileOwnerAlive("claude", view(), watch({ after: null }))).toMatchObject({ status: "NOT_VERIFIED", reason: "child_observation_incomplete" });
+    });
+    test("a run with no provider id, or an unreadable ledger, never reached the question: NOT_VERIFIED in both phases, for both providers", () => {
+      for (const reason of ["provider_run_unbound", "orphan_check_unavailable"]) {
+        for (const provider of ["claude", "codex"] as const) {
+          expect(judgeReconcileWhileOwnerAlive(provider, view({ reason }), watch())).toMatchObject({ status: "NOT_VERIFIED", reason: `reconcile_${reason}` });
+          expect(judgeReconcileAfterRelease(provider, view({ reason }), true)).toMatchObject({ status: "NOT_VERIFIED", reason: `reconcile_${reason}` });
+        }
+      }
+    });
+    test("the evidence says whether the owner was alive, so a PASS without one cannot be read as a proof about a live owner", () => {
+      expect(judgeReconcileWhileOwnerAlive("claude", view(), watch({ orphanAlive: false })).evidence).toMatchObject({ orphan_alive: false, provider_connections_before: 1, provider_connections_after: 1 });
     });
   });
 
@@ -141,6 +170,7 @@ describe("reconcile", () => {
       expect(codex({ http: 409, errorCode: "project_busy", status: null, result: null, reason: null })).toMatchObject({ status: "NOT_VERIFIED", reason: "reconcile_http_409_project_busy" });
       expect(codex({ http: 502, errorCode: null, status: null, result: null, reason: null })).toMatchObject({ status: "NOT_VERIFIED", reason: "reconcile_http_502_no_code" });
       expect(codex({ status: "completed", result: "unconfirmed", reason: "x" })).toMatchObject({ status: "FAIL", reason: "reconcile_after_release_unexpected" });
+      expect(codex({ reason: "provider_cannot_confirm" })).toMatchObject({ status: "FAIL", reason: "reconcile_after_release_unexpected" }); // unknown for any other reason is not the provider speaking
       expect(codex({ status: null, result: null, reason: null })).toMatchObject({ status: "FAIL", reason: "reconcile_after_release_unexpected" });
     });
   });

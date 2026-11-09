@@ -44,3 +44,45 @@
 identicos
  37 pass
  0 fail
+## MUT-H: execChildren sem a guarda do cgroup desconhecido (passaria por vacuidade)
+(fail) F2-M2 Claude proof, end to end > a unit whose ControlGroup is not its own cannot be inspected: the reconcile check fails closed instead of passing for lack of chil
+ 0 pass
+ 1 fail
+
+# --- Rodada 2: correções da revisão independente (2026-11-09T06:29:57Z) ---
+
+## MUT-I: o veredito deixa de olhar os contadores do Cockpit (só a amostragem do cgroup, que pode perder um filho efêmero)
+(fail) F2-M2 Claude proof, end to end > a child that is born and dies inside the reconcile can slip past the cgroup sampling, but the Cockpit's own counters catch it: FAIL, not a vacuou
+ 2 pass
+ 1 fail
+
+## MUT-J: o watcher lê as contagens antes da amostragem final (o defeito real que o teste de argv ilegível encontrou)
+(fail) F2-M2 Claude proof, end to end > a new msb child whose argv cannot be read cannot be classified: the safety claim is NOT_VERIFIED, never PASS [2221.44ms]
+ 0 pass
+ 1 fail
+
+## MUT-K: a limpeza lê o estado da unit uma única vez (sem esperar o encerramento)
+(fail) F2-M2 Claude proof, end to end > a unit that is still `deactivating` for a moment after the kill is waited for: cleanup is PASS, not a false unit_deactivating [2222.32ms]
+ 0 pass
+ 1 fail
+
+## MUT-L: o terminate deixa de revalidar identidade (start time e exec) antes de cada sinal
+(fail) F2-M2 Claude proof, end to end > a PID that was reused after it was listed is never signalled: the start time is re-checked before every signal [2221.22ms]
+ 0 pass
+ 1 fail
+
+## MUT-M: o journal_clean deixa de procurar prompts e texto do modelo
+(fail) F2-M2 Claude proof, end to end > the journal must hold neither the prompts nor the start of the persisted partial text [2220.42ms]
+ 0 pass
+ 1 fail
+
+## MUT-N: provider_run_unbound deixa de ser NOT_VERIFIED (vira FAIL de conservadorismo)
+(fail) F2-M2 Claude proof, end to end > a run the provider never bound (provider_run_unbound) says nothing about the owner: both reconcile checks are NOT_VERIFIED, not FAIL or PASS [222
+(fail) reconcile > what the reconcile must not have moved (review: no vacuous PASS) > a run with no provider id, or an unreadable ledger, never reached the question: NOT_VERIFIED in bot
+ 0 pass
+ 2 fail
+
+## restaurado: arquivos idênticos e 0 fail
+identicos
+ 34 pass
+ 0 fail

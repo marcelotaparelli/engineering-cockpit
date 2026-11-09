@@ -3,9 +3,9 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, w
 import { basename, join } from "node:path";
 import { SafeError, safeCode, vmIdentity } from "./model.ts";
 import { reservedVms } from "./config.ts";
-import { classifyChild } from "./process-ledger.ts";
+import { classifyChild, procProbe } from "./process-ledger.ts";
 import { blockersOf, CLAUDE_PROOF_PROMPT, code as closedCode, countRuns, hasEnoughPartial, judgeBlockedSend, judgePartialPreserved, judgeReconcileAfterRelease,
-  judgeReconcileWhileOwnerAlive, parseOrphans, parseReconcile, readRunTranscript, type ProofProvider, type RunTranscript, type Verdict } from "./f2-proof.ts";
+  judgeReconcileWhileOwnerAlive, parseOrphans, parseReconcile, parseReliability, readRunTranscript, type ProofProvider, type RunTranscript, type Verdict } from "./f2-proof.ts";
 import { defaultRunner, isLink, newToken, portBusy, renderEnvFile, renderUnit, repoRoot, SAFE_PATH, servicePath, type Runner } from "./service.ts";
 
 /**
@@ -61,7 +61,9 @@ export interface SmokeOptions {
      * The process's argv (`/proc/<pid>/cmdline`), or null when unreadable. Tells `msb exec` children apart from `msb list`. The real
      * reader always provides it; a stand-in that omits it keeps the F1 behaviour (every `msb` process in the cgroup counts).
      */
-    argv?(pid: number): string[] | null };
+    argv?(pid: number): string[] | null;
+    /** Kernel start time of the process (`/proc/<pid>/stat`, field 22), or null. With it, `terminate` never signals a PID that was reused. */
+    startTicks?(pid: number): string | null };
 }
 
 const realProc: NonNullable<SmokeOptions["proc"]> = {
@@ -76,6 +78,7 @@ const realProc: NonNullable<SmokeOptions["proc"]> = {
   },
   alive: pid => existsSync(`/proc/${pid}`),
   argv: pid => { try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(part => part !== ""); } catch { return null; } },
+  startTicks: pid => procProbe.startTicks(pid),
   inGroup: (pid, group) => {
     if (!group) return false;
     try { return readFileSync(`/proc/${pid}/cgroup`, "utf8").split("\n").some(line => line === `0::${group}`); } catch { return false; }
@@ -172,7 +175,13 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
       if ((await systemctl("stop", SMOKE_UNIT)).code !== 0) problems.push("stop");
       await systemctl("kill", "--kill-whom=all", "--signal=SIGKILL", SMOKE_UNIT);
       await systemctl("reset-failed", SMOKE_UNIT);
-      const state = (await show("ActiveState")).ActiveState ?? "unknown";
+      // A SIGKILLed process stays listed (and the unit `deactivating`) for a few ms: wait for it to settle before calling it a leftover.
+      let state = "unknown";
+      for (const end = Date.now() + Math.min(3000, timeouts.settle * 4); ; await Bun.sleep(100)) {
+        state = (await show("ActiveState")).ActiveState ?? "unknown";
+        if ((state === "inactive" || state === "failed") && !(unitGroup && proc.cgroupPids(unitGroup).length)) break;
+        if (Date.now() >= end) break;
+      }
       if (state !== "inactive" && state !== "failed") problems.push(`unit_${state}`);
       if (unitGroup && proc.cgroupPids(unitGroup).length) problems.push("cgroup_not_empty");
       try { rmSync(unitFile!, { force: true }); } catch { problems.push("unit_file"); }
@@ -181,7 +190,13 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     if (workDir) { try { rmSync(workDir, { recursive: true, force: true }); } catch { problems.push("work_dir"); } }
     set("cleanup", problems.length ? "FAIL" : "PASS", problems.join(",") || null);
   };
-  const unregister = onInterrupt(async () => { set(current, "FAIL", "interrupted"); await cleanup(); });
+  const unregister = onInterrupt(async () => {
+    set(current, "FAIL", "interrupted");
+    await cleanup();
+    // The process exits right after this handler: print what was observed, because a real prompt may already have been spent.
+    report.overall = "FAIL";
+    console.log(JSON.stringify(report, null, 2));
+  });
   try {
     // ---------------------------------------------------------------- isolated state + runtime unit from the real template
     const base = join(root, ".cache", "f1-systemd-smoke");
@@ -203,9 +218,10 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     set("unit_loaded", "PASS", null, { no_new_privileges: loaded.NoNewPrivileges, kill_mode: loaded.KillMode, restart: loaded.Restart, prevent: loaded.RestartPreventExitStatus });
 
     const url = `http://127.0.0.1:${port}/`;
-    const healthy = async (ms: number) => { for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(300)) { try { if ((await fetch(url + "api/health")).ok) return true; } catch { /* not yet */ } } return false; };
+    const healthy = async (ms: number) => { for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(300)) { try { if ((await fetch(url + "api/health", { signal: AbortSignal.timeout(5000) })).ok) return true; } catch { /* not yet */ } } return false; };
     const client = new SmokeClient(url, token);
-    const threads = async () => { const r = await client.get(`api/vms/${encodeURIComponent(vm)}/threads`); return { status: r.status, code: (r.body as { error?: { code?: string } }).error?.code ?? null }; };
+    const cc = (value: unknown) => closedCode(value) ?? "invalid"; // server values reach `reason`: closed vocabulary only
+    const threads = async () => { const r = await client.get(`api/vms/${encodeURIComponent(vm)}/threads`); return { status: r.status, code: closedCode((r.body as { error?: { code?: string } }).error?.code) }; };
     const controlGroup = async () => { const group = (await show("ControlGroup")).ControlGroup ?? ""; if (group.endsWith(`/${SMOKE_UNIT}`)) unitGroup = group; return group; };
     const remember = async () => { const group = await controlGroup(); for (const pid of proc.cgroupPids(group)) if (proc.isMsb(pid)) ours.add(pid); };
     /** Only `msb exec --stream <vm> -- <codex|claude> …` children count (what the Cockpit's ledger tracks); `msb list` and the like do not. */
@@ -214,7 +230,27 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
       const argv = proc.argv(pid);
       return argv !== null && argv.length > 0 && classifyChild([basename(argv[0]!), ...argv.slice(1)]) !== null;
     };
-    const execChildren = () => proc.cgroupPids(unitGroup).filter(pid => proc.isMsb(pid) && isExecChild(pid));
+    /**
+     * Runs `work` while sampling the unit's cgroup every 20 ms for NEW `msb` processes. Exec children are counted; a new `msb` whose argv
+     * cannot be read cannot be classified and is counted as unreadable (the verdict is then NOT_VERIFIED). A child that is born and dies
+     * between two samples is invisible here: the verdict therefore also compares the Cockpit's own counters (see f2-proof.ts).
+     */
+    const watchNewChildren = async <T>(work: () => Promise<T>): Promise<{ value: T; seen: Set<number>; unreadable: number }> => {
+      if (!unitGroup) throw new SafeError("unit_cgroup_unknown");
+      const baseline = new Set(proc.cgroupPids(unitGroup).filter(pid => proc.isMsb(pid)));
+      const seen = new Set<number>(); const unreadable = new Set<number>(); let done = false;
+      const sample = () => { for (const pid of proc.cgroupPids(unitGroup)) if (proc.isMsb(pid) && !baseline.has(pid) && !seen.has(pid) && !unreadable.has(pid)) {
+        if (proc.argv && proc.argv(pid) === null) unreadable.add(pid); else if (isExecChild(pid)) seen.add(pid); } };
+      const sampler = (async () => { while (!done) { sample(); await Bun.sleep(20); } })();
+      let value: T;
+      try { value = await work(); } finally { done = true; await sampler; sample(); } // one last look after the call, BEFORE the counts are read
+      return { value, seen, unreadable: unreadable.size };
+    };
+    const execChildren = () => {
+      // Without the unit's own cgroup nothing can be listed, and "no new child" would pass for the wrong reason: fail closed instead.
+      if (!unitGroup) throw new SafeError("unit_cgroup_unknown");
+      return proc.cgroupPids(unitGroup).filter(pid => proc.isMsb(pid) && isExecChild(pid));
+    };
 
     // ---------------------------------------------------------------- start under systemd
     current = "start";
@@ -234,7 +270,7 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     // ---------------------------------------------------------------- msb list / msb exec under NoNewPrivileges
     current = "msb_list";
     const dashboard = (await client.get("api/dashboard")).body as { discovery_error: string | null; vms: Array<{ vm_name: string; vm_state: string }> };
-    if (dashboard.discovery_error) throw new SafeError(`discovery_${dashboard.discovery_error}`);
+    if (dashboard.discovery_error) throw new SafeError(`discovery_${cc(dashboard.discovery_error)}`);
     const seen = dashboard.vms.find(item => item.vm_name === vm);
     if (!seen) throw new SafeError("smoke_vm_not_listed");
     if (seen.vm_state !== "running") { set("msb_list", "PASS", null, { vm_state: seen.vm_state }); throw new SafeError("smoke_vm_not_running"); }
@@ -254,10 +290,10 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
       current = "orphan_turn_started";
       const created = await client.post("api/sessions", { vm_name: vm, mode: "new" });
       proofSession = (created.body as { session_id?: string }).session_id ?? "";
-      if (created.status !== 201 || !proofSession) throw new SafeError(`proof_session_${(created.body as { error?: { code?: string } }).error?.code ?? created.status}`);
+      if (created.status !== 201 || !proofSession) throw new SafeError(`proof_session_${cc((created.body as { error?: { code?: string } }).error?.code ?? `http_${created.status}`)}`);
       const sent = await client.post(`api/sessions/${enc(proofSession)}/runs`, { prompt: provider === "claude" ? CLAUDE_PROOF_PROMPT : PROOF_PROMPT }, { "Idempotency-Key": `f1p1-${randomBytes(12).toString("hex")}` });
       proofRun = (sent.body as { run_id?: string }).run_id ?? "";
-      if (sent.status !== 202 || !proofRun) throw new SafeError(`proof_run_${(sent.body as { error?: { code?: string } }).error?.code ?? sent.status}`);
+      if (sent.status !== 202 || !proofRun) throw new SafeError(`proof_run_${cc((sent.body as { error?: { code?: string } }).error?.code ?? `http_${sent.status}`)}`);
       const readRun = async () => (await client.get(`api/runs/${enc(proofRun)}`)).body as { status?: string; provider_bound?: boolean };
       const inFlight = (status: string) => status === "running" || status === "awaiting_approval";
       let runStatus = "";
@@ -265,7 +301,7 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
         runStatus = (await readRun()).status ?? "";
         if (["completed", "failed", "interrupted", "unknown"].includes(runStatus)) break;
       }
-      if (!inFlight(runStatus)) throw new SafeError(`proof_turn_not_in_flight_${runStatus || "no_status"}`);
+      if (!inFlight(runStatus)) throw new SafeError(`proof_turn_not_in_flight_${cc(runStatus || "no_status")}`);
       if (provider === "claude") {
         // The kill must land on a turn that already streamed text the Cockpit persisted (it flushes at most once a second): wait for it,
         // bounded, remember what the history shows, and kill at once. If the model never streams enough, the turn is still killed and
@@ -276,7 +312,7 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
           if (!inFlight((await readRun()).status ?? "")) break;
         }
         runStatus = (await readRun()).status ?? "";
-        if (!inFlight(runStatus)) throw new SafeError(`proof_turn_not_in_flight_${runStatus || "no_status"}`);
+        if (!inFlight(runStatus)) throw new SafeError(`proof_turn_not_in_flight_${cc(runStatus || "no_status")}`);
       }
       await remember();
       set("orphan_turn_started", "PASS", null, { run_status: runStatus, provider, provider_bound: (await readRun()).provider_bound === true, msb_children_in_unit: ours.size,
@@ -310,7 +346,7 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     if (proof) {
       current = "run_unknown_after_crash";
       const runNow = (await client.get(`api/runs/${enc(proofRun)}`)).body as { status?: string; reason_code?: string | null };
-      if ((runNow.status ?? "") !== "unknown") throw new SafeError(`run_not_unknown_${runNow.status || "no_status"}`);
+      if ((runNow.status ?? "") !== "unknown") throw new SafeError(`run_not_unknown_${cc(runNow.status || "no_status")}`);
       set("run_unknown_after_crash", "PASS", null, { status: "unknown", reason_code: closedCode(runNow.reason_code), note: "the in-flight run was not promoted to a result without evidence" });
 
       if (provider === "claude") {
@@ -333,25 +369,28 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
       current = "reconcile_conservative";
       if (provider === "codex" && blockers.length === 0) set("reconcile_conservative", "NOT_VERIFIED", noBlocker);
       else {
-        const before = new Set(execChildren());
-        const view = parseReconcile(await client.post(`api/runs/${enc(proofRun)}/reconcile`, {}));
-        const spawned = execChildren().filter(pid => !before.has(pid));
-        for (const pid of spawned) ours.add(pid); // inside our cgroup: the final cleanup ends them with the rest
-        record("reconcile_conservative", judgeReconcileWhileOwnerAlive(provider, view, spawned.length));
+        const counters = async () => parseReliability((await client.get("api/dashboard")).body);
+        const before = await counters();
+        const known = new Set(execChildren()); // every msb process of the unit now: anything else that shows up is new
+        const { value: reconciled, seen, unreadable } = await watchNewChildren(() => client.post(`api/runs/${enc(proofRun)}/reconcile`, {}));
+        for (const pid of seen) ours.add(pid); // inside our cgroup: the final cleanup ends them with the rest
+        record("reconcile_conservative", judgeReconcileWhileOwnerAlive(provider, parseReconcile(reconciled),
+          { newExecChildren: [...seen].filter(pid => !known.has(pid)).length, unreadableChildren: unreadable, before, after: await counters(), orphanAlive: survivors.length > 0 }));
       }
     }
     // Only our own unit's leftovers, and only now that the ledger, the block and the reconcile were checked: the operator protocol
     // (check, then end) applied to a smoke child. `terminate` signals a PID only while it is a member of THIS unit's cgroup.
-    await terminate(survivors, proc, unitGroup);
+    const listedTicks = new Map(survivors.map(pid => [pid, proc.startTicks?.(pid) ?? null] as const));
+    await terminate(survivors, proc, unitGroup, pid => isExecChild(pid) && (listedTicks.get(pid) === null || proc.startTicks?.(pid) === listedTicks.get(pid)));
     if (proof) {
       current = "orphan_released";
       if (survivors.length > 0) {
         let still = survivors.length;
-        for (const end = Date.now() + 10_000; Date.now() < end && still > 0; await Bun.sleep(300)) {
+        for (const end = Date.now() + Math.min(10_000, timeouts.restart); Date.now() < end && still > 0; await Bun.sleep(300)) {
           still = (parseOrphans((await client.get("api/dashboard")).body) ?? []).filter(item => survivors.includes(item.pid)).length;
         }
         if (still > 0) throw new SafeError("orphan_still_listed_after_end");
-        set("orphan_released", "PASS", null, { note: "the orphan left 'Precisa de você' by itself once the process ended" });
+        set("orphan_released", "PASS", null, { note: "the orphan left 'Precisa de você' by itself once the host msb exec process ended", inside_vm: "not_observed (the agent in the VM may keep running its turn)" });
       } else set("orphan_released", "NOT_VERIFIED", "no_surviving_msb_child");
       // Asked after the end of the process: Claude must still not resolve it; Codex's real answer is observed (open L4 / P3 question).
       current = "reconcile_after_release";
@@ -397,10 +436,15 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     const journal = await run(["journalctl", "--user", "-u", SMOKE_UNIT, "--no-pager", "-o", "cat", "-n", "2000"]);
     if (journal.code !== 0) throw new SafeError("journal_unreadable");
     if (journal.stdout.includes(token)) throw new SafeError("credential_in_journal");
+    // The Cockpit logs codes and counts, never prompts or model text: the prompts the proof sent and the start of the partial it read must not be there.
+    const partialHead = partialBefore ? [...partialBefore.agentItems.values()].map(item => item.text.slice(0, 40)).filter(text => text.length >= 20) : [];
+    if ([CLAUDE_PROOF_PROMPT, PROOF_PROMPT, PROOF_PROBE_PROMPT, ...partialHead].some(text => journal.stdout.includes(text))) throw new SafeError("prompt_or_model_text_in_journal");
     if (!journal.stdout.includes('"event":"listening"')) throw new SafeError("journal_without_listening");
     set("journal_clean", "PASS");
   } catch (error) {
-    if (report.checks.find(check => check.id === current)!.status === "NOT_VERIFIED") set(current, current === "msb_list" && safeCode(error) === "smoke_vm_not_running" ? "NOT_VERIFIED" : "FAIL", safeCode(error));
+    // NOT_VERIFIED, not FAIL: the VM was not running (said nothing about the Cockpit), or the real turn ended before the kill (too fast to be killed in flight).
+    const inconclusive = (current === "msb_list" && safeCode(error) === "smoke_vm_not_running") || (current === "orphan_turn_started" && safeCode(error) === "proof_turn_not_in_flight_completed");
+    if (report.checks.find(check => check.id === current)!.status === "NOT_VERIFIED") set(current, inconclusive ? "NOT_VERIFIED" : "FAIL", safeCode(error));
   } finally {
     // ---------------------------------------------------------------- cleanup, always (also on SIGINT/SIGTERM/SIGHUP, above)
     await cleanup();
@@ -415,29 +459,33 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
  * SIGTERM, then SIGKILL after 3 s — only to `msb` processes that are, at the moment of each signal, members of the smoke
  * unit's own cgroup. A PID that was reused by any other process (another Cockpit's `msb exec`, anything else) is never touched.
  */
-export async function terminate(pids: number[], proc: NonNullable<SmokeOptions["proc"]>, group: string): Promise<void> {
-  const mine = (pid: number) => group.endsWith(`/${SMOKE_UNIT}`) && proc.inGroup(pid, group) && proc.isMsb(pid);
+export async function terminate(pids: number[], proc: NonNullable<SmokeOptions["proc"]>, group: string, verify: (pid: number) => boolean = () => true): Promise<void> {
+  // `verify` re-checks, at each signal, that the PID is still the process that was listed (same start time, still an `msb exec` child).
+  const mine = (pid: number) => group.endsWith(`/${SMOKE_UNIT}`) && proc.inGroup(pid, group) && proc.isMsb(pid) && verify(pid);
   const targets = pids.filter(mine);
   for (const pid of targets) { if (mine(pid)) { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } } }
   for (const end = Date.now() + 3000; Date.now() < end && targets.some(pid => mine(pid)); await Bun.sleep(100)) { /* wait */ }
   for (const pid of targets) if (mine(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
 }
 
+/** A hung Cockpit must end the smoke with a FAIL and its cleanup, not block until Ctrl-C. */
+const HTTP_TIMEOUT_MS = 30_000;
+
 class SmokeClient {
   #cookie = ""; #proof = ""; #csrf = "";
   constructor(readonly base: string, private readonly token: string) {}
   async login(): Promise<number> {
-    const response = await fetch(this.base + "api/auth/login", { method: "POST", headers: { Origin: this.base.slice(0, -1), "Content-Type": "application/json" }, body: JSON.stringify({ credential: this.token }) });
+    const response = await fetch(this.base + "api/auth/login", { method: "POST", signal: AbortSignal.timeout(HTTP_TIMEOUT_MS), headers: { Origin: this.base.slice(0, -1), "Content-Type": "application/json" }, body: JSON.stringify({ credential: this.token }) });
     if (response.status === 200) { this.#cookie = (response.headers.get("set-cookie") ?? "").split(";")[0]!; const body = await response.json() as { proof: string; csrf: string }; this.#proof = body.proof; this.#csrf = body.csrf; }
     return response.status;
   }
   async post(path: string, payload: unknown, extra: Record<string, string> = {}): Promise<{ status: number; body: unknown }> {
-    const response = await fetch(this.base + path, { method: "POST", body: JSON.stringify(payload), headers: { Cookie: this.#cookie, "X-Session-Proof": this.#proof, "X-CSRF-Token": this.#csrf,
+    const response = await fetch(this.base + path, { method: "POST", signal: AbortSignal.timeout(HTTP_TIMEOUT_MS), body: JSON.stringify(payload), headers: { Cookie: this.#cookie, "X-Session-Proof": this.#proof, "X-CSRF-Token": this.#csrf,
       "X-Request-Nonce": randomBytes(16).toString("hex") + "pp", Origin: this.base.slice(0, -1), "Content-Type": "application/json", ...extra } });
     return { status: response.status, body: await response.json().catch(() => ({})) };
   }
   async get(path: string): Promise<{ status: number; body: unknown }> {
-    const response = await fetch(this.base + path, { headers: { Cookie: this.#cookie, "X-Session-Proof": this.#proof } });
+    const response = await fetch(this.base + path, { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS), headers: { Cookie: this.#cookie, "X-Session-Proof": this.#proof } });
     return { status: response.status, body: await response.json().catch(() => ({})) };
   }
 }
