@@ -513,6 +513,7 @@ function renderAttention(items) {
     if (item.kind === 'orphan_process') {
       head.append(el('strong', 'Processo órfão de antes de uma queda'), el('span', ago(item.created_at), 'where'));
       li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
+      if (item.reserved) li.append(el('div', 'Projeto reservado: o Cockpit não abre suas sessões nem seu histórico, mas mostra este processo para você decidir.', 'muted small'));
       li.append(el('div', `${ORPHAN_KIND[item.process_kind] || 'Um processo'} (pid ${item.pid}) continua ativo depois que o Cockpit caiu. Ele pode ainda estar executando uma tarefa, sem supervisão e sem como pedir aprovação.`, 'muted small'));
       li.append(el('div', item.blocks === 'vm' ? 'Novos envios para esta VM ficam bloqueados enquanto ele existir.' : item.blocks === 'session' ? 'Novos envios para esta sessão ficam bloqueados enquanto ele existir.' : 'Não bloqueia envios.', 'muted small'));
       li.append(el('div', `O que fazer: confira o resultado na VM; quando for seguro, encerre-o no host com kill ${item.pid}. O Cockpit nunca o encerra sozinho.`, 'muted small'));
@@ -566,6 +567,7 @@ async function showProjects() {
   await loadCatalog();
 }
 $('projects-open').addEventListener('click', () => { showProjects(); });
+$('projects-back').addEventListener('click', () => { showProjects(); }); // the way back on narrow screens (top bar button hidden)
 async function loadCatalog() {
   try { catalogState.data = await get('/api/catalog'); }
   catch (error) {
@@ -627,7 +629,8 @@ function projectCard(project) {
   if (project.can_authorize) actions.append(button('Autorizar', () => askGrant(project.name, 'grant'), 'grant'));
   if (project.can_revoke) actions.append(button('Revogar acesso', () => askGrant(project.name, 'revoke'), 'ghost revoke'));
   if (project.grant === 'config') actions.append(el('span', 'Definido em COCKPIT_ALLOWED_PROJECTS.', 'muted small'));
-  else if (project.reserved && !project.authorized) actions.append(el('span', 'Projeto reservado: não pode ser autorizado pela interface.', 'muted small'));
+  else if (project.config_ignored) actions.append(el('span', 'Projeto reservado: a entrada em COCKPIT_ALLOWED_PROJECTS não tem efeito. Nada é aberto, executado ou exibido.', 'muted small'));
+  else if (project.reserved) actions.append(el('span', 'Projeto reservado: não pode ser autorizado, executado nem ter histórico exibido.', 'muted small'));
   if (actions.childNodes.length) li.append(actions);
   return li;
 }

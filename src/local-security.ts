@@ -148,16 +148,23 @@ export class LocalSecurity {
     return { csrf: session.csrf, expires_at: new Date(this.#expiresAt(session)).toISOString(),
       absolute_expires_at: new Date(session.createdAt + this.#maxMs).toISOString(), idle_timeout_seconds: Math.floor(this.#idleMs / 1000) };
   }
+  /**
+   * The one per-project gate of every route (inventory, VM, session, run, history, approval). Defense in depth (P-D4): a reserved
+   * project is refused here even if a grant set were ever to contain it.
+   */
+  allows(principal: LocalPrincipal, project: string): boolean {
+    return principal.grants.has(project) && !this.#grants.reserved(project);
+  }
   authorizeProject(principal: LocalPrincipal, project: string): void {
-    if (!principal.grants.has(project)) throw new SafeError("resource_not_found");
+    if (!this.allows(principal, project)) throw new SafeError("resource_not_found");
   }
   visible(snapshot: Snapshot, principal: LocalPrincipal): Snapshot {
-    return { ...snapshot, projects: snapshot.projects.filter(project => principal.grants.has(project)),
-      vms: snapshot.vms.filter(vm => principal.grants.has(vm.project)) };
+    return { ...snapshot, projects: snapshot.projects.filter(project => this.allows(principal, project)),
+      vms: snapshot.vms.filter(vm => this.allows(principal, vm.project)) };
   }
   authorizeVm(snapshot: Snapshot, principal: LocalPrincipal, vmName: string): Vm {
     const vm = snapshot.vms.find(item => item.vm_name === vmName);
-    if (!vm || !principal.grants.has(vm.project) || !snapshot.projects.includes(vm.project) || vm.orphaned || vm.state !== "running") {
+    if (!vm || !this.allows(principal, vm.project) || !snapshot.projects.includes(vm.project) || vm.orphaned || vm.state !== "running") {
       throw new SafeError("resource_not_found");
     }
     return vm;
@@ -166,13 +173,13 @@ export class LocalSecurity {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId)) throw new SafeError("resource_not_found");
     const run = store.getRun(runId);
     const session = run ? store.getSession(run.sessionId) : null;
-    if (!run || !session || !principal.grants.has(session.target.projectId)) throw new SafeError("resource_not_found");
+    if (!run || !session || !this.allows(principal, session.target.projectId)) throw new SafeError("resource_not_found");
     return { run, session };
   }
   authorizeSession(store: Pick<RuntimeStore, "getSession">, principal: LocalPrincipal, sessionId: string): SessionRecord {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(sessionId)) throw new SafeError("resource_not_found");
     const session = store.getSession(sessionId);
-    if (!session || !principal.grants.has(session.target.projectId)) throw new SafeError("resource_not_found");
+    if (!session || !this.allows(principal, session.target.projectId)) throw new SafeError("resource_not_found");
     return session;
   }
   /** Long-lived streams re-check this so logout or expiry ends them. */

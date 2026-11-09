@@ -1,6 +1,7 @@
 /**
  * Real-browser check + screenshots of the PROJECT PICKER against the MOCK Cockpit (simulated agents, no VM, no msb).
- * Only `demo` is granted by configuration; `lab` is discovered and authorized (then revoked) from the page.
+ * Only `demo` is granted by configuration; `lab` is discovered and authorized (then revoked) from the page; `vault` is reserved
+ * through `COCKPIT_RESERVED_VMS=codex-vault` (P-D4: a reserved VM reserves its project, even when that VM does not exist).
  * Dev-only: needs a local Chromium (`CHROMIUM=/path`); not part of `verify`. Same CDP harness as scripts/visual-check.ts.
  *
  *   CHROMIUM=$(command -v chromium) bun scripts/projects-visual-check.ts <out-dir>
@@ -20,7 +21,7 @@ const check = (name: string, pass: boolean, detail?: string) => { results.push({
 
 const dataDir = await mkdtemp(join(tmpdir(), "cockpit-visual-data-"));
 const app = Bun.spawn([process.execPath, "--no-env-file", "src/index.ts"], {
-  env: { PATH: process.env.PATH!, COCKPIT_LOCAL_TOKEN: token, COCKPIT_ALLOWED_PROJECTS: "demo", PORT: String(port), COCKPIT_DATA_DIR: dataDir }, stdout: "pipe", stderr: "pipe" });
+  env: { PATH: process.env.PATH!, COCKPIT_LOCAL_TOKEN: token, COCKPIT_ALLOWED_PROJECTS: "demo", COCKPIT_RESERVED_VMS: "codex-vault", PORT: String(port), COCKPIT_DATA_DIR: dataDir }, stdout: "pipe", stderr: "pipe" });
 const profile = await mkdtemp(join(tmpdir(), "cockpit-chromium-"));
 const browser = Bun.spawn([chromium, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", `--user-data-dir=${profile}`, "--remote-debugging-port=0", "about:blank"], { stdout: "ignore", stderr: "pipe" });
 
@@ -64,14 +65,16 @@ try {
   await cdp("Page.navigate", { url: base + "/" });
   await until(visible("#login"));
   await js(`document.getElementById('credential').value = ${JSON.stringify(token)}; document.getElementById('login').requestSubmit(); true`);
-  await until(`document.querySelectorAll('#catalog .catalog-item').length === 2`);
+  await until(`document.querySelectorAll('#catalog .catalog-item').length === 3`);
   check("1. após o login, a tela inicial é o seletor de projetos", await js<boolean>(visible("#empty")) && !(await js<boolean>(visible("#session-view"))));
   const order = await js<string>(`[...document.querySelectorAll('#catalog .catalog-item')].map(n => n.dataset.project).join(',')`);
-  check("1. projetos descobertos listados, autorizado primeiro", order === "demo,lab", `${order} / ${await text("document.getElementById('catalog-notice')")} / ${consoleErrors.join(" | ")}`);
+  check("1. projetos descobertos listados, autorizado primeiro", order === "demo,lab,vault", `${order} / ${await text("document.getElementById('catalog-notice')")} / ${consoleErrors.join(" | ")}`);
   check("1. demo autorizado pela configuração", (await text(card("demo"))).includes("Autorizado · configuração"));
   check("1. lab descoberto e NÃO autorizado", (await text(card("lab"))).includes("Não autorizado"));
   check("1. lab sem VM: não oferece criar, manda usar o launcher", (await text(card("lab"))).includes("crie pelo launcher"));
   check("1. lab: nenhum agente pode ser aberto antes de autorizar", await js<boolean>(`[...${card("lab")}.querySelectorAll('.pick')].every(b => b.disabled)`));
+  check("1. P-D4: vault reservado (derivado de COCKPIT_RESERVED_VMS=codex-vault), sem Autorizar e sem agente utilizável", (await text(card("vault"))).includes("Reservado")
+    && await js<boolean>(`!${card("vault")}.querySelector('button.grant') && [...${card("vault")}.querySelectorAll('.pick')].every(b => b.disabled)`));
   check("1. demo: Claude Code e Codex prontos", await js<boolean>(`[...${card("demo")}.querySelectorAll('.pick')].every(b => !b.disabled)`));
   await shot("01-projetos-1440.png");
 
@@ -93,6 +96,10 @@ try {
   check("3. escolher Claude Code abre a sessão da VM existente", await js<string>(`document.getElementById('vm-title').textContent`) === "claude-demo");
   await shot("04-sessao-claude-1440.png");
 
+  await viewport(390, 844);
+  await Bun.sleep(150);
+  check("4. em 390px o caminho de volta (Projetos no cabeçalho da sessão) está visível", await js<boolean>(visible("#projects-back")));
+  await viewport(1440, 900);
   await js(`document.getElementById('projects-open').click(); true`);
   await until(visible("#empty"));
   check("4. botão Projetos volta ao seletor", await js<boolean>(visible("#catalog")));

@@ -50,6 +50,10 @@ test("F1-D smoke: preconditions refuse with NOT_VERIFIED (exit 2) and create not
     [{ COCKPIT_SMOKE_VM: "claude-engineering-cockpit" }, "smoke_vm_reserved"],
     [{ COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_RESERVED_VMS: "claude-demo" }, "smoke_vm_reserved"],
     [{ COCKPIT_SMOKE_VM: "codex-demo", COCKPIT_RESERVED_VMS: "codex-demo,claude-other" }, "smoke_vm_reserved"],
+    // P-D4: a reserved VM reserves its project for every provider; a reserved project reserves all its VMs.
+    [{ COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_RESERVED_VMS: "codex-demo" }, "smoke_vm_reserved"],
+    [{ COCKPIT_SMOKE_VM: "codex-demo", COCKPIT_RESERVED_PROJECTS: "demo" }, "smoke_vm_reserved"],
+    [{ COCKPIT_SMOKE_VM: "codex-engineering-cockpit" }, "smoke_vm_reserved"],
     [{ COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_RESERVED_VMS: "not a vm" }, "invalid_reserved_vms"],
     [{ COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_SMOKE_ORPHAN_PROOF: "yes" }, "quota_confirmation_required"],
     [{ COCKPIT_SMOKE_VM: "demo" }, "smoke_vm_invalid"],

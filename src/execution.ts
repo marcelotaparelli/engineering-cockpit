@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { projectOfVm, projectsOfVms } from "./reservations.ts";
 import { closeSync, lstatSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { assertNoSymlinks } from "./paths.ts";
 import { SafeError, safeCode, type Provider, type Snapshot } from "./model.ts";
@@ -127,6 +128,8 @@ export class ExecutionService {
   readonly #partialFlushMs: number;
   readonly #processes: ExecutionOptions["processes"];
   readonly #reserved: ReadonlySet<string>;
+  /** P-D4: the project of a reserved VM is reserved for every provider (derived here too, whatever list the caller passed). */
+  readonly #reservedProjects: ReadonlySet<string>;
   readonly #startedAt: string;
   readonly #stats: ReliabilityCounters = { runs_dispatched: 0, dispatch_failed: 0, dispatch_unconfirmed: 0, dispatch_blocked_orphan: 0, transport_lost: 0,
     provider_session_lost: 0, vm_stopped: 0, approval_delivery_unconfirmed: 0, transitions_rejected: 0, transcript_write_failed: 0, reconcile_confirmed: 0, reconcile_unconfirmed: 0 };
@@ -153,6 +156,7 @@ export class ExecutionService {
     this.#log = options.log ?? (entry => console.log(JSON.stringify(entry)));
     this.#processes = options.processes;
     this.#reserved = new Set(options.reservedVms ?? []);
+    this.#reservedProjects = projectsOfVms(options.reservedVms ?? []);
     this.#startedAt = this.#now().toISOString();
     this.#partialFlushMs = options.partialFlushMs ?? PARTIAL_FLUSH_MS;
     if (!Number.isSafeInteger(this.#partialFlushMs) || this.#partialFlushMs < 1) throw new SafeError("invalid_partial_flush_interval");
@@ -165,7 +169,7 @@ export class ExecutionService {
   /** True when a registered adapter can operate this VM (provider supported and the VM not reserved by config or adapter). */
   supports(provider: Provider, vmName?: string): boolean {
     const adapter = this.#adapters.get(provider);
-    if (vmName !== undefined && this.#reserved.has(vmName)) return false;
+    if (vmName !== undefined && (this.#reserved.has(vmName) || this.#reservedProjects.has(projectOfVm(vmName) ?? ""))) return false;
     return Boolean(adapter && (vmName === undefined || !adapter.acceptsTarget || adapter.acceptsTarget(vmName)));
   }
 

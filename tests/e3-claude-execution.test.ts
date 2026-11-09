@@ -86,16 +86,16 @@ const startRun = (auth: Auth, sessionId: string, prompt: string, key = `k-${cryp
 const waitIdle = (auth: Auth, runId: string) => until(readRun(auth, runId), run => !["prepared", "dispatching", "running", "awaiting_approval"].includes(run.status));
 
 describe("E3: Claude Code on the shared Cockpit infrastructure", () => {
-  test("dashboard lists Claude next to Codex with capabilities; the reserved dev VM is never runnable; other projects stay hidden", async () => {
+  test("dashboard lists Claude next to Codex with capabilities; the reserved dev project is hidden and never runnable (P-D4); other projects stay hidden", async () => {
     const auth = await login();
     const dashboard = await (await get(auth, "api/dashboard")).json() as { vms: Array<{ vm_name: string; runnable: boolean; provider: string; capabilities: Record<string, unknown> | null }> };
-    expect(dashboard.vms.map(vm => vm.vm_name)).toEqual(["claude-alpha", "claude-engineering-cockpit", "codex-alpha"]);
+    // P-D4: the dev VM reserves its project, which wins over the configuration grant this test still sets: nothing of it is listed.
+    expect(dashboard.vms.map(vm => vm.vm_name)).toEqual(["claude-alpha", "codex-alpha"]);
     expect(dashboard.vms.find(vm => vm.vm_name === "claude-alpha")).toMatchObject({ runnable: true, provider: "claude", capabilities: { sessionListing: "cockpit", usage: "run" } });
     expect(dashboard.vms.find(vm => vm.vm_name === "codex-alpha")).toMatchObject({ runnable: true, capabilities: { history: "paged" } });
-    expect(dashboard.vms.find(vm => vm.vm_name === "claude-engineering-cockpit")!.runnable).toBe(false);
     const refused = await post(auth, "api/sessions", { vm_name: "claude-engineering-cockpit", mode: "new" });
-    expect(refused.status).toBe(409);
-    expect((await refused.json() as { error: { code: string } }).error.code).toBe("target_unavailable");
+    expect(refused.status).toBe(404);
+    expect((await refused.json() as { error: { code: string } }).error.code).toBe("resource_not_found");
     expect((await post(auth, "api/sessions", { vm_name: "claude-beta", mode: "new" })).status).toBe(404);
     expect(world("claude-engineering-cockpit").spawned).toHaveLength(0);
     expect(world("claude-beta").spawned).toHaveLength(0);

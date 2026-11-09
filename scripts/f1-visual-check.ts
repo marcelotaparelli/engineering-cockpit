@@ -24,7 +24,7 @@ const tokenFile = join(secretDir, "token");
 await writeFile(tokenFile, `${token}\n`, { mode: 0o600 });
 // The credential comes from the 0600 file, as in the service; `claude-demo` is reserved by configuration for the L6 check.
 const app = Bun.spawn([process.execPath, "--no-env-file", "src/index.ts"], {
-  env: { PATH: process.env.PATH!, COCKPIT_LOCAL_TOKEN_FILE: tokenFile, COCKPIT_ALLOWED_PROJECTS: "demo,lab", PORT: String(port), COCKPIT_DATA_DIR: dataDir, COCKPIT_RESERVED_VMS: "claude-demo" },
+  env: { PATH: process.env.PATH!, COCKPIT_LOCAL_TOKEN_FILE: tokenFile, COCKPIT_ALLOWED_PROJECTS: "demo,lab", PORT: String(port), COCKPIT_DATA_DIR: dataDir, COCKPIT_RESERVED_VMS: "codex-vault" },
   stdout: "pipe", stderr: "pipe" });
 const profile = await mkdtemp(join(tmpdir(), "cockpit-chromium-"));
 const browser = Bun.spawn([chromium, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", `--user-data-dir=${profile}`, "--remote-debugging-port=0", "about:blank"], { stdout: "ignore", stderr: "pipe" });
@@ -76,7 +76,9 @@ try {
 
   // L6: reserved by configuration and provider without adapter → "Sem suporte", never "Offline · VM parada" for a reason it is not.
   const chip = (vm: string) => `(document.querySelector('.agent[data-vm="${vm}"] .chip') || {}).textContent`;
-  check("L6: VM reservada (COCKPIT_RESERVED_VMS) = Sem suporte, com o motivo", await a.js<boolean>(`${chip("claude-demo")} === 'Sem suporte' && document.querySelector('.agent[data-vm="claude-demo"]').textContent.includes('COCKPIT_RESERVED_VMS')`));
+  // P-D4: a reserved VM reserves its whole project, so it is no longer an agent row: the project is "Reservado" in Projetos.
+  await a.until(`!!document.querySelector('#catalog .catalog-item[data-project="vault"]')`);
+  check("L6/P-D4: VM reservada (COCKPIT_RESERVED_VMS) reserva o projeto: Reservado em Projetos, fora da lista de agentes", await a.js<boolean>(`document.querySelector('#catalog .catalog-item[data-project="vault"]').textContent.includes('Reservado') && !document.querySelector('#catalog .catalog-item[data-project="vault"] button.grant') && !document.getElementById('agents').textContent.includes('vault')`));
   check("L6: provider sem suporte (opencode) = Sem suporte", await a.js<boolean>(`${chip("opencode-lab")} === 'Sem suporte'`));
   await a.shot("01-unsupported-1440.png");
 

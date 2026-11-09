@@ -32,7 +32,7 @@ test("synthetic end-to-end host check separates automated PASS from manual NOT_V
     const report = await runHostCheck({ ...options, readOutput: async () => { calls++; return mockOutput(); } });
     expect(report.source).toBe("synthetic");
     expect(report.overall).toBe("PASS");
-    expect(report.counts).toEqual({ projects: 2, vms: 3, orphaned_vms: 0 });
+    expect(report.counts).toEqual({ projects: 3, vms: 3, orphaned_vms: 0 }); // demo, lab, vault (vault: no VM)
     expect(report.checks.filter(row => row.status === "NOT_VERIFIED").map(row => row.id)).toEqual(["browser_visual", "msb_version"]);
     expect(report.checks.some(row => row.status === "FAIL")).toBe(false);
     expect(calls).toBe(1);

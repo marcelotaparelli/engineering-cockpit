@@ -1,29 +1,17 @@
 import { SafeError, validProject } from "./model.ts";
 import type { GrantAudit, GrantStore } from "./grant-store.ts";
-import { DEFAULT_RESERVED_VMS } from "./claude-protocol.ts";
-import { vmIdentity } from "./model.ts";
+import { DEFAULT_RESERVED_PROJECTS, reservedProjects } from "./reservations.ts";
 
+export { DEFAULT_RESERVED_PROJECTS, reservedProjects };
 export type GrantSource = "config" | "ui";
 /** Audit actor of changes the Cockpit makes by itself at startup (never an operator session). */
 export const SYSTEM_ACTOR = "system:0000000000000000";
 
 /**
- * Projects the UI can never authorize: the project of every default-reserved VM (the Cockpit's own development project, D8)
- * plus `COCKPIT_RESERVED_PROJECTS`. The configuration (`COCKPIT_ALLOWED_PROJECTS`) keeps working as before for them.
- */
-export const DEFAULT_RESERVED_PROJECTS: readonly string[] = Object.freeze([...new Set(DEFAULT_RESERVED_VMS.map(name => vmIdentity(name).project))]);
-
-export function reservedProjects(value: string | undefined): string[] {
-  const names = (value ?? "").split(",").filter(name => name !== "");
-  if (new Set(names).size !== names.length || names.some(name => !validProject(name))) throw new SafeError("invalid_reserved_projects");
-  return [...new Set([...DEFAULT_RESERVED_PROJECTS, ...names])];
-}
-
-/**
  * The single authority on which projects the local operator may see and operate.
  *
- * Effective grants = configuration (fixed at start) ∪ grants made from the authenticated UI (persisted in a GrantStore).
- * Discovery never grants anything. `view` is ONE live set mutated in place, so every principal, request and stream sees a
+ * Effective grants = (configuration ∪ grants made from the authenticated UI) \ reserved projects (P-D4: a reservation wins
+ * over every grant, the configuration included). Discovery never grants anything. `view` is ONE live set mutated in place, so every principal, request and stream sees a
  * revocation at its next check (no stale per-session copy).
  */
 export class ProjectGrants {
@@ -34,6 +22,8 @@ export class ProjectGrants {
   readonly #view = new Set<string>();
   /** UI grants removed at startup because the project is now reserved or in the configuration (for the startup log). */
   readonly shadowedAtStart: readonly string[];
+  /** Configuration grants without effect because the project is reserved (for the startup log and the picker). */
+  readonly ignoredConfig: readonly string[];
 
   private constructor(config: readonly string[], reserved: readonly string[], store: GrantStore | null) {
     ProjectGrants.validateConfig(config, reserved);
@@ -45,6 +35,7 @@ export class ProjectGrants {
     this.shadowedAtStart = store?.dropShadowed(project => this.#reserved.has(project) || this.#config.has(project),
       { actor: SYSTEM_ACTOR, requestId: "startup-reconcile", at: new Date().toISOString() }) ?? [];
     for (const row of store?.list() ?? []) this.#ui.set(row.project, row.grantedAt);
+    this.ignoredConfig = [...this.#config].filter(project => this.#reserved.has(project)).sort();
     this.#rebuild();
   }
 
@@ -67,7 +58,13 @@ export class ProjectGrants {
 
   get view(): ReadonlySet<string> { return this.#view; }
   get mutable(): boolean { return this.#store !== null; }
-  source(project: string): GrantSource | null { return this.#config.has(project) ? "config" : this.#ui.has(project) ? "ui" : null; }
+  /** Where an EFFECTIVE grant comes from; null for a reserved project whatever is configured or stored. */
+  source(project: string): GrantSource | null {
+    if (this.#reserved.has(project)) return null;
+    return this.#config.has(project) ? "config" : this.#ui.has(project) ? "ui" : null;
+  }
+  /** Listed in COCKPIT_ALLOWED_PROJECTS but reserved: the configuration grant has no effect. */
+  configIgnored(project: string): boolean { return this.#config.has(project) && this.#reserved.has(project); }
   grantedAt(project: string): string | null { return this.#ui.get(project) ?? null; }
   reserved(project: string): boolean { return this.#reserved.has(project); }
 
@@ -86,6 +83,7 @@ export class ProjectGrants {
   /** Only UI grants can be revoked here; configuration grants are changed in the configuration. */
   revoke(project: string, audit: GrantAudit): boolean {
     if (!this.#store) throw new SafeError("grants_read_only");
+    if (this.#reserved.has(project)) throw new SafeError("resource_not_found"); // nothing effective to revoke
     if (this.#config.has(project)) throw new SafeError("grant_from_config");
     if (!this.#ui.has(project)) throw new SafeError("resource_not_found");
     // Durable first (one transaction with its audit row), then memory: a failed write changes nothing and is reported.
@@ -97,6 +95,6 @@ export class ProjectGrants {
 
   #rebuild(): void {
     this.#view.clear();
-    for (const project of [...this.#config, ...this.#ui.keys()].sort()) this.#view.add(project);
+    for (const project of [...this.#config, ...this.#ui.keys()].sort()) if (!this.#reserved.has(project)) this.#view.add(project);
   }
 }

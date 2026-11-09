@@ -72,7 +72,9 @@ test("F1: token in the environment AND a token file is ambiguous and refused", a
 
 test("F1 (D8): COCKPIT_RESERVED_VMS only adds to the always-reserved development VM; invalid names refuse startup", () => {
   expect(reservedVms(undefined)).toEqual(["claude-engineering-cockpit"]);
-  expect(config({}).reservedVms).toEqual(["claude-engineering-cockpit"]);
+  // P-D4: the effective list covers every provider of the reserved (development) project.
+  expect(config({}).reservedVms).toEqual(["claude-engineering-cockpit", "codex-engineering-cockpit", "opencode-engineering-cockpit"]);
+  expect(config({}).reservedProjects).toEqual(["engineering-cockpit"]);
   expect(reservedVms("")).toEqual(["claude-engineering-cockpit"]); // an empty value can never unprotect the dev VM
   expect(reservedVms(",")).toEqual(["claude-engineering-cockpit"]);
   expect(reservedVms("codex-alpha")).toEqual(["claude-engineering-cockpit", "codex-alpha"]);
@@ -103,14 +105,17 @@ test("F1 (L6/D8): an observed VM the Cockpit will not operate is `unsupported` w
     const byName = Object.fromEntries(view.vms.map(vm => [vm.vm_name, vm]));
     expect(byName["codex-alpha"]).toMatchObject({ state: "unsupported", unsupported: "reserved", runnable: false, vm_state: "running" });
     expect(String(byName["codex-alpha"]!.next_step)).toContain("COCKPIT_RESERVED_VMS");
-    expect(byName["claude-engineering-cockpit"]).toMatchObject({ state: "unsupported", unsupported: "reserved", runnable: false });
+    // P-D4: the development project is reserved, which wins over the configuration grant above: not even listed.
+    expect(byName["claude-engineering-cockpit"]).toBeUndefined();
     expect(byName["opencode-gamma"]).toMatchObject({ state: "unsupported", unsupported: "provider", runnable: false });
     expect(String(byName["opencode-gamma"]!.next_step)).not.toContain("parada");
     expect(byName["codex-beta"]).toMatchObject({ state: "offline", unsupported: null, runnable: false });
-    expect(byName["claude-alpha"]).toMatchObject({ state: "idle", unsupported: null, runnable: true });
+    // P-D4: reserving codex-alpha reserves project alpha for EVERY provider, derived even from this explicit VM-only list.
+    expect(byName["claude-alpha"]).toMatchObject({ state: "unsupported", unsupported: "reserved", runnable: false });
     // A reserved VM is refused before anything is spawned, whatever its provider.
     await expect(execution.revalidate("codex-alpha", "alpha")).rejects.toThrow("target_unavailable");
     await expect(execution.revalidate("claude-engineering-cockpit")).rejects.toThrow("target_unavailable");
+    await expect(execution.revalidate("claude-alpha", "alpha")).rejects.toThrow("target_unavailable");
     expect(world.spawned).toHaveLength(0);
   } finally { await execution.close(); store.close(); }
 });
@@ -122,6 +127,10 @@ test("F1 (D8): the configured list reaches the Claude argv guard; the developmen
   expect(new ClaudeCodeAdapter({ reservedVms: ["claude-alpha"] }).acceptsTarget("claude-alpha")).toBe(false);
   expect(new ClaudeCodeAdapter({ reservedVms: ["claude-alpha"] }).acceptsTarget("claude-engineering-cockpit")).toBe(false);
   expect(new ClaudeCodeAdapter().acceptsTarget("claude-beta")).toBe(true);
+  // P-D4 at the argv guard: a reserved Codex VM reserves `claude-<same project>` too.
+  expect(new ClaudeCodeAdapter({ reservedVms: ["codex-alpha"] }).acceptsTarget("claude-alpha")).toBe(false);
+  expect(() => claudeStreamArgv("claude-alpha", { permissionPrompt: "host" }, ["codex-alpha"])).toThrow("e2_target_forbidden");
+  expect(new ClaudeCodeAdapter({ reservedVms: ["codex-alpha"] }).acceptsTarget("claude-alphabet")).toBe(true); // exact project, no prefix match
   // Any configuration path ends at the same union.
   expect(config({ COCKPIT_RESERVED_VMS: "" }).reservedVms).toContain("claude-engineering-cockpit");
 });

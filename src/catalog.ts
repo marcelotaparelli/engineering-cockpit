@@ -20,6 +20,8 @@ export interface CatalogProject {
   grant: "config" | "ui" | null;
   granted_at: string | null;
   reserved: boolean;
+  /** In COCKPIT_ALLOWED_PROJECTS but reserved: that configuration grant has no effect (P-D4). */
+  config_ignored: boolean;
   can_authorize: boolean;
   can_revoke: boolean;
   agents: CatalogAgent[];
@@ -52,15 +54,16 @@ export function buildCatalog(input: {
       const vm = own.find(item => item.vm_name === vmName);
       if (!snapshot) return { provider, vm_name: vmName, vm_state: "unobserved", status: "unobserved" };
       if (!vm) return { provider, vm_name: vmName, vm_state: "absent", status: present ? "absent" : "project_missing" };
-      return { provider, vm_name: vmName, vm_state: vm.state, status: agentStatus(vm, present === true, authorized, supported(vm), input.execution?.unsupportedReason(vm.provider, vm.vm_name) ?? null) };
+      return { provider, vm_name: vmName, vm_state: vm.state, status: reserved ? "reserved"
+        : agentStatus(vm, present === true, authorized, supported(vm), input.execution?.unsupportedReason(vm.provider, vm.vm_name) ?? null) };
     });
     // Observed VMs of other providers (e.g. OpenCode): listed so the operator knows they exist, never openable here.
     for (const vm of own) {
       if (PICKER_PROVIDERS.includes(vm.provider)) continue;
-      agents.push({ provider: vm.provider, vm_name: vm.vm_name, vm_state: vm.state, status: "unsupported" });
+      agents.push({ provider: vm.provider, vm_name: vm.vm_name, vm_state: vm.state, status: reserved ? "reserved" : "unsupported" });
     }
     return {
-      name, present, authorized, grant: source, granted_at: grants.grantedAt(name), reserved,
+      name, present, authorized, grant: source, granted_at: authorized ? grants.grantedAt(name) : null, reserved, config_ignored: grants.configIgnored(name),
       can_authorize: grants.mutable && !authorized && !reserved && present === true,
       can_revoke: grants.mutable && source === "ui",
       agents,

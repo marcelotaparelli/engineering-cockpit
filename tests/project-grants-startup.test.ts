@@ -34,7 +34,7 @@ test("no configured project: discover → authorize in the page → open Codex a
   let api = await client(cockpit.origin, cockpit.token);
   const before = await api.get("/api/catalog");
   expect(before.status).toBe(200);
-  expect(before.body.projects.map((project: { name: string; authorized: boolean }) => [project.name, project.authorized])).toEqual([["demo", false], ["lab", false]]);
+  expect(before.body.projects.map((project: { name: string; authorized: boolean }) => [project.name, project.authorized])).toEqual([["demo", false], ["lab", false], ["vault", false]]);
   expect((await api.get("/api/dashboard")).body.vms).toEqual([]);
   expect((await api.post("/api/sessions", { vm_name: "codex-demo", mode: "new" })).status).toBe(404); // discovered, not authorized
   const granted = await api.post("/api/projects/demo/grant", { confirm: "demo" });
@@ -56,7 +56,7 @@ test("no configured project: discover → authorize in the page → open Codex a
   cockpit = await harness.start();
   api = await client(cockpit.origin, cockpit.token);
   const restarted = (await api.get("/api/catalog")).body.projects.map((project: { name: string; grant: string | null }) => [project.name, project.grant]);
-  expect(restarted).toEqual([["demo", "ui"], ["lab", null]]);
+  expect(restarted).toEqual([["demo", "ui"], ["lab", null], ["vault", null]]);
   expect((await api.get(`/api/sessions/${codex.body.session_id}`)).status).toBe(200);
   await cockpit.stop("SIGTERM");
 });
@@ -73,8 +73,52 @@ test("UI grants off: the configuration must still grant a project, and nothing c
   const api = await client(cockpit.origin, cockpit.token);
   const view = (await api.get("/api/catalog")).body;
   expect(view.ui_grants).toBe(false);
-  expect(view.projects.map((project: { name: string; can_authorize: boolean }) => [project.name, project.can_authorize])).toEqual([["demo", false], ["lab", false]]);
+  expect(view.projects.map((project: { name: string; can_authorize: boolean }) => [project.name, project.can_authorize])).toEqual([["demo", false], ["lab", false], ["vault", false]]);
   expect(await api.post("/api/projects/lab/grant", { confirm: "lab" })).toEqual({ status: 409, body: expect.objectContaining({ error: { code: "grants_read_only" } }) });
   expect(await Bun.file(join(configured.dataDir, "grants-mock.sqlite")).exists()).toBe(false);
+  await cockpit.stop("SIGTERM");
+});
+
+test("restart (P-D4): a stored UI grant never bypasses a NEW reservation, is not revived when it is lifted; a reserved config grant is ignored", async () => {
+  const harness = await cockpitHarness({ projects: "" });
+  harnesses.push(harness);
+  let cockpit = await harness.start();
+  let api = await client(cockpit.origin, cockpit.token);
+  expect((await api.post("/api/projects/demo/grant", { confirm: "demo" })).status).toBe(200);
+  const session = await api.post("/api/sessions", { vm_name: "codex-demo", mode: "new" });
+  expect(session.status).toBe(201);
+  await cockpit.stop("SIGTERM");
+
+  // Reserving ONE VM of the project reserves the whole project, for every provider.
+  cockpit = await harness.start({ COCKPIT_RESERVED_VMS: "codex-demo" });
+  api = await client(cockpit.origin, cockpit.token);
+  expect(cockpit.logs()).toContain('"event":"project_grant","action":"revoke","project":"demo","actor":"system","request_id":"startup-reconcile"');
+  const demo = (await api.get("/api/catalog")).body.projects.find((project: { name: string }) => project.name === "demo");
+  expect(demo).toMatchObject({ reserved: true, authorized: false, grant: null, can_authorize: false });
+  expect((await api.get(`/api/sessions/${session.body.session_id}`)).status).toBe(404);
+  expect((await api.get(`/api/sessions/${session.body.session_id}/history`)).status).toBe(404);
+  expect((await api.post("/api/sessions", { vm_name: "claude-demo", mode: "new" })).status).toBe(404);
+  expect((await api.post("/api/projects/demo/grant", { confirm: "demo" })).body.error.code).toBe("project_reserved");
+  await cockpit.stop("SIGTERM");
+
+  // Reservation lifted: the old grant does NOT come back by itself; authorizing again restores the same session.
+  cockpit = await harness.start();
+  api = await client(cockpit.origin, cockpit.token);
+  expect((await api.get("/api/catalog")).body.projects.find((project: { name: string }) => project.name === "demo").grant).toBeNull();
+  expect((await api.get(`/api/sessions/${session.body.session_id}`)).status).toBe(404);
+  expect((await api.post("/api/projects/demo/grant", { confirm: "demo" })).status).toBe(200);
+  expect((await api.get(`/api/sessions/${session.body.session_id}`)).status).toBe(200);
+  await cockpit.stop("SIGTERM");
+
+  // COCKPIT_ALLOWED_PROJECTS naming a reserved project has no effect (logged); a project reserved via a VM that does not exist too.
+  cockpit = await harness.start({ COCKPIT_ALLOWED_PROJECTS: "demo,lab", COCKPIT_RESERVED_PROJECTS: "demo", COCKPIT_RESERVED_VMS: "codex-vault" });
+  api = await client(cockpit.origin, cockpit.token);
+  expect(cockpit.logs()).toContain('"event":"project_grant_ignored","project":"demo","source":"config","reason":"reserved"');
+  const byName = Object.fromEntries((await api.get("/api/catalog")).body.projects.map((project: { name: string }) => [project.name, project]));
+  expect(byName.demo).toMatchObject({ reserved: true, authorized: false, config_ignored: true });
+  expect(byName.lab).toMatchObject({ reserved: false, authorized: true, grant: "config" });
+  expect(byName.vault).toMatchObject({ reserved: true, authorized: false, can_authorize: false });
+  expect((await api.get("/api/dashboard")).body.vms.map((vm: { vm_name: string }) => vm.vm_name)).toEqual(["opencode-lab"]);
+  expect((await api.get(`/api/sessions/${session.body.session_id}`)).status).toBe(404);
   await cockpit.stop("SIGTERM");
 });

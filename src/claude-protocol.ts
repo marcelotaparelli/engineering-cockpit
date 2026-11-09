@@ -49,6 +49,12 @@ export function assertClaudeTarget(vmName: string, reserved: readonly string[] =
   const identity = vmIdentity(vmName);
   if (identity.provider !== "claude") throw new SafeError("e2_target_not_claude");
   if (reserved.includes(vmName)) throw new SafeError("e2_target_forbidden");
+  // P-D4: a reserved VM reserves its project for every provider, so `claude-<project of any reserved VM>` is refused as well.
+  for (const name of reserved) {
+    let project: string | null = null;
+    try { project = vmIdentity(name).project; } catch { /* not an agent VM name: nothing to derive */ }
+    if (project === identity.project) throw new SafeError("e2_target_forbidden");
+  }
 }
 
 /** Routes permission prompts (and AskUserQuestion) to the host over stdio as `control_request`/`can_use_tool`. */

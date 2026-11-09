@@ -6,7 +6,7 @@ import { RuntimeStore } from "../src/runtime-store.ts";
 import { classifyChild, procProbe, ProcessLedger, type ProcessLedgerLog } from "../src/process-ledger.ts";
 import type { MsbChild, MsbSpawn } from "../src/msb-transport.ts";
 import { buildDashboard } from "../src/dashboard.ts";
-import type { LocalPrincipal, LocalSecurity } from "../src/local-security.ts";
+import { LocalSecurity, type LocalPrincipal } from "../src/local-security.ts";
 import { closeHarnesses, harness, startTurn } from "./support/e4-harness.ts";
 
 /**
@@ -162,9 +162,9 @@ describe.skipIf(process.platform !== "linux")("E4: a run never starts beside an 
     expect(h.logs).toContainEqual(expect.objectContaining({ event: "run.dispatch_blocked", error_code: "orphan_process_alive" }));
 
     const principal = { grants: new Set(["alpha"]) } as unknown as LocalPrincipal;
-    const dashboard = buildDashboard({ store: h.store, execution: h.execution, principal, security: {} as LocalSecurity, snapshot: null, discoveryError: null, source: "mock" });
+    const dashboard = buildDashboard({ store: h.store, execution: h.execution, principal, security: new LocalSecurity("a".repeat(64), ["alpha"]), snapshot: null, discoveryError: null, source: "mock" });
     expect(dashboard.attention).toContainEqual(expect.objectContaining({ kind: "orphan_process", pid: survivor.pid, process_kind: "claude_session", blocks: "session", session_id: session.sessionId }));
-    const outsider = buildDashboard({ store: h.store, execution: h.execution, principal: { grants: new Set(["beta"]) } as unknown as LocalPrincipal, security: {} as LocalSecurity, snapshot: null, discoveryError: null, source: "mock" });
+    const outsider = buildDashboard({ store: h.store, execution: h.execution, principal: { grants: new Set(["beta"]) } as unknown as LocalPrincipal, security: new LocalSecurity("a".repeat(64), ["alpha"]), snapshot: null, discoveryError: null, source: "mock" });
     expect((outsider.attention as Array<{ kind: string }>).some(item => item.kind === "orphan_process")).toBe(false);
 
     survivor.kill("SIGKILL"); await survivor.exited;

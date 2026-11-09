@@ -21,7 +21,7 @@ const NEXT_STEP: Readonly<Record<AgentState, string>> = {
 /** F1 (L6): an observed VM the Cockpit will not operate is not "offline": say why, without implying it is stopped. */
 const UNSUPPORTED_STEP = {
   provider: NEXT_STEP.unsupported,
-  reserved: "Reservada em COCKPIT_RESERVED_VMS",
+  reserved: "VM ou projeto reservado (COCKPIT_RESERVED_VMS / COCKPIT_RESERVED_PROJECTS): o Cockpit não opera",
 } as const;
 
 function vmProvider(vmName: string): string | null { return /^(codex|claude|opencode)-/.exec(vmName)?.[1] ?? null; }
@@ -48,7 +48,7 @@ export function buildDashboard(input: {
   ignored?: { not_agent_vm: number; invalid_project_name: number } | null;
 }): Record<string, unknown> {
   const { store, principal } = input;
-  const grants = [...principal.grants];
+  const grants = [...principal.grants].filter(project => input.security.allows(principal, project)); // reserved never listed (P-D4)
   const sessions = store.listSessions(grants);
   const latestBySession = new Map(sessions.map(session => [session.sessionId, store.listRuns(session.sessionId, 1)[0] ?? null]));
   const sessionViews = sessions.map(session => {
@@ -83,7 +83,7 @@ export function buildDashboard(input: {
   });
 
   const approvals = store.pendingApprovals().map(item => input.execution?.approvalView(item) ?? null)
-    .filter((view): view is NonNullable<typeof view> => view !== null && principal.grants.has(view.projectId));
+    .filter((view): view is NonNullable<typeof view> => view !== null && input.security.allows(principal, view.projectId));
   const attention: Array<Record<string, unknown>> = [
     ...approvals.map(view => ({ kind: "approval", approval_id: view.approvalId, run_id: view.runId, session_id: view.sessionId, project: view.projectId,
       vm_name: view.vmName, provider: vmProvider(view.vmName), version: view.version, action_type: view.actionType, created_at: view.createdAt, summary: view.summary })),
@@ -99,10 +99,13 @@ export function buildDashboard(input: {
   for (const orphan of input.execution?.orphanProcesses() ?? []) {
     let project: string;
     try { project = vmIdentity(orphan.vmName).project; } catch { continue; }
-    if (!principal.grants.has(project)) continue;
-    const session = orphan.providerSessionId ? sessions.find(item => item.target.vmName === orphan.vmName && item.providerSessionId === orphan.providerSessionId) ?? null : null;
+    // A process left alive in a RESERVED project stays visible (PID, VM): the Cockpit never ends processes on its own, so the
+    // operator must be able to see it. Nothing of the project itself (session, history) is exposed.
+    const reserved = input.security.grants.reserved(project);
+    if (!reserved && !input.security.allows(principal, project)) continue;
+    const session = reserved ? null : orphan.providerSessionId ? sessions.find(item => item.target.vmName === orphan.vmName && item.providerSessionId === orphan.providerSessionId) ?? null : null;
     attention.push({ kind: "orphan_process", vm_name: orphan.vmName, project, provider: vmProvider(orphan.vmName), process_kind: orphan.kind, pid: orphan.pid,
-      session_id: session?.sessionId ?? null, blocks: orphan.kind === "codex_app_server" ? "vm" : orphan.kind === "claude_session" ? "session" : "nothing",
+      session_id: session?.sessionId ?? null, reserved, blocks: orphan.kind === "codex_app_server" ? "vm" : orphan.kind === "claude_session" ? "session" : "nothing",
       created_at: orphan.detectedAt, since: orphan.since });
   }
   const count = (state: AgentState) => sessionViews.filter(view => view.state === state).length;

@@ -134,7 +134,7 @@ test("discovery keeps valid orphan VMs without inventing projects and preserves 
   let output = "NAME STATUS\ncodex-demo running\ncodex-absent running";
   const discovery = new Discovery({ source: "mock", projectsBase: new URL("../fixtures/projects", import.meta.url).pathname, store: db, readOutput: async () => output });
   const current = await discovery.refresh();
-  expect(current.projects).toEqual(["demo", "lab"]);
+  expect(current.projects).toEqual(["demo", "lab", "vault"]);
   expect(current.vms.map(vm => [vm.vm_name, vm.orphaned])).toEqual([["codex-absent", true], ["codex-demo", false]]);
   expect(current.projects).not.toContain("absent");
   output = "bad format";

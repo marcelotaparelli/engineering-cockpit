@@ -200,7 +200,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           try {
             for (;;) {
               // The live grant set, read on every flush: a project revoked meanwhile stops streaming at once.
-              const rows = store.replayForProjects([...principal.grants], cursor, 200);
+              const rows = store.replayForProjects([...principal.grants].filter(project => options.security.allows(principal, project)), cursor, 200);
               for (const row of rows) {
                 cursor = row.sequence;
                 send(`id: ${row.sequence}\nevent: journal\ndata: ${JSON.stringify({ sequence: row.sequence, type: row.type, run_id: row.runId,
@@ -212,7 +212,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
         };
         const unsubscribe = hub.subscribe({
           projects: principal.grants,
-          onLive: event => send(`event: live\ndata: ${JSON.stringify({ kind: event.kind, project: event.projectId, session_id: event.sessionId, run_id: event.runId, ...event.data })}\n\n`),
+          onLive: event => { if (options.security.allows(principal, event.projectId)) send(`event: live\ndata: ${JSON.stringify({ kind: event.kind, project: event.projectId, session_id: event.sessionId, run_id: event.runId, ...event.data })}\n\n`) },
           onJournal: () => { if (!flushQueued) { flushQueued = true; queueMicrotask(flush); } },
         });
         const heartbeat = setInterval(() => {
@@ -348,13 +348,13 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           if (!IDEMPOTENCY_KEY.test(key)) throw new SafeError("invalid_idempotency_key");
           exact(body, ["prompt"]);
           // The grant is re-read after every wait inside startRun: a concurrent revoke can never leave an invisible run behind.
-          const { run, created } = await requireExecution().startRun(session, body.prompt as string, key, () => principal.grants.has(session.target.projectId));
+          const { run, created } = await requireExecution().startRun(session, body.prompt as string, key, () => options.security.allows(principal, session.target.projectId));
           return json({ ...runView(store, run), replayed: !created }, created ? 202 : 200);
         }
         if (route === "/api/approvals") {
           const store = requireRuntime();
           const execution = requireExecution();
-          const approvals = store.pendingApprovals().map(item => execution.approvalView(item)).filter(view => view && principal.grants.has(view.projectId));
+          const approvals = store.pendingApprovals().map(item => execution.approvalView(item)).filter(view => view && options.security.allows(principal, view.projectId));
           return json({ approvals });
         }
         if (route === "/api/approvals/:id/decision") {
@@ -442,7 +442,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
           const vm = options.security.authorizeVm(snapshot, principal, body.vm_name);
           const execution = requireExecution();
           const target = await execution.revalidate(vm.vm_name, vm.project);
-          const session = await execution.openSession(target, body.mode, body.thread_id as string | undefined, () => principal.grants.has(vm.project));
+          const session = await execution.openSession(target, body.mode, body.thread_id as string | undefined, () => options.security.allows(principal, vm.project));
           return json(sessionView(session, execution), 201);
         }
         const visible = options.security.visible(snapshot, principal);

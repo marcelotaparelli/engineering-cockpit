@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { SafeError, safeCode, vmIdentity } from "./model.ts";
-import { reservedVms } from "./config.ts";
+import { reservations } from "./reservations.ts";
 import { classifyChild, procProbe } from "./process-ledger.ts";
 import { blockersOf, CLAUDE_PROOF_PROMPT, code as closedCode, countRuns, hasEnoughPartial, judgeBlockedSend, judgePartialPreserved, judgeReconcileAfterRelease,
   judgeReconcileWhileOwnerAlive, parseOrphans, parseReconcile, parseReliability, readRunTranscript, type ProofProvider, type RunTranscript, type Verdict } from "./f2-proof.ts";
@@ -128,7 +128,7 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
   let unitGroup = ""; // the smoke unit's cgroup; every signal re-verifies membership (no PID-reuse accident)
 
   // ---------------------------------------------------------------- preconditions (nothing is written before they pass)
-  let vm = "", project = "", port = 0, runtimeDir = "", path = "", extraReserved = "";
+  let vm = "", project = "", port = 0, runtimeDir = "", path = "", extraReserved = "", extraReservedProjects = "";
   try {
     if (process.platform !== "linux") throw new SafeError("linux_required");
     if (env.COCKPIT_F1_SMOKE_CONFIRMED !== "yes") throw new SafeError("confirmation_required");
@@ -139,7 +139,10 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     // The Cockpit would refuse these VMs anyway (and a real prompt must never reach the development VM): refuse before creating anything.
     // The reserved list normally lives in the installed service's env file, not in the shell: read it (read-only) and add it.
     extraReserved = [...new Set([...(env.COCKPIT_RESERVED_VMS ?? "").split(","), ...installedReservedVms(env).split(",")].map(name => name.trim()).filter(Boolean))].join(",");
-    if (reservedVms(extraReserved).includes(vm)) throw new SafeError("smoke_vm_reserved");
+    extraReservedProjects = [...new Set([...(env.COCKPIT_RESERVED_PROJECTS ?? "").split(","), ...installedReservedVms(env, "COCKPIT_RESERVED_PROJECTS").split(",")]
+      .map(name => name.trim()).filter(Boolean))].join(",");
+    // P-D4: a reserved VM reserves its whole project, so `claude-x` is refused when `codex-x` (or project `x`) is reserved.
+    if (reservations(extraReserved, extraReservedProjects).vms.includes(vm)) throw new SafeError("smoke_vm_reserved");
     project = identity.project;
     report.vm = vm;
     report.provider = identity.provider;
@@ -223,6 +226,7 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     writeFileSync(envFile, renderEnvFile({ COCKPIT_MODE: "host", COCKPIT_HOST_CONFIRMED: "yes", COCKPIT_PROJECTS_BASE: env.COCKPIT_PROJECTS_BASE!,
       COCKPIT_ALLOWED_PROJECTS: project, PORT: String(port), COCKPIT_DATA_DIR: join(workDir, "data"), COCKPIT_LOCAL_TOKEN_FILE: tokenFile, PATH: path,
       ...(extraReserved ? { COCKPIT_RESERVED_VMS: extraReserved } : {}),
+      ...(extraReservedProjects ? { COCKPIT_RESERVED_PROJECTS: extraReservedProjects } : {}),
       ...(env.LANG && /^[A-Za-z0-9._@-]+$/.test(env.LANG) ? { LANG: env.LANG } : {}) }), { mode: 0o600, flag: "wx" });
     mkdirSync(join(runtimeDir, "systemd/user"), { recursive: true, mode: 0o700 });
     writeFileSync(unitFile, renderUnit(root, envFile), { mode: 0o644, flag: "wx" });
@@ -487,14 +491,14 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
  * installed service (no file, or no HOME/XDG_CONFIG_HOME to locate it). A file that exists but cannot be read or parsed is refused:
  * the smoke must not guess which VMs the operator reserved before it sends a real prompt.
  */
-export function installedReservedVms(env: Record<string, string | undefined>): string {
+export function installedReservedVms(env: Record<string, string | undefined>, key: "COCKPIT_RESERVED_VMS" | "COCKPIT_RESERVED_PROJECTS" = "COCKPIT_RESERVED_VMS"): string {
   if (!env.XDG_CONFIG_HOME && !env.HOME) return ""; // nowhere to look: no installed service can be located
   let file: string;
   try { file = servicePaths(env).envFile; } catch { throw new SafeError("service_env_unreadable"); } // HOME/XDG_CONFIG_HOME set but unusable
   let text: string;
   try { text = readFileSync(file, "utf8"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""; throw new SafeError("service_env_unreadable"); } // only "absent" is absent
-  try { return parseEnvFile(text).COCKPIT_RESERVED_VMS ?? ""; } catch { throw new SafeError("service_env_unreadable"); }
+  try { return parseEnvFile(text)[key] ?? ""; } catch { throw new SafeError("service_env_unreadable"); }
 }
 
 /**

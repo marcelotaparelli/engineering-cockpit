@@ -1,19 +1,23 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SafeError, vmIdentity } from "./model.ts";
-import { DEFAULT_RESERVED_VMS } from "./claude-protocol.ts";
-import { reservedProjects } from "./project-grants.ts";
+import { SafeError } from "./model.ts";
+import { reservations, reservedVms } from "./reservations.ts";
+
+export { reservedVms };
 
 export interface Config {
   source: "mock" | "host"; projectsBase: string; databasePath: string; runtimeDatabasePath: string; port: number; localCredential: string;
   /** Configuration grants (`COCKPIT_ALLOWED_PROJECTS`). May be empty: projects can then be authorized from the UI. */
   allowedProjects: string[];
-  /** Projects the UI never authorizes: the development project (D8) plus `COCKPIT_RESERVED_PROJECTS`. */
+  /**
+   * Reserved projects (P-D4): never authorized (configuration or UI), executed or served. The development project (D8),
+   * `COCKPIT_RESERVED_PROJECTS` and the project of every reserved VM.
+   */
   reservedProjects: string[];
   /** UI grants persisted here; null when `COCKPIT_UI_GRANTS=off` (configuration grants only, as before). */
   grantsDatabasePath: string | null;
-  /** VMs the Cockpit never operates (listed as `unsupported`): the development VM (D8) plus `COCKPIT_RESERVED_VMS`. */
+  /** VMs the Cockpit never operates: the development VM (D8), `COCKPIT_RESERVED_VMS`, and every provider's VM of a reserved project. */
   reservedVms: string[];
 }
 
@@ -39,6 +43,8 @@ export function config(env: Record<string, string | undefined> = process.env, re
   const dataDir = env.COCKPIT_DATA_DIR;
   if (dataDir !== undefined && (!dataDir.startsWith("/") || dataDir.split("/").includes(".."))) throw new SafeError("invalid_data_dir");
   const data = (name: string) => dataDir ? `${dataDir.replace(/\/+$/, "")}/${name}` : fileURLToPath(new URL(`../data/${name}`, import.meta.url));
+  // P-D4: every reserved VM reserves its project for all providers; the effective VM list covers every provider of those projects.
+  const reserved = reservations(env.COCKPIT_RESERVED_VMS, env.COCKPIT_RESERVED_PROJECTS);
   return {
     source: mode,
     projectsBase: mode === "mock" ? fileURLToPath(new URL("../fixtures/projects", import.meta.url)) : env.COCKPIT_PROJECTS_BASE!,
@@ -47,21 +53,10 @@ export function config(env: Record<string, string | undefined> = process.env, re
     port: Number(port),
     localCredential,
     allowedProjects,
-    reservedProjects: reservedProjects(env.COCKPIT_RESERVED_PROJECTS),
+    reservedProjects: reserved.projects,
     grantsDatabasePath: uiGrants === "on" ? data(`grants-${mode}.sqlite`) : null,
-    reservedVms: reservedVms(env.COCKPIT_RESERVED_VMS),
+    reservedVms: reserved.vms,
   };
-}
-
-/**
- * The development VM (D8 default) is ALWAYS reserved; `COCKPIT_RESERVED_VMS` (comma-separated agent VM names) only adds to it.
- * An empty or mistyped value can therefore never unprotect it: lifting that reservation stays a code change (Tech Lead, D8).
- */
-export function reservedVms(value: string | undefined): string[] {
-  const names = (value ?? "").split(",").filter(name => name !== "");
-  if (new Set(names).size !== names.length) throw new SafeError("invalid_reserved_vms");
-  for (const name of names) { try { vmIdentity(name); } catch { throw new SafeError("invalid_reserved_vms"); } }
-  return [...new Set([...DEFAULT_RESERVED_VMS, ...names])];
 }
 
 /**

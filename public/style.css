@@ -358,7 +358,7 @@ select { cursor: pointer; }
 /* ================================================================ 12. refinements after visual check */
 .conversation > * { flex-shrink: 0; } /* long items scroll the conversation, they are never squashed */
 .card > div:not(.head):not(.actions) { font-size: .85rem; }
-@media (max-width: 900px) { #refresh { display: none; } }
+@media (max-width: 900px) { #refresh, #projects-open { display: none; } } /* the session head keeps a "Projetos" button */
 /* E3: agent questions and full tool input inside approval cards */
 .card fieldset.question { border: 1px solid var(--line-2); border-radius: var(--r-sm); margin: 0; padding: 6px 8px; display: grid; gap: 4px; min-width: 0; background: rgba(1, 11, 20, .5); }
 .card fieldset.question legend { font-weight: 600; font-size: .85rem; padding: 0 4px; color: var(--ec-steel); }
