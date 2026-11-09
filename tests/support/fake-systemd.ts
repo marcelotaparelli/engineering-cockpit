@@ -47,6 +47,8 @@ export interface World {
   historyUnreadable: boolean;
   /** The dashboard keeps listing the orphan after its process is gone. */
   ghostOrphan: boolean;
+  /** The dashboard answers an error (no `attention` list) once the orphan's process is gone. */
+  dashboardUnreadableAfterRelease: boolean;
   /** Initial status of the in-flight run (`completed` = the real turn was too fast to be killed in flight). */
   initialRunStatus: string;
   /** Extra text the journal contains (a leak). */
@@ -102,7 +104,7 @@ export class FakeSystemd {
       orphanPid: null, msbPid: null, extraExecPid: null, listPid: null, crashes: 0, orphanKind: provider === "claude" ? "claude_session" : "codex_app_server",
       blockSends: true, partial: "grows", afterCrash: "preserved", blockedSendCreatesRun: false, claudeReconcileResolves: false, codexOwnerAliveReconcile: "refuse",
       reconcileSpawnsExec: false, postRelease: "completed", agentText: "", textAtCrash: "", controlGroup: null, connections: 0, reconcileTransientChild: false, extraArgvUnreadable: false, runUnbound: false, historyUnreadable: false,
-      ghostOrphan: false, initialRunStatus: "running", journalExtra: "", pidReused: false, deactivatingShows: 0, hook: null, timeline: [], ...overrides };
+      ghostOrphan: false, dashboardUnreadableAfterRelease: false, initialRunStatus: "running", journalExtra: "", pidReused: false, deactivatingShows: 0, hook: null, timeline: [], ...overrides };
     this.world.runStatus = this.world.initialRunStatus;
   }
   unitFile = () => join(this.xdg, "systemd/user", SMOKE_UNIT);
@@ -132,6 +134,7 @@ export class FakeSystemd {
       world.timeline.push(`${request.method} ${url.pathname}`);
       world.hook?.(`${request.method} ${url.pathname}`);
       if (url.pathname === "/api/dashboard") {
+        if (world.dashboardUnreadableAfterRelease && world.orphanPid !== null && !alive(world.orphanPid)) return Response.json({ error: { code: "internal_error" } }, { status: 500 });
         const orphan = world.orphanPid !== null && (alive(world.orphanPid) || world.ghostOrphan) ? [orphanItem(world, world.orphanPid)] : [];
         return Response.json({ discovery_error: null, vms: [{ vm_name: world.vm, vm_state: "running" }], attention: orphan, reliability: reliabilityBody(world) });
       }

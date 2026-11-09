@@ -263,12 +263,14 @@ describe.skipIf(process.platform !== "linux")("F2-M2 Claude proof, end to end", 
     expect(fake.cgroupPids()).toEqual([]);
   });
 
-  test("an interrupt in the middle of the proof cleans up and PRINTS what was observed (a real prompt may already have been spent)", async () => {
+  /** Runs the Claude proof and fires the interrupt when the smoke makes the request `at`; returns the report and what was printed. */
+  async function interrupted(at: string): Promise<{ report: SmokeReport; fake: FakeSystemd; xdg: string; logs: string[]; firedAt: number }> {
     let interrupt: (() => Promise<void>) | null = null;
     const logs: string[] = [];
+    let firedAt = -1;
     const log = spyOn(console, "log").mockImplementation(((line: unknown) => { logs.push(String(line)); }) as typeof console.log);
     try {
-      const fake = new FakeSystemd(true, { hook: entry => { if (entry === "POST /api/sessions/ses-proof/runs" && interrupt) { const fire = interrupt; interrupt = null; void fire(); } } }, "claude");
+      const fake: FakeSystemd = new FakeSystemd(true, { hook: entry => { if (entry === at && interrupt) { const fire = interrupt; interrupt = null; firedAt = fake.world.timeline.length; void fire(); } } }, "claude");
       const xdg = join(work, `run-${++counter}`);
       await mkdir(xdg, { mode: 0o700 });
       fake.xdg = xdg;
@@ -276,14 +278,53 @@ describe.skipIf(process.platform !== "linux")("F2-M2 Claude proof, end to end", 
       const env = { COCKPIT_F1_SMOKE_CONFIRMED: "yes", COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_PROJECTS_BASE: "/srv/projects", XDG_RUNTIME_DIR: xdg, PATH: bin,
         COCKPIT_SMOKE_ORPHAN_PROOF: "yes", COCKPIT_SMOKE_QUOTA_CONFIRMED: "yes" };
       const report = await runSystemdSmoke({ env, run: fake.run, proc: fake.proc, root, timeoutsMs: quick, onInterrupt: handler => { interrupt = handler; return () => {}; } });
-      expect(report.checks.find(item => item.reason === "interrupted")).toBeDefined();
-      expect(status(report).cleanup).toBe("PASS");
-      expect(await readdir(join(xdg, "systemd/user"))).toEqual([]);
-      expect(fake.cgroupPids()).toEqual([]);
-      const printed = logs.map(line => { try { return JSON.parse(line) as SmokeReport; } catch { return null; } }).find(item => item?.milestone === "F1-D-systemd-smoke");
-      expect(printed).toMatchObject({ overall: "FAIL", provider: "claude" });
-      expect(JSON.stringify(printed)).not.toContain(CLAUDE_PROOF_PROMPT);
+      return { report, fake, xdg, logs, firedAt };
     } finally { log.mockRestore(); }
+  }
+
+  test("an interrupt in the middle of the proof stops the run, cleans up once and returns what was observed (printed ONCE, by the caller)", async () => {
+    const { report, fake, xdg, logs, firedAt } = await interrupted("POST /api/sessions/ses-proof/runs");
+    expect(firedAt).toBeGreaterThan(0);
+    expect(report.checks.find(item => item.reason === "interrupted")).toBeDefined();
+    expect(report).toMatchObject({ overall: "FAIL", provider: "claude" });
+    expect(status(report).cleanup).toBe("PASS");
+    expect(await readdir(join(xdg, "systemd/user"))).toEqual([]);
+    expect(fake.cgroupPids()).toEqual([]);
+    // Nothing printed by the smoke itself: the script prints the returned report, so it appears exactly once.
+    expect(logs.filter(line => line.includes("F1-D-systemd-smoke"))).toEqual([]);
+    expect(JSON.stringify(report)).not.toContain(CLAUDE_PROOF_PROMPT);
+    // After the interrupt the smoke sends nothing more to the Cockpit: no probe, no reconcile, and no SIGKILL of the main process.
+    expect(fake.world.timeline.slice(firedAt).filter(entry => entry.startsWith("POST "))).toEqual([]);
+    expect(fake.calls.some(argv => argv.includes("--kill-whom=main"))).toBe(false);
+    // The request in flight when the operator pressed Ctrl+C is aborted; whether the Cockpit already read it is a race (in real life too),
+    // so at most that ONE prompt exists, never a second one.
+    expect(fake.world.prompts.length).toBeLessThanOrEqual(1);
+  });
+
+  test("an interrupt while the session is being created: the real prompt is NEVER sent afterwards", async () => {
+    const { report, fake, firedAt } = await interrupted("POST /api/sessions");
+    expect(firedAt).toBeGreaterThan(0);
+    expect(fake.world.prompts).toEqual([]); // no quota spent after the operator aborted
+    expect(fake.world.timeline.filter(entry => entry === "POST /api/sessions/ses-proof/runs")).toEqual([]);
+    expect(report.overall).toBe("FAIL");
+    expect(check(report, "orphan_turn_started")).toMatchObject({ status: "FAIL", reason: "interrupted" });
+    expect(status(report).cleanup).toBe("PASS");
+  });
+
+  test("a dashboard that cannot be read after the orphan ended is NOT_VERIFIED for the release, never a PASS", async () => {
+    const { report } = await smoke({ world: { dashboardUnreadableAfterRelease: true }, timeoutsMs: quick });
+    expect(check(report, "orphan_released")).toMatchObject({ status: "NOT_VERIFIED", reason: "orphan_list_unreadable" });
+    expect(report.overall).not.toBe("PASS");
+  });
+
+  test("the journal check reads only this run (journalctl --since the moment the unit was created)", async () => {
+    const before = Math.floor(Date.now() / 1000);
+    const { report, fake } = await smoke();
+    expect(status(report).journal_clean).toBe("PASS");
+    const journal = fake.calls.find(argv => argv[0] === "journalctl")!;
+    const since = journal[journal.indexOf("--since") + 1]!;
+    expect(since).toMatch(/^@\d+$/);
+    expect(Number(since.slice(1))).toBeGreaterThanOrEqual(before);
   });
 
   test("without the proof, a Claude VM runs the base smoke only and sends no prompt", async () => {

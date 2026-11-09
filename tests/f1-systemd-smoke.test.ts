@@ -189,3 +189,50 @@ test("F1-D smoke: precondition order is bun, then msb — a good project-local r
   expect(await outcome(bad, "/nonexistent")).toBe("service_bun_unavailable");  // exists but is not the pinned runtime
   expect(await outcome(good, "/nonexistent")).toBe("service_msb_unavailable"); // runtime found through tools/runtime, msb is what is missing
 });
+
+test("F2-M3: a VM reserved only in the INSTALLED service's env file is refused too (read-only), and an unreadable file fails closed", async () => {
+  const isolated = await bareRoot(join(work, "root-reserved"), "none");
+  const config = join(work, "xdg-config"); // stands in for ~/.config: never the real one
+  const envDir = join(config, "engineering-cockpit");
+  await mkdir(envDir, { recursive: true, mode: 0o700 });
+  const envFile = join(envDir, "cockpit.env");
+  const cases: Array<[string, string]> = [
+    ["# installed by service install\nPORT=8787\nCOCKPIT_RESERVED_VMS=codex-demo,claude-other\n", "smoke_vm_reserved"],
+    ["PORT=8787\nnot a line\n", "service_env_unreadable"],
+    ["COCKPIT_LOCAL_TOKEN=secret\n", "service_env_unreadable"],
+  ];
+  for (const [text, code] of cases) {
+    await writeFile(envFile, text, { mode: 0o600 });
+    const before = readFileSync(envFile, "utf8");
+    const xdg = await runtimeDir(); currentXdg = xdg;
+    const fake = manager();
+    const report = await runSystemdSmoke({ env: baseEnv(xdg, { XDG_CONFIG_HOME: config }), run: fake.run, proc: noProc, root: isolated });
+    expect(`${report.overall} ${report.checks[0]!.reason}`).toBe(`NOT_VERIFIED ${code}`);
+    expect(await readdir(xdg)).toEqual([]); // nothing created
+    expect(fake.calls.filter(argv => !argv.includes("show-environment"))).toEqual([]);
+    expect(readFileSync(envFile, "utf8")).toBe(before); // read, never written
+  }
+});
+
+test("F2-M3: the installed reserved list (plus the shell's) is passed on to the smoke Cockpit, which then refuses those VMs as well", async () => {
+  const isolated = await bareRoot(join(work, "root-reserved-pass"), "none");
+  const config = join(work, "xdg-config-pass");
+  await mkdir(join(config, "engineering-cockpit"), { recursive: true, mode: 0o700 });
+  await writeFile(join(config, "engineering-cockpit", "cockpit.env"), "COCKPIT_RESERVED_VMS=claude-daily\n", { mode: 0o600 });
+  const xdg = await runtimeDir(); currentXdg = xdg;
+  const fake = manager();
+  let smokeEnv = "";
+  const run: Runner = async argv => {
+    if (argv.includes("daemon-reload") && !smokeEnv) {
+      const unit = join(xdg, "systemd/user", SMOKE_UNIT);
+      const file = existsSync(unit) ? /^EnvironmentFile=-?(.+)$/m.exec(readFileSync(unit, "utf8"))?.[1] : undefined;
+      if (file && existsSync(file)) smokeEnv = readFileSync(file, "utf8");
+    }
+    return fake.run(argv);
+  };
+  const report = await runSystemdSmoke({ env: baseEnv(xdg, { XDG_CONFIG_HOME: config, COCKPIT_RESERVED_VMS: "codex-other" }), run, proc: noProc, root: isolated,
+    timeoutsMs: { start: 300, restart: 100, settle: 10 } });
+  expect(report.checks[0]).toMatchObject({ id: "preconditions", status: "PASS" });
+  expect(smokeEnv).toMatch(/^COCKPIT_RESERVED_VMS=codex-other,claude-daily$/m);
+  expect(existsSync(join(xdg, "systemd/user", SMOKE_UNIT))).toBe(false); // cleaned up (the stand-in Cockpit never answers)
+});
