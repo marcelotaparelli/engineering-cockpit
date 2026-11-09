@@ -2,6 +2,10 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { SafeError, safeCode, vmIdentity } from "./model.ts";
+import { reservedVms } from "./config.ts";
+import { classifyChild } from "./process-ledger.ts";
+import { blockersOf, CLAUDE_PROOF_PROMPT, code as closedCode, countRuns, hasEnoughPartial, judgeBlockedSend, judgePartialPreserved, judgeReconcileAfterRelease,
+  judgeReconcileWhileOwnerAlive, parseOrphans, parseReconcile, readRunTranscript, type ProofProvider, type RunTranscript, type Verdict } from "./f2-proof.ts";
 import { defaultRunner, isLink, newToken, portBusy, renderEnvFile, renderUnit, repoRoot, SAFE_PATH, servicePath, type Runner } from "./service.ts";
 
 /**
@@ -16,23 +20,31 @@ import { defaultRunner, isLink, newToken, portBusy, renderEnvFile, renderUnit, r
  * port, data directory and generated credential under .cache/. It never reads or writes ~/.config/engineering-cockpit, the
  * installed service, the operator's data/ or credentials, and never stops another Cockpit. The only processes it ever signals
  * are those inside its own unit's cgroup. Everything it created is removed at the end, PASS or FAIL.
+ *
+ * F2: the VM may be a Claude VM (`claude-<project>`) as well as a Codex VM. The base checks are the same (for Claude, `msb exec`
+ * is the read-only `claude --version` / `--help` / `auth status` probe the Cockpit runs on connect). With the opt-in proof the
+ * crash happens while one real turn is in flight, and the proof also checks, per provider: partial output preserved (Claude),
+ * orphan listed, new send refused without creating a run, a conservative reconcile that opens no `msb exec` child, and the
+ * release once the surviving process ended. The verdicts live in `src/f2-proof.ts`.
  */
 export const SMOKE_UNIT = "engineering-cockpit-f1-smoke.service";
 export const SMOKE_CHECK_IDS = ["preconditions", "unit_loaded", "start", "no_new_privileges", "credential_file", "msb_list", "msb_exec",
   "crash_restart", "orphan_ledger", "msb_exec_after_restart", "orderly_stop", "refused_start_not_restarted", "journal_clean", "cleanup"] as const;
 /**
- * F1-P1 proof (opt-in, quota): the crash happens while a REAL turn is in flight, so a real `msb exec` child can survive it and the
- * orphan ledger is exercised for real under systemd. Needs COCKPIT_SMOKE_ORPHAN_PROOF=yes AND COCKPIT_SMOKE_QUOTA_CONFIRMED=yes.
+ * Proof mode (opt-in, quota): the crash happens while a REAL turn is in flight, so a real `msb exec` child can survive it and the
+ * orphan ledger, the send block and the reconcile are exercised for real under systemd. Needs COCKPIT_SMOKE_ORPHAN_PROOF=yes AND
+ * COCKPIT_SMOKE_QUOTA_CONFIRMED=yes. One list per provider: Claude also checks that the streamed partial answer survives the kill.
  */
-export const SMOKE_PROOF_CHECK_IDS = ["orphan_turn_started", "run_unknown_after_crash", "orphan_blocks_send", "orphan_released"] as const;
+export const SMOKE_PROOF_CHECK_IDS = ["orphan_turn_started", "run_unknown_after_crash", "orphan_blocks_send", "reconcile_conservative", "orphan_released", "reconcile_after_release"] as const;
+export const SMOKE_CLAUDE_PROOF_CHECK_IDS = ["orphan_turn_started", "partial_preserved", "run_unknown_after_crash", "orphan_blocks_send", "reconcile_conservative", "orphan_released", "reconcile_after_release"] as const;
 /** The only prompt the proof sends (one turn, no tools): long enough to outlive the SIGKILL, small enough to cost little quota. */
 export const PROOF_PROMPT = "Teste automatizado F1-P1, sem usar ferramentas: escreva 300 linhas numeradas, cada uma com uma frase curta sobre o mar.";
 /** Sent only to PROVE it is refused while an orphan is alive; if it were accepted, it is as harmless as a prompt can be. */
 export const PROOF_PROBE_PROMPT = "Responda apenas: ok.";
-type CheckId = typeof SMOKE_CHECK_IDS[number] | typeof SMOKE_PROOF_CHECK_IDS[number];
+type CheckId = typeof SMOKE_CHECK_IDS[number] | typeof SMOKE_PROOF_CHECK_IDS[number] | typeof SMOKE_CLAUDE_PROOF_CHECK_IDS[number];
 type Status = "PASS" | "FAIL" | "NOT_VERIFIED";
 export interface SmokeCheck { id: CheckId; status: Status; reason: string | null; evidence?: Record<string, unknown> }
-export interface SmokeReport { milestone: "F1-D-systemd-smoke"; timestamp: string; overall: Status; unit: string; vm: string | null; checks: SmokeCheck[] }
+export interface SmokeReport { milestone: "F1-D-systemd-smoke"; timestamp: string; overall: Status; unit: string; vm: string | null; provider: ProofProvider | null; checks: SmokeCheck[] }
 
 export interface SmokeOptions {
   env?: Record<string, string | undefined>;
@@ -44,7 +56,12 @@ export interface SmokeOptions {
   /** Reads /proc and cgroup files; injectable for tests. */
   proc?: { mainNoNewPrivs(pid: number): boolean | null; cgroupPids(controlGroup: string): number[]; isMsb(pid: number): boolean; alive(pid: number): boolean;
     /** True only if the process is, right now, a member of exactly this cgroup (cgroup v2 `0::<path>`). */
-    inGroup(pid: number, controlGroup: string): boolean };
+    inGroup(pid: number, controlGroup: string): boolean;
+    /**
+     * The process's argv (`/proc/<pid>/cmdline`), or null when unreadable. Tells `msb exec` children apart from `msb list`. The real
+     * reader always provides it; a stand-in that omits it keeps the F1 behaviour (every `msb` process in the cgroup counts).
+     */
+    argv?(pid: number): string[] | null };
 }
 
 const realProc: NonNullable<SmokeOptions["proc"]> = {
@@ -58,6 +75,7 @@ const realProc: NonNullable<SmokeOptions["proc"]> = {
     catch { return false; }
   },
   alive: pid => existsSync(`/proc/${pid}`),
+  argv: pid => { try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(part => part !== ""); } catch { return null; } },
   inGroup: (pid, group) => {
     if (!group) return false;
     try { return readFileSync(`/proc/${pid}/cgroup`, "utf8").split("\n").some(line => line === `0::${group}`); } catch { return false; }
@@ -80,10 +98,14 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
   const proc = options.proc ?? realProc;
   const timeouts = options.timeoutsMs ?? { start: 20_000, restart: 30_000, settle: 8_000 };
   const proof = env.COCKPIT_SMOKE_ORPHAN_PROOF === "yes";
-  const report: SmokeReport = { milestone: "F1-D-systemd-smoke", timestamp: new Date().toISOString(), overall: "FAIL", unit: SMOKE_UNIT, vm: null,
-    checks: [...SMOKE_CHECK_IDS, ...(proof ? SMOKE_PROOF_CHECK_IDS : [])].map(id => ({ id, status: "NOT_VERIFIED", reason: "not_exercised" })) };
+  // The provider follows the VM name (`claude-…` or `codex-…`); the preconditions below refuse anything else before anything is created.
+  const provider: ProofProvider = (env.COCKPIT_SMOKE_VM ?? "").startsWith("claude-") ? "claude" : "codex";
+  const report: SmokeReport = { milestone: "F1-D-systemd-smoke", timestamp: new Date().toISOString(), overall: "FAIL", unit: SMOKE_UNIT, vm: null, provider: null,
+    checks: [...SMOKE_CHECK_IDS, ...(proof ? (provider === "claude" ? SMOKE_CLAUDE_PROOF_CHECK_IDS : SMOKE_PROOF_CHECK_IDS) : [])].map(id => ({ id, status: "NOT_VERIFIED", reason: "not_exercised" })) };
   const set = (id: CheckId, status: Status, reason: string | null = null, evidence?: Record<string, unknown>) =>
     Object.assign(report.checks.find(check => check.id === id)!, { status, reason, ...(evidence ? { evidence } : {}) });
+  /** Records a verdict WITHOUT aborting: each real run spends quota, so one failed check must not hide what the others show. */
+  const record = (id: CheckId, verdict: Verdict) => set(id, verdict.status, verdict.reason, verdict.evidence);
   const systemctl = (...args: string[]) => run(["systemctl", "--user", ...args]);
   const show = async (...props: string[]) => {
     const out = await systemctl("show", SMOKE_UNIT, `--property=${props.join(",")}`);
@@ -103,9 +125,12 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     if (proof && env.COCKPIT_SMOKE_QUOTA_CONFIRMED !== "yes") throw new SafeError("quota_confirmation_required");
     vm = env.COCKPIT_SMOKE_VM ?? "";
     const identity = (() => { try { return vmIdentity(vm); } catch { throw new SafeError("smoke_vm_invalid"); } })();
-    if (identity.provider !== "codex") throw new SafeError("smoke_vm_must_be_codex");
+    if (identity.provider !== "codex" && identity.provider !== "claude") throw new SafeError("smoke_vm_must_be_codex_or_claude");
+    // The Cockpit would refuse these VMs anyway (and a real prompt must never reach the development VM): refuse before creating anything.
+    if (reservedVms(env.COCKPIT_RESERVED_VMS).includes(vm)) throw new SafeError("smoke_vm_reserved");
     project = identity.project;
     report.vm = vm;
+    report.provider = identity.provider;
     if (!env.COCKPIT_PROJECTS_BASE?.startsWith("/") || !SAFE_PATH.test(env.COCKPIT_PROJECTS_BASE)) throw new SafeError("host_projects_base_required");
     runtimeDir = env.XDG_RUNTIME_DIR ?? "";
     if (!runtimeDir.startsWith("/") || !SAFE_PATH.test(runtimeDir)) throw new SafeError("xdg_runtime_dir_required");
@@ -183,6 +208,13 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     const threads = async () => { const r = await client.get(`api/vms/${encodeURIComponent(vm)}/threads`); return { status: r.status, code: (r.body as { error?: { code?: string } }).error?.code ?? null }; };
     const controlGroup = async () => { const group = (await show("ControlGroup")).ControlGroup ?? ""; if (group.endsWith(`/${SMOKE_UNIT}`)) unitGroup = group; return group; };
     const remember = async () => { const group = await controlGroup(); for (const pid of proc.cgroupPids(group)) if (proc.isMsb(pid)) ours.add(pid); };
+    /** Only `msb exec --stream <vm> -- <codex|claude> …` children count (what the Cockpit's ledger tracks); `msb list` and the like do not. */
+    const isExecChild = (pid: number) => {
+      if (!proc.argv) return true;
+      const argv = proc.argv(pid);
+      return argv !== null && argv.length > 0 && classifyChild([basename(argv[0]!), ...argv.slice(1)]) !== null;
+    };
+    const execChildren = () => proc.cgroupPids(unitGroup).filter(pid => proc.isMsb(pid) && isExecChild(pid));
 
     // ---------------------------------------------------------------- start under systemd
     current = "start";
@@ -212,26 +244,44 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
     const listed = await threads();
     if (listed.status !== 200) throw new SafeError(`threads_${listed.code ?? listed.status}`);
     await remember();
-    set("msb_exec", "PASS", null, { route: "GET /api/vms/:vm/threads (initialize + thread/list, read-only)", msb_children_in_unit: ours.size });
+    set("msb_exec", "PASS", null, { route: provider === "claude" ? "GET /api/vms/:vm/threads (claude --version, --help, auth status via msb exec, read-only)" : "GET /api/vms/:vm/threads (initialize + thread/list, read-only)", msb_children_in_unit: ours.size });
 
-    // ---------------------------------------------------------------- F1-P1 (opt-in): a real turn is in flight when the Cockpit is killed
+    // ---------------------------------------------------------------- proof (opt-in): a real turn is in flight when the Cockpit is killed
+    const enc = encodeURIComponent;
     let proofSession = ""; let proofRun = "";
+    let partialBefore: RunTranscript | null = null; // Claude: the partial answer the Cockpit had persisted, read while the run was live
     if (proof) {
       current = "orphan_turn_started";
       const created = await client.post("api/sessions", { vm_name: vm, mode: "new" });
       proofSession = (created.body as { session_id?: string }).session_id ?? "";
       if (created.status !== 201 || !proofSession) throw new SafeError(`proof_session_${(created.body as { error?: { code?: string } }).error?.code ?? created.status}`);
-      const sent = await client.post(`api/sessions/${encodeURIComponent(proofSession)}/runs`, { prompt: PROOF_PROMPT }, { "Idempotency-Key": `f1p1-${randomBytes(12).toString("hex")}` });
+      const sent = await client.post(`api/sessions/${enc(proofSession)}/runs`, { prompt: provider === "claude" ? CLAUDE_PROOF_PROMPT : PROOF_PROMPT }, { "Idempotency-Key": `f1p1-${randomBytes(12).toString("hex")}` });
       proofRun = (sent.body as { run_id?: string }).run_id ?? "";
       if (sent.status !== 202 || !proofRun) throw new SafeError(`proof_run_${(sent.body as { error?: { code?: string } }).error?.code ?? sent.status}`);
+      const readRun = async () => (await client.get(`api/runs/${enc(proofRun)}`)).body as { status?: string; provider_bound?: boolean };
+      const inFlight = (status: string) => status === "running" || status === "awaiting_approval";
       let runStatus = "";
-      for (const end = Date.now() + timeouts.start; Date.now() < end && runStatus !== "running" && runStatus !== "awaiting_approval"; await Bun.sleep(300)) {
-        runStatus = ((await client.get(`api/runs/${encodeURIComponent(proofRun)}`)).body as { status?: string }).status ?? "";
+      for (const end = Date.now() + timeouts.start; Date.now() < end && !inFlight(runStatus); await Bun.sleep(300)) {
+        runStatus = (await readRun()).status ?? "";
         if (["completed", "failed", "interrupted", "unknown"].includes(runStatus)) break;
       }
-      if (runStatus !== "running" && runStatus !== "awaiting_approval") throw new SafeError(`proof_turn_not_in_flight_${runStatus || "no_status"}`);
+      if (!inFlight(runStatus)) throw new SafeError(`proof_turn_not_in_flight_${runStatus || "no_status"}`);
+      if (provider === "claude") {
+        // The kill must land on a turn that already streamed text the Cockpit persisted (it flushes at most once a second): wait for it,
+        // bounded, remember what the history shows, and kill at once. If the model never streams enough, the turn is still killed and
+        // `partial_preserved` is reported NOT_VERIFIED rather than guessed.
+        for (const end = Date.now() + timeouts.start; Date.now() < end; await Bun.sleep(300)) {
+          const read = await readRunTranscript(client, proofSession, proofRun);
+          if (hasEnoughPartial(read)) { partialBefore = read; break; }
+          if (!inFlight((await readRun()).status ?? "")) break;
+        }
+        runStatus = (await readRun()).status ?? "";
+        if (!inFlight(runStatus)) throw new SafeError(`proof_turn_not_in_flight_${runStatus || "no_status"}`);
+      }
       await remember();
-      set("orphan_turn_started", "PASS", null, { run_status: runStatus, msb_children_in_unit: ours.size, note: "one real prompt was sent to the smoke VM; it is the operator's quota spend" });
+      set("orphan_turn_started", "PASS", null, { run_status: runStatus, provider, provider_bound: (await readRun()).provider_bound === true, msb_children_in_unit: ours.size,
+        ...(provider === "claude" ? { partial_text_persisted_before_kill: partialBefore !== null } : {}),
+        note: "one real prompt was sent to the smoke VM; it is the operator's quota spend" });
     }
 
     // ---------------------------------------------------------------- crash → systemd restart → orphan ledger
@@ -248,40 +298,69 @@ export async function runSystemdSmoke(options: SmokeOptions = {}): Promise<Smoke
 
     current = "orphan_ledger";
     const group = await controlGroup();
-    const survivors = proc.cgroupPids(group).filter(pid => String(pid) !== after.MainPID && proc.isMsb(pid));
+    // Only `msb exec` children are what the ledger tracks (and so what can be an orphan); a transient `msb list` is neither.
+    const survivors = proc.cgroupPids(group).filter(pid => String(pid) !== after.MainPID && proc.isMsb(pid) && isExecChild(pid));
     for (const pid of survivors) ours.add(pid);
     if (await client.login() !== 200) throw new SafeError("login_after_restart_failed"); // sessions are revoked by a restart
-    const attention = ((await client.get("api/dashboard")).body as { attention: Array<{ kind: string; pid?: number }> }).attention;
-    const listedOrphans = new Set(attention.filter(item => item.kind === "orphan_process").map(item => item.pid));
+    const orphans = parseOrphans((await client.get("api/dashboard")).body) ?? [];
+    const listedOrphans = new Set(orphans.map(item => item.pid));
     const missing = survivors.filter(pid => !listedOrphans.has(pid));
     if (missing.length) throw new SafeError("orphan_not_in_ledger");
+    let blockers: ReturnType<typeof blockersOf> = [];
     if (proof) {
       current = "run_unknown_after_crash";
-      const after = ((await client.get(`api/runs/${encodeURIComponent(proofRun)}`)).body as { status?: string }).status ?? "";
-      if (after !== "unknown") throw new SafeError(`run_not_unknown_${after || "no_status"}`);
-      set("run_unknown_after_crash", "PASS", null, { status: "unknown", note: "the in-flight run was not promoted to a result without evidence" });
-      if (survivors.length > 0) {
-        current = "orphan_blocks_send";
-        const blocked = await client.post(`api/sessions/${encodeURIComponent(proofSession)}/runs`, { prompt: PROOF_PROBE_PROMPT }, { "Idempotency-Key": `f1p1-${randomBytes(12).toString("hex")}` });
-        const code = (blocked.body as { error?: { code?: string } }).error?.code ?? null;
-        if (blocked.status !== 409 || code !== "orphan_process_alive") throw new SafeError(`send_not_blocked_${blocked.status}_${code ?? "no_code"}`);
-        set("orphan_blocks_send", "PASS", null, { status: 409, error_code: "orphan_process_alive" });
-      } else set("orphan_blocks_send", "NOT_VERIFIED", "no_surviving_msb_child");
-    }
-    // Only our own unit's leftovers, now that the ledger was checked: the operator protocol (check, then kill) on a smoke child.
-    await terminate(survivors, proc, unitGroup);
-    if (proof && survivors.length > 0) {
-      current = "orphan_released";
-      let still = survivors.length;
-      for (const end = Date.now() + 10_000; Date.now() < end && still > 0; await Bun.sleep(300)) {
-        const items = ((await client.get("api/dashboard")).body as { attention: Array<{ kind: string; pid?: number }> }).attention;
-        still = items.filter(item => item.kind === "orphan_process" && survivors.includes(item.pid as number)).length;
+      const runNow = (await client.get(`api/runs/${enc(proofRun)}`)).body as { status?: string; reason_code?: string | null };
+      if ((runNow.status ?? "") !== "unknown") throw new SafeError(`run_not_unknown_${runNow.status || "no_status"}`);
+      set("run_unknown_after_crash", "PASS", null, { status: "unknown", reason_code: closedCode(runNow.reason_code), note: "the in-flight run was not promoted to a result without evidence" });
+
+      if (provider === "claude") {
+        current = "partial_preserved";
+        if (!partialBefore) set("partial_preserved", "NOT_VERIFIED", "no_partial_text_before_kill", { note: "the model had not streamed enough persisted text when the Cockpit was killed" });
+        else record("partial_preserved", judgePartialPreserved(partialBefore, await readRunTranscript(client, proofSession, proofRun)));
       }
-      if (still > 0) throw new SafeError("orphan_still_listed_after_end");
-      set("orphan_released", "PASS", null, { note: "the orphan left 'Precisa de você' by itself once the process ended" });
-    } else if (proof) set("orphan_released", "NOT_VERIFIED", "no_surviving_msb_child");
+
+      blockers = blockersOf(orphans, provider, vm, proofSession, survivors);
+      const noBlocker = survivors.length ? "no_blocking_orphan_for_proof_session" : "no_surviving_msb_child";
+      current = "orphan_blocks_send";
+      if (blockers.length > 0) {
+        const blocked = await client.post(`api/sessions/${enc(proofSession)}/runs`, { prompt: PROOF_PROBE_PROMPT }, { "Idempotency-Key": `f1p1-${randomBytes(12).toString("hex")}` });
+        record("orphan_blocks_send", judgeBlockedSend(blocked, countRuns((await client.get(`api/sessions/${enc(proofSession)}`)).body)));
+      } else set("orphan_blocks_send", "NOT_VERIFIED", noBlocker);
+
+      // A reconcile while the surviving process may still own the turn must be conservative AND open nothing beside it. Claude's
+      // answer does not depend on the orphan (a restart always loses the process), so it is checked even without a survivor; Codex's
+      // (`orphan_owns_turn`) exists only because of one.
+      current = "reconcile_conservative";
+      if (provider === "codex" && blockers.length === 0) set("reconcile_conservative", "NOT_VERIFIED", noBlocker);
+      else {
+        const before = new Set(execChildren());
+        const view = parseReconcile(await client.post(`api/runs/${enc(proofRun)}/reconcile`, {}));
+        const spawned = execChildren().filter(pid => !before.has(pid));
+        for (const pid of spawned) ours.add(pid); // inside our cgroup: the final cleanup ends them with the rest
+        record("reconcile_conservative", judgeReconcileWhileOwnerAlive(provider, view, spawned.length));
+      }
+    }
+    // Only our own unit's leftovers, and only now that the ledger, the block and the reconcile were checked: the operator protocol
+    // (check, then end) applied to a smoke child. `terminate` signals a PID only while it is a member of THIS unit's cgroup.
+    await terminate(survivors, proc, unitGroup);
+    if (proof) {
+      current = "orphan_released";
+      if (survivors.length > 0) {
+        let still = survivors.length;
+        for (const end = Date.now() + 10_000; Date.now() < end && still > 0; await Bun.sleep(300)) {
+          still = (parseOrphans((await client.get("api/dashboard")).body) ?? []).filter(item => survivors.includes(item.pid)).length;
+        }
+        if (still > 0) throw new SafeError("orphan_still_listed_after_end");
+        set("orphan_released", "PASS", null, { note: "the orphan left 'Precisa de você' by itself once the process ended" });
+      } else set("orphan_released", "NOT_VERIFIED", "no_surviving_msb_child");
+      // Asked after the end of the process: Claude must still not resolve it; Codex's real answer is observed (open L4 / P3 question).
+      current = "reconcile_after_release";
+      record("reconcile_after_release", judgeReconcileAfterRelease(provider, parseReconcile(await client.post(`api/runs/${enc(proofRun)}/reconcile`, {})), survivors.length > 0));
+    }
     if (survivors.length === 0) set("orphan_ledger", "NOT_VERIFIED", "no_surviving_msb_child", { note: "msb exec ended together with the killed Cockpit: the ledger could not be exercised under systemd" });
-    else set("orphan_ledger", "PASS", null, { surviving_msb_children: survivors.length, listed_as_orphans: survivors.length, note: "survivors were listed (blocking) and then ended by the smoke" });
+    else set("orphan_ledger", "PASS", null, { surviving_msb_children: survivors.length, listed_as_orphans: survivors.length,
+      kinds: Object.fromEntries([...new Set(orphans.filter(item => survivors.includes(item.pid)).map(item => item.kind))].map(kind => [kind, orphans.filter(item => survivors.includes(item.pid) && item.kind === kind).length])),
+      note: "survivors were listed (blocking) and then ended by the smoke" });
 
     current = "msb_exec_after_restart";
     const again = await threads();

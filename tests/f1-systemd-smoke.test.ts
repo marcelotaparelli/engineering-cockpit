@@ -45,7 +45,13 @@ test("F1-D smoke: preconditions refuse with NOT_VERIFIED (exit 2) and create not
   const isolated = await bareRoot(join(work, "root-isolated"), "none"); // never the real checkout: its tools/runtime (Arch) must not change the outcome
   const cases: Array<[Record<string, string>, string, boolean?]> = [
     [{ COCKPIT_F1_SMOKE_CONFIRMED: "" }, "confirmation_required"],
-    [{ COCKPIT_SMOKE_VM: "claude-demo" }, "smoke_vm_must_be_codex"],
+    [{ COCKPIT_SMOKE_VM: "opencode-demo" }, "smoke_vm_must_be_codex_or_claude"],
+    // F2: a Claude VM is a valid smoke target, but never the development VM nor one the operator reserved (a real prompt could reach it).
+    [{ COCKPIT_SMOKE_VM: "claude-engineering-cockpit" }, "smoke_vm_reserved"],
+    [{ COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_RESERVED_VMS: "claude-demo" }, "smoke_vm_reserved"],
+    [{ COCKPIT_SMOKE_VM: "codex-demo", COCKPIT_RESERVED_VMS: "codex-demo,claude-other" }, "smoke_vm_reserved"],
+    [{ COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_RESERVED_VMS: "not a vm" }, "invalid_reserved_vms"],
+    [{ COCKPIT_SMOKE_VM: "claude-demo", COCKPIT_SMOKE_ORPHAN_PROOF: "yes" }, "quota_confirmation_required"],
     [{ COCKPIT_SMOKE_VM: "demo" }, "smoke_vm_invalid"],
     [{ COCKPIT_PROJECTS_BASE: "relative" }, "host_projects_base_required"],
     [{ XDG_RUNTIME_DIR: "" }, "xdg_runtime_dir_required"],

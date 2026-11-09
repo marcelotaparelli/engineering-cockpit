@@ -1,0 +1,46 @@
+# Mutações do código de produção do M2 (executado automaticamente na VM de desenvolvimento)
+# 2026-11-09T06:19:30Z, Bun 1.4.4. Cada mutação é aplicada, testada e revertida; o esperado é pelo menos 1 FAIL.
+
+## MUT-A: o smoke encerra o órfão ANTES de checar o bloqueio e a reconciliação (ordem)
+(fail) F2-M2 Claude proof, end to end > order and reach of the signals: the block and the reconcile are checked BEFORE the orphan is ended, only the orphan is signalled, a bystander and a tr
+ 0 pass
+ 1 fail
+
+## MUT-B: sobreviventes passam a incluir qualquer msb do cgroup (ignora o argv; um msb list transitório vira órfão)
+(fail) F2-M2 Claude proof, end to end > order and reach of the signals: the block and the reconcile are checked BEFORE the orphan is ended, only the orphan is signalled, a bystander and a tr
+ 0 pass
+ 1 fail
+
+## MUT-C: o veredito do parcial deixa de exigir o prefixo (aceita texto encurtado ou reescrito)
+(fail) F2-M2 Claude proof, end to end > a restarted Cockpit that shortened the partial answer is a FAIL (partial_text_changed_after_restart), and the other checks still run [2188.18ms]
+(fail) F2-M2 Claude proof, end to end > a restarted Cockpit that changed the partial answer is a FAIL (partial_text_changed_after_restart), and the other checks still run [2173.83ms]
+(fail) partial preserved > FAIL when shorter [0.10ms]
+(fail) partial preserved > FAIL when rewritten [0.03ms]
+ 0 pass
+ 4 fail
+
+## MUT-D: a contagem de filhos msb exec abertos pela reconciliação é ignorada
+(fail) F2-M2 Claude proof, end to end > a reconcile that opens an `msb exec` child while the owner lives is a FAIL even if its answer looks right [2199.30ms]
+ 0 pass
+ 1 fail
+
+## MUT-E: o veredito do envio bloqueado ignora o número de runs da sessão
+(fail) F2-M2 Claude proof, end to end > a send refused with 409 that nevertheless created a run is a FAIL [2203.40ms]
+ 0 pass
+ 1 fail
+
+## MUT-F: a pré-condição deixa de recusar VM reservada (inclusive a de desenvolvimento)
+(fail) F1-D smoke: preconditions refuse with NOT_VERIFIED (exit 2) and create nothing [5001.55ms]
+ 7 pass
+ 1 fail
+
+## MUT-G: Claude passa a aceitar run resolvido pela reconciliação após a liberação
+(fail) F2-M2 Claude proof, end to end > a Claude run resolved by a reconcile (without provider evidence) is a FAIL in both phases: D3 is the whole point [2202.17ms]
+(fail) reconcile > after the owner ended > Claude must still not confirm: anything but unknown/provider_cannot_confirm fails, and a resolved run is named as such [0.21ms]
+ 1 pass
+ 2 fail
+
+## restaurado (arquivos idênticos aos de antes das mutações) — esperado 0 fail
+identicos
+ 37 pass
+ 0 fail

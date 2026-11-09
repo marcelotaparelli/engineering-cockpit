@@ -119,9 +119,9 @@ export async function crashWithOrphan() {
 }
 
 /** The real HTTP server over a Cockpit, with a logged-in client (cookie, proof, CSRF and nonce as the browser sends them). */
-export async function serve(store: RuntimeStore, execution: ExecutionService, grants: string[]) {
+export async function serve(store: RuntimeStore, execution: ExecutionService, grants: string[], refresh: () => Promise<Snapshot> = async () => snapshot()) {
   const server = startServer({ source: "mock", port: 0, security: new LocalSecurity(credential, grants), runtime: store, execution, hub: new EventHub(),
-    discovery: { refresh: async () => snapshot() }, log: quiet });
+    discovery: { refresh }, log: quiet });
   cleanups.push(() => { server.stop(true); });
   const base = server.url.toString();
   const origin = base.slice(0, -1);
@@ -130,7 +130,7 @@ export async function serve(store: RuntimeStore, execution: ExecutionService, gr
   const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
   return {
     get: (path: string) => fetch(base + path, { headers: { Cookie: cookie, "X-Session-Proof": auth.proof } }),
-    post: (path: string, body: unknown = {}) => fetch(base + path, { method: "POST", body: JSON.stringify(body), headers: { Cookie: cookie, "X-Session-Proof": auth.proof,
-      "X-CSRF-Token": auth.csrf, "X-Request-Nonce": crypto.randomUUID().replaceAll("-", "") + "xx", Origin: origin, "Content-Type": "application/json" } }),
+    post: (path: string, body: unknown = {}, extra: Record<string, string> = {}) => fetch(base + path, { method: "POST", body: JSON.stringify(body), headers: { Cookie: cookie, "X-Session-Proof": auth.proof,
+      "X-CSRF-Token": auth.csrf, "X-Request-Nonce": crypto.randomUUID().replaceAll("-", "") + "xx", Origin: origin, "Content-Type": "application/json", ...extra } }),
   };
 }
