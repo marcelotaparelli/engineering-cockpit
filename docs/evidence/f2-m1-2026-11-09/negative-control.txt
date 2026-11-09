@@ -1,0 +1,106 @@
+# Controles negativos de tests/f2-orphan-owns-turn.test.ts (executados automaticamente na VM de desenvolvimento, Debian, modo simulado)
+# 2026-11-09T05:49:59Z, Bun 1.4.4
+
+## A. src/execution.ts do develop 4e4bd9d (antes da F2): esperado FAIL no cenário completo e no fail-closed
+bun test v1.4.4 (38afee6c8)
+
+tests/f2-orphan-owns-turn.test.ts:
+132 |     const reconcile = () => fetch(`${base}api/runs/${run.runId}/reconcile`, { method: "POST", body: "{}", headers: { Cookie: cookie, "X-Session-Proof": auth.proof,
+133 |       "X-CSRF-Token": auth.csrf, "X-Request-Nonce": crypto.randomUUID().replaceAll("-", "") + "xx", Origin: origin, "Content-Type": "application/json" } });
+134 | 
+135 |     const refused = await reconcile();
+136 |     expect(refused.status).toBe(200);
+137 |     expect(await refused.json()).toMatchObject({ run_id: run.runId, status: "unknown", reconciliation: { result: "unconfirmed", reason_code: "orphan_owns_turn" } });
+                                       ^
+error: expect(received).toMatchObject(expected)
+
+  {
++   "created_at": "2026-11-09T05:49:59.155Z",
++   "ended_at": null,
++   "execution_count": 1,
++   "lifecycle_version": 5,
++   "metrics": {
++     "cachedInputTokens": null,
++     "durationMs": null,
++     "durationSource": "not_measured",
++     "inputTokens": null,
++     "outputTokens": null,
++     "tokenScope": "not_measured",
++   },
++   "provider_bound": true,
++   "reason_code": "reconciled",
+    "reconciliation": {
+-     "reason_code": "orphan_owns_turn",
+-     "result": "unconfirmed",
++     "reason_code": "reconciled",
++     "result": "confirmed",
+    },
+    "run_id": "run-f3c39f48-bcfe-4867-802c-cca02aa98bdb",
+-   "status": "unknown",
++   "session_id": "ses-4f629914-b121-43ba-ab56-3b18aac18537",
++   "started_at": "2026-11-09T05:49:59.159Z",
++   "status": "running",
+  }
+
+- Expected  - 3
++ Received  + 19
+
+      at <anonymous> (<worktree>/tests/f2-orphan-owns-turn.test.ts:137:34)
+(fail) F2 (L4/D10): reconcile never reattaches a run owned by an orphaned Codex app-server > Cockpit crash with a turn in flight: the restarted Cockpit keeps the run unknown (orphan_owns_turn), spawns nothing, locks nothing; ending the orphan restores the normal path [100.95ms]
+215 |     h.transports[0]!.transport.crash();
+216 |     await until(() => store.getRun(run.runId)!.status, status => status === "unknown");
+217 |     broken.close();
+218 |     const spawned = h.transports.length;
+219 |     const result = await h.execution.reconcile(store.getRun(run.runId)!, session);
+220 |     expect(result.outcome).toEqual({ result: "unconfirmed", reasonCode: "orphan_check_unavailable" });
+                                 ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "reasonCode": "orphan_check_unavailable",
+-   "result": "unconfirmed",
++   "reasonCode": "reconciled",
++   "result": "confirmed",
+  }
+
+- Expected  - 2
++ Received  + 2
+
+      at <anonymous> (<worktree>/tests/f2-orphan-owns-turn.test.ts:220:28)
+(fail) F2 (L4/D10): reconcile never reattaches a run owned by an orphaned Codex app-server > a ledger that cannot be read proves nothing: a Codex reconcile fails closed (orphan_check_unavailable) and contacts no provider, while the dashboard read stays non-fatal [67.54ms]
+
+ 2 pass
+ 2 fail
+ 11 expect() calls
+Ran 4 tests across 1 file. [282.00ms]
+
+## B. primeira versão da correção (check fail-open, antes da revisão independente): esperado FAIL só no fail-closed
+bun test v1.4.4 (38afee6c8)
+
+tests/f2-orphan-owns-turn.test.ts:
+215 |     h.transports[0]!.transport.crash();
+216 |     await until(() => store.getRun(run.runId)!.status, status => status === "unknown");
+217 |     broken.close();
+218 |     const spawned = h.transports.length;
+219 |     const result = await h.execution.reconcile(store.getRun(run.runId)!, session);
+220 |     expect(result.outcome).toEqual({ result: "unconfirmed", reasonCode: "orphan_check_unavailable" });
+                                 ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "reasonCode": "orphan_check_unavailable",
+-   "result": "unconfirmed",
++   "reasonCode": "reconciled",
++   "result": "confirmed",
+  }
+
+- Expected  - 2
++ Received  + 2
+
+      at <anonymous> (<worktree>/tests/f2-orphan-owns-turn.test.ts:220:28)
+(fail) F2 (L4/D10): reconcile never reattaches a run owned by an orphaned Codex app-server > a ledger that cannot be read proves nothing: a Codex reconcile fails closed (orphan_check_unavailable) and contacts no provider, while the dashboard read stays non-fatal [67.75ms]
+
+ 3 pass
+ 1 fail
+ 24 expect() calls
+Ran 4 tests across 1 file. [282.00ms]

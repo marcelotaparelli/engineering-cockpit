@@ -1,0 +1,121 @@
+# Execução anterior (mesma árvore): 367 pass / 1 fail, teste intermitente pré-existente da F1 (frontend 'session badge', ver docs/f2-prova-provider-real.md §5). Trecho da falha:
+14-Expected: "Sessão termina em 4 min (limite de 12 h)"
+15-Received: "Sessão expira em 4 min sem atividade"
+22:(fail) F1: the session badge stays hidden until 5 minutes before expiry and says which limit applies [147.17ms]
+# Execução seguinte, registrada abaixo:
+$ bun --no-env-file ./node_modules/typescript/bin/tsc --noEmit
+bun test v1.4.4 (38afee6c8)
+
+ 368 pass
+ 0 fail
+ 2785 expect() calls
+Ran 368 tests across 39 files. [54.00s]
+{
+  "milestone": "E4-homologation",
+  "source": "host",
+  "timestamp": "2026-11-09T05:52:49.386Z",
+  "overall": "PASS",
+  "reason": null,
+  "checks": [
+    {
+      "id": "runtime",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "platform": "linux"
+      }
+    },
+    {
+      "id": "start",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "runtime_ownership": "exclusive",
+        "mode": "mock"
+      }
+    },
+    {
+      "id": "stream_partial",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "persisted_chars": 52
+      }
+    },
+    {
+      "id": "second_instance_refused",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "exit_code": 78,
+        "first_instance_run": "running"
+      }
+    },
+    {
+      "id": "crash_restart",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "status": "unknown",
+        "reason": "process_restarted"
+      }
+    },
+    {
+      "id": "partial_preserved",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "chars_seen_before_kill": 96,
+        "chars_after_restart": 96,
+        "incomplete": true
+      }
+    },
+    {
+      "id": "no_resend",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "prompts_in_history": 1,
+        "runs_in_session": 1,
+        "retry_replayed": true
+      }
+    },
+    {
+      "id": "reconcile_conservative",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "status": "unknown",
+        "reason": "provider_cannot_confirm"
+      }
+    },
+    {
+      "id": "attention_visible",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "kind": "unknown_run",
+        "reason": "process_restarted"
+      }
+    },
+    {
+      "id": "orderly_shutdown",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "exit_code": 0,
+        "second_signal_logged": false
+      }
+    },
+    {
+      "id": "orphan_ledger",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "orphans_detected": 1,
+        "blocked_while_alive": true,
+        "cleared_after_exit": true
+      }
+    }
+  ]
+}
