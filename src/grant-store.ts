@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { closeSync, lstatSync, openSync } from "node:fs";
+import { closeSync, lstatSync, openSync, type Stats } from "node:fs";
 import { dirname } from "node:path";
 import { SafeError, validProject } from "./model.ts";
 import { assertNoSymlinks } from "./paths.ts";
@@ -46,27 +46,30 @@ export class GrantStore {
       catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") continue; throw new SafeError("grant_store_denied"); }
       if (!side.isFile() || side.nlink !== 1 || (side.mode & 0o077) !== 0 || (uid !== undefined && side.uid !== uid)) throw new SafeError("grant_store_denied");
     }
+    // One stat of the file is both checked and pinned (dev/inode): SQLite must open exactly that file in exactly that directory.
+    const privateFile = (stat: Stats) =>
+      stat.isFile() && stat.nlink === 1 && (stat.mode & 0o077) === 0 && (uid === undefined || stat.uid === uid);
     let created = false;
+    let file: Stats;
     try {
-      const file = lstatSync(path);
-      if (!file.isFile() || file.nlink !== 1 || (file.mode & 0o077) !== 0 || (uid !== undefined && file.uid !== uid)) throw new SafeError("grant_store_denied");
+      try { file = lstatSync(path); }
+      catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw new SafeError("grant_store_denied");
+        closeSync(openSync(path, "wx", 0o600));
+        created = true;
+        file = lstatSync(path); // the file we just created exclusively; checked below like any other
+      }
+      if (!privateFile(file)) throw new SafeError("grant_store_denied");
       // A first start that died between creating the file and writing its schema leaves an empty private file: initialise it
       // (an empty file holds no grant, so nothing is lost or widened) instead of refusing every later start.
       if (file.size === 0) created = true;
-    } catch (error) {
-      if (error instanceof SafeError) throw error;
-      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw new SafeError("grant_store_denied");
-      closeSync(openSync(path, "wx", 0o600));
-      created = true;
-    }
-    const checked = lstatSync(path);
-    const checkedDir = lstatSync(dirname(path));
+    } catch (error) { throw error instanceof SafeError ? error : new SafeError("grant_store_denied"); }
     this.#db = new Database(path, { strict: true });
     try {
-      // The path is resolved again by SQLite: the file and its directory opened must be the very ones checked above.
+      // The path is resolved again by SQLite: the file and directory opened must be the very ones checked above.
       const opened = lstatSync(path);
       const openedDir = lstatSync(dirname(path));
-      if (opened.ino !== checked.ino || opened.dev !== checked.dev || openedDir.ino !== checkedDir.ino || openedDir.dev !== checkedDir.dev) {
+      if (opened.ino !== file.ino || opened.dev !== file.dev || !privateFile(opened) || openedDir.ino !== dir.ino || openedDir.dev !== dir.dev) {
         throw new SafeError("grant_store_denied");
       }
       if (created) {

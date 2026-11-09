@@ -225,3 +225,22 @@ test("store: a planted hot journal / WAL (shared mode, extra link, not a file) i
   await writeFile(path + "-journal", "", { mode: 0o600 });
   expect(() => new GrantStore(path).close()).not.toThrow();
 });
+
+test("store: a swap of the file at ANY point of the open sequence is refused or harmless (never a planted store opened)", async () => {
+  // Independent verification round 4, F1 (reproduced before the fix): the pinned dev/inode came from a stat that had not been
+  // checked, so a store swapped between the checks and the pin was opened. Each lstat of the path is tried as the swap point.
+  const results: Array<{ n: number; outcome: string; swapped: boolean; grants?: string[]; code?: string }> = [];
+  for (let n = 1; n <= 6; n++) {
+    const dir = join(work, `swap-${n}`);
+    await mkdir(dir, { mode: 0o700 });
+    const child = Bun.spawn([process.execPath, "--no-env-file", new URL("./support/grant-store-swap.ts", import.meta.url).pathname, dir, String(n)], { stdout: "pipe", stderr: "pipe" });
+    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    expect(code).toBe(0);
+    results.push(JSON.parse(out.trim().split("\n").at(-1)!));
+  }
+  expect(results.some(result => result.swapped)).toBe(true); // the swap really happened in the sequence
+  for (const result of results) {
+    if (result.outcome === "opened") expect(result.grants).not.toContain("evilproj");
+    else expect(result.code).toBe("grant_store_denied");
+  }
+});

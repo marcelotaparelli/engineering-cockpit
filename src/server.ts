@@ -340,6 +340,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
         }
         if (route === "/api/sessions/:id/history") {
           const session = options.security.authorizeSession(requireRuntime(), principal, param);
+          hold(session.target.projectId); // may contact the provider (Codex): no revoke between authorization and that effect
           const { before, limit } = historyQuery(url.searchParams);
           const page = await requireExecution().history(session, before, limit);
           // Re-checked after the provider wait: a revocation or reservation meanwhile serves nothing.
@@ -436,6 +437,7 @@ export function startServer(options: ServerOptions): Bun.Server<undefined> {
         }
         if (route === "/api/vms/:id/threads") {
           const vm = options.security.authorizeVm(snapshot, principal, param);
+          hold(vm.project); // connects to the VM's provider: no revoke between authorization and that effect
           const execution = requireExecution();
           const target = await execution.revalidate(vm.vm_name, vm.project);
           const threads = await execution.listThreads(target);

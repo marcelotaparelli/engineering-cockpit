@@ -521,7 +521,7 @@ function renderAttention(items) {
     if (item.kind === 'orphan_process') {
       head.append(el('strong', 'Processo órfão de antes de uma queda'), el('span', ago(item.created_at), 'where'));
       li.append(head, el('div', `${item.project || ''} · ${item.vm_name}`, 'where'));
-      if (item.reserved) li.append(el('div', 'Projeto reservado: o Cockpit não abre suas sessões nem seu histórico, mas mostra este processo para você decidir.', 'muted small'));
+      if (item.reserved || item.outside_access) li.append(el('div', `${item.reserved ? 'Projeto reservado' : 'Projeto sem acesso (revogado)'}: o Cockpit não abre suas sessões nem seu histórico, mas mostra este processo para você decidir.`, 'muted small'));
       li.append(el('div', `${ORPHAN_KIND[item.process_kind] || 'Um processo'} (pid ${item.pid}) continua ativo depois que o Cockpit caiu. Ele pode ainda estar executando uma tarefa, sem supervisão e sem como pedir aprovação.`, 'muted small'));
       li.append(el('div', item.blocks === 'vm' ? 'Novos envios para esta VM ficam bloqueados enquanto ele existir.' : item.blocks === 'session' ? 'Novos envios para esta sessão ficam bloqueados enquanto ele existir.' : 'Não bloqueia envios.', 'muted small'));
       li.append(el('div', `O que fazer: confira o resultado na VM; quando for seguro, encerre-o no host com kill ${item.pid}. O Cockpit nunca o encerra sozinho.`, 'muted small'));

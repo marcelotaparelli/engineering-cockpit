@@ -134,3 +134,32 @@ test("3. a lost approval decision no longer leaves the project stuck: the follow
     expect((await h.post("api/projects/alpha/revoke", { confirm: "alpha" })).status).toBe(200);
   } finally { await h.close(); }
 });
+
+test("visibility outside access: only runs that may really still run are reported; processes of revoked projects are never hidden", async () => {
+  const { buildDashboard } = await import("../src/dashboard.ts");
+  const dir = await mkdtemp(join(tmpdir(), "cockpit-outside-"));
+  const runtime = new RuntimeStore(join(dir, "rt", "runtime.sqlite"));
+  try {
+    const at = (s: number) => new Date(Date.UTC(2026, 10, 9, 12, 0, s)).toISOString();
+    const session = (id: string) => runtime.createSession({ sessionId: id, target: { provider: "codex", projectId: "zeta", vmName: "codex-zeta", vmInstanceId: null, discoveryVersion: "v" },
+      providerSessionId: `t-${id}`, createdAt: at(0), lastObservedAt: at(0) });
+    const run = (sessionId: string, id: string, s: number, end: "unknown" | "completed", reason = "transport_lost") => {
+      const r = runtime.beginRun({ runId: id, sessionId, idempotencyKey: `key-${id}-000000000`, requestDigest: "a".repeat(64), createdAt: at(s) }).run;
+      runtime.transition(r.runId, 1, "dispatching", at(s));
+      if (end === "unknown") runtime.transition(r.runId, 2, "unknown", at(s), { reasonCode: reason });
+      else { runtime.transition(r.runId, 2, "running", at(s)); runtime.transition(r.runId, 3, "completed", at(s)); }
+    };
+    session("s-old"); run("s-old", "r-old-unknown", 1, "unknown"); run("s-old", "r-new-done", 2, "completed"); // superseded
+    session("s-stop"); run("s-stop", "r-vm-stopped", 3, "unknown", "vm_stopped");                         // VM verified stopped
+    session("s-live"); run("s-live", "r-maybe-live", 4, "unknown");                                          // may still run
+    const security = new LocalSecurity("a".repeat(64), ["alpha"]);
+    const login = security.login("a".repeat(64));
+    const principal = security.authenticate(`cockpit_session=${login.cookie}`, login.proof);
+    const execution = { orphanProcesses: () => [{ pid: 777, kind: "codex_app_server", vmName: "codex-zeta", providerSessionId: "t-s-live", since: at(5), detectedAt: at(6) }],
+      approvalView: () => null, blockedRequests: () => [], supports: () => true, unsupportedReason: () => null, capabilities: () => null, reliability: () => null } as never;
+    const view = buildDashboard({ store: runtime, execution, principal, security, snapshot: null, discoveryError: null, source: "mock" }) as { attention: Array<Record<string, unknown>> };
+    const outside = view.attention.filter(item => item.kind === "run_outside_access");
+    expect(outside).toEqual([expect.objectContaining({ project: "zeta", vm_name: "codex-zeta", runs: 1, reserved: false })]);
+    expect(view.attention).toContainEqual(expect.objectContaining({ kind: "orphan_process", pid: 777, project: "zeta", outside_access: true, session_id: null }));
+  } finally { runtime.close(); await rm(dir, { recursive: true, force: true }); }
+});

@@ -101,19 +101,24 @@ export function buildDashboard(input: {
     try { project = vmIdentity(orphan.vmName).project; } catch { continue; }
     // A process left alive in a RESERVED project stays visible (PID, VM): the Cockpit never ends processes on its own, so the
     // operator must be able to see it. Nothing of the project itself (session, history) is exposed.
+    // Revoked projects too: a process is never hidden (the Cockpit does not end it), only the project's content is.
     const reserved = input.security.grants.reserved(project);
-    if (!reserved && !input.security.allows(principal, project)) continue;
-    const session = reserved ? null : orphan.providerSessionId ? sessions.find(item => item.target.vmName === orphan.vmName && item.providerSessionId === orphan.providerSessionId) ?? null : null;
+    const accessible = input.security.allows(principal, project);
+    const session = !accessible ? null : orphan.providerSessionId ? sessions.find(item => item.target.vmName === orphan.vmName && item.providerSessionId === orphan.providerSessionId) ?? null : null;
     attention.push({ kind: "orphan_process", vm_name: orphan.vmName, project, provider: vmProvider(orphan.vmName), process_kind: orphan.kind, pid: orphan.pid,
-      session_id: session?.sessionId ?? null, reserved, blocks: orphan.kind === "codex_app_server" ? "vm" : orphan.kind === "claude_session" ? "session" : "nothing",
+      session_id: session?.sessionId ?? null, reserved, outside_access: !accessible, blocks: orphan.kind === "codex_app_server" ? "vm" : orphan.kind === "claude_session" ? "session" : "nothing",
       created_at: orphan.detectedAt, since: orphan.since });
   }
   // Work that may still be running in a project the operator can no longer open (revoked from the page, or reserved): never
   // hidden. Content-free (project, VM, how many, since when); re-authorizing (when not reserved) restores the runs themselves.
+  // Only what may really still run: the LATEST run of each session (a newer one means the older turn is over), not a run whose
+  // VM was verified stopped; scan bounded to the most recent candidates.
   const outside = new Map<string, { project: string; vm_name: string; runs: number; since: string }>();
-  for (const run of input.store.runsWithStatus([...ACTIVE_RUN_STATUSES, "unknown"])) {
+  const candidates = input.store.runsWithStatus([...ACTIVE_RUN_STATUSES, "unknown"]).filter(run => run.reasonCode !== "vm_stopped").slice(-500);
+  for (const run of candidates) {
     const owner = input.store.getSession(run.sessionId);
     if (!owner || input.security.allows(principal, owner.target.projectId)) continue;
+    if (input.store.listRuns(run.sessionId, 1)[0]?.runId !== run.runId) continue;
     const key = `${owner.target.projectId}\u0000${owner.target.vmName}`;
     const entry = outside.get(key) ?? { project: owner.target.projectId, vm_name: owner.target.vmName, runs: 0, since: run.createdAt };
     entry.runs++;
