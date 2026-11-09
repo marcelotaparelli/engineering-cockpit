@@ -1,0 +1,169 @@
+{
+  "milestone": "F1-D-systemd-smoke",
+  "timestamp": "2026-11-09T08:26:04.650Z",
+  "overall": "NOT_VERIFIED",
+  "unit": "engineering-cockpit-f1-smoke.service",
+  "vm": "codex-cockpit-e0-test",
+  "provider": "codex",
+  "checks": [
+    {
+      "id": "preconditions",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "vm": "codex-cockpit-e0-test",
+        "port": 25120,
+        "leftover_cleaned": false
+      }
+    },
+    {
+      "id": "unit_loaded",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "no_new_privileges": "yes",
+        "kill_mode": "process",
+        "restart": "on-failure",
+        "prevent": "78"
+      }
+    },
+    {
+      "id": "start",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "active": "active"
+      }
+    },
+    {
+      "id": "no_new_privileges",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "proc_status_NoNewPrivs": 1
+      }
+    },
+    {
+      "id": "credential_file",
+      "status": "PASS",
+      "reason": null
+    },
+    {
+      "id": "msb_list",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "vm_state": "running"
+      }
+    },
+    {
+      "id": "msb_exec",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "route": "GET /api/vms/:vm/threads (initialize + thread/list, read-only)",
+        "msb_children_in_unit": 1
+      }
+    },
+    {
+      "id": "crash_restart",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "restarts": 1
+      }
+    },
+    {
+      "id": "orphan_ledger",
+      "status": "NOT_VERIFIED",
+      "reason": "no_surviving_msb_child",
+      "evidence": {
+        "note": "msb exec ended together with the killed Cockpit: the ledger could not be exercised under systemd"
+      }
+    },
+    {
+      "id": "msb_exec_after_restart",
+      "status": "PASS",
+      "reason": null
+    },
+    {
+      "id": "orderly_stop",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "exit_status": 0,
+        "children_ended": 1
+      }
+    },
+    {
+      "id": "refused_start_not_restarted",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "exit_status": 78,
+        "state": "failed",
+        "automatic_restarts": 0
+      }
+    },
+    {
+      "id": "journal_clean",
+      "status": "PASS",
+      "reason": null
+    },
+    {
+      "id": "cleanup",
+      "status": "PASS",
+      "reason": null
+    },
+    {
+      "id": "orphan_turn_started",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "run_status": "running",
+        "provider": "codex",
+        "provider_bound": true,
+        "msb_children_in_unit": 1,
+        "note": "one real prompt was sent to the smoke VM; it is the operator's quota spend"
+      }
+    },
+    {
+      "id": "run_unknown_after_crash",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "status": "unknown",
+        "reason_code": "process_restarted",
+        "note": "the in-flight run was not promoted to a result without evidence"
+      }
+    },
+    {
+      "id": "orphan_blocks_send",
+      "status": "NOT_VERIFIED",
+      "reason": "no_surviving_msb_child"
+    },
+    {
+      "id": "reconcile_conservative",
+      "status": "NOT_VERIFIED",
+      "reason": "no_surviving_msb_child"
+    },
+    {
+      "id": "orphan_released",
+      "status": "NOT_VERIFIED",
+      "reason": "no_surviving_msb_child"
+    },
+    {
+      "id": "reconcile_after_release",
+      "status": "PASS",
+      "reason": null,
+      "evidence": {
+        "http": 200,
+        "run_status": "interrupted",
+        "result": "confirmed",
+        "reason_code": "reconciled",
+        "error_code": null,
+        "orphan_existed": false
+      }
+    }
+  ]
+}

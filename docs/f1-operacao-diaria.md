@@ -17,7 +17,7 @@
 | Testes `local-security`, `server`, `frontend`, unit file gerado | sim, mais o teste de processo do serviço | `tests/f1-*.test.ts`, `tests/local-security.test.ts`, `tests/frontend.test.ts` |
 | Revisão independente da política de sessão (Codex) | **não**: houve revisão independente por outro agente (Claude), §4. A do Codex continua pendente | — |
 | Smoke real do systemd (F1-D) | **executado no Arch, atestado**: 11 PASS, `orphan_ledger` NOT_VERIFIED, overall NOT_VERIFIED (exit 2); aceito excepcionalmente pelo Tech Lead para integração | [evidência](evidence/f1-systemd-smoke-arch.md) |
-| Recuperação de órfãos reais sob o systemd (**F1-P1**) | **pendente, risco residual aberto**: nenhum filho `msb` sobreviveu à queda no smoke. Teste controlado definido na evidência; coincide com o drill manual da F2 | [evidência](evidence/f1-systemd-smoke-arch.md) §Pendência |
+| Recuperação de órfãos reais sob o systemd (**F1-P1**) | **executada na F2-M3 (2026-11-09), resultado NOT_VERIFIED; risco residual aberto e aceito pelo Tech Lead**: com um turno real em voo (Claude e Codex), nenhum filho `msb exec` sobreviveu ao SIGKILL. Não foi repetida, por decisão do Tech Lead. Isso não prova que órfãos sejam impossíveis sob o systemd | [evidência](evidence/f1-systemd-smoke-arch.md) §Pendência; [Codex](evidence/f2-codex-orphan-arch.md), [Claude](evidence/e4-claude-real-arch.md) |
 | Aceite no Arch: um dia de uso real sem terminal | **pendente** (operador) | §6 |
 
 **Fora do escopo, não feito:** F2 (L4/L8), F3 (CI), F4 (tiles, "ciente"), persistência de sessões HTTP entre reinícios (o ADR-0002 mantém a revogação no restart), novas telas e novas métricas.

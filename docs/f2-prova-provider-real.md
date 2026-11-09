@@ -1,7 +1,7 @@
 # F2 — Prova com provider real
 
 **Branch:** `feat/f2-real-provider-proof`, a partir do `develop` `4e4bd9d`. **Escopo:** §7 do [master plan v2](master-plan.md), lacunas **L4** e **L8**, mais a prova estruturada com provider real que a L1 deixou para a F2 e o critério V1 §8.3.
-**Estado (2026-11-09):** marcos **F2-M1 e F2-M2 implementados e verificados nesta VM** (Debian, modo simulado, sem prompt real). A **F2-M3** (§8) está **preparada**: o escopo foi confirmado, os achados da revisão pré-execução foram corrigidos e o procedimento do Arch foi refeito. Nada da F2 foi executado no Arch. O drill com Claude real (L8) e a prova Codex (F1-P1) **não foram executados** e dependem da autorização e da execução do operador (§8.3).
+**Estado (2026-11-09):** **F2 tecnicamente concluída** (§9), com CONDITIONAL GO do Tech Lead para o fechamento técnico. F2-M1 e F2-M2 foram verificados nesta VM, com simuladores. Na **F2-M3**, o operador executou no Arch (`de29ef9`) as provas reais com Claude e Codex. Os dois relatórios saíram `overall: NOT_VERIFIED`: a queda, a parcial, o `unknown` e o não reenvio foram comprovados, mas **nenhum** filho `msb exec` sobreviveu, e o caminho de órfão real **não foi verificado**. A P3 e a P2 continuam abertas.
 
 ## 1. Escopo real (master plan §7 F2, sem acréscimos)
 
@@ -34,7 +34,7 @@ Esforço previsto no plano: 1–2 dias mais 30 min do operador, com quota mínim
 | --- | --- | --- | --- | --- |
 | **F2-M1** | L4/D10: `reconcile` devolve `unconfirmed`/`orphan_owns_turn` enquanto houver app-server Codex órfão vivo na VM. Não abre conexão ao lado do órfão, não reata, não trava o projeto. Texto na interface, runbook e E4 §2/§10 | Resolve um beco sem saída real do uso diário sem gastar quota nem depender do Arch. É pré-requisito para a prova Codex do M2 conferir a reconciliação | executor, nesta VM | **feito** (este documento, §4) |
 | F2-M2 | Runner do drill, estendendo a prova F1-P1 em vez de criar outro: (a) a checagem `reconcile_orphan_owns_turn` na prova Codex; (b) um modo Claude na mesma unit isolada: 1 prompt longo sem ferramentas na VM Claude **de teste**, SIGKILL, restart, depois confere parcial preservada e incompleta, run `unknown`, órfão `claude_session` listado, envio na mesma sessão recusado (409), reconciliação `provider_cannot_confirm`, e liberação após o fim do órfão. Mesmo contrato do smoke: confirmação por efeito, 0/1/2, limpeza em Ctrl+C, nunca contra o serviço de uso diário. Testes herméticos com `msb` e Claude simulados | Transforma os 30 min manuais do operador em um comando. O risco (gasto de quota, sinal em processos) já foi resolvido e revisado no F1-P1, e é reutilizado | executor, nesta VM | **feito, hermético** (§5): falta a execução no Arch |
-| F2-M3 | Execução no Arch pelo operador (um comando por provider, 1 prompt cada), registro em `docs/evidence/e4-claude-real-arch.md` e `docs/evidence/f2-codex-orphan-arch.md` separando executado de atestado. Atualização do master plan §5/§6/§14 em commit próprio | Só faz sentido com o runner pronto e revisado. Depende do operador e de quota | operador + executor | **preparada** (§8): falta a execução no Arch |
+| F2-M3 | Execução no Arch pelo operador (um comando por provider, 1 prompt cada), registro em `docs/evidence/e4-claude-real-arch.md` e `docs/evidence/f2-codex-orphan-arch.md` separando executado de atestado. Atualização do master plan §5/§6/§14 em commit próprio | Só faz sentido com o runner pronto e revisado. Depende do operador e de quota | operador + executor | **executada** (§8, §9): `NOT_VERIFIED` nos dois providers, risco aceito |
 
 A F1-P1 (órfãos reais sob o systemd) coincide com a metade Codex do M3 e pode ser fechada na mesma execução, como a própria evidência da F1 previa.
 
@@ -188,10 +188,10 @@ Feita por outro agente (Claude), em modo só leitura, sem receber as conclusões
 ## 7. Perguntas para o Tech Lead
 
 - **P1 (respondida).** O modo Claude roda na **mesma** unit isolada do smoke F1-D: o Tech Lead pediu para reutilizar o smoke isolado existente. É o caminho já revisado, e também prova o Claude sob `NoNewPrivileges`.
-- **P2.** A L1 pede "prova estruturada com provider real" de aprovação e `AskUserQuestion`. O §7 só detalha o drill de queda. Incluir no M2 um passo opcional com uma aprovação real e uma pergunta real (mais 1–2 prompts) ou deixar a L1 como atestado? Recomendação: deixar fora do M2 e decidir no M3, porque aumenta o gasto de quota e exige um humano clicando.
-- **P3.** Depois de um reinício, um turno Codex lido como `running` por uma conexão que não o iniciou deve ser reatado (comportamento do E0, mantido) ou ficar `unknown` (`turn_owner_gone`) até o turno terminar? Recomendação: decidir com a evidência do M3, que registra o que o Codex real devolve para um turno cujo dono morreu. Sem essa observação, qualquer escolha é palpite.
+- **P2.** A L1 pede "prova estruturada com provider real" de aprovação e `AskUserQuestion`. O §7 só detalha o drill de queda. Incluir no M2 um passo opcional com uma aprovação real e uma pergunta real (mais 1–2 prompts) ou deixar a L1 como atestado? Recomendação: deixar fora do M2 e decidir no M3, porque aumenta o gasto de quota e exige um humano clicando. **Estado após a M3:** não incluída; a L1 continua como atestado (master plan §6). **Aberta**, não bloqueia a F2.
+- **P3.** Depois de um reinício, um turno Codex lido como `running` por uma conexão que não o iniciou deve ser reatado (comportamento do E0, mantido) ou ficar `unknown` (`turn_owner_gone`) até o turno terminar? Recomendação: decidir com a evidência do M3, que registra o que o Codex real devolve para um turno cujo dono morreu. Sem essa observação, qualquer escolha é palpite. **Estado após a M3: aberta.** No Arch, o dono (o `msb exec` do host) morreu junto com o Cockpit, e o Codex real relatou o turno como **`interrupted`** (`reconcile_after_release` PASS, [`f2-codex-orphan-arch.md`](evidence/f2-codex-orphan-arch.md)). O caso da pergunta, um turno ainda lido `running` depois da morte do dono, **não ocorreu**. Não há base para decidir; o comportamento do E0 (reatar) segue vigente, e o caso fica fixado como RESIDUAL nos testes.
 
-## 8. F2-M3 — preparação da homologação real (feita nesta VM; execução no Arch pendente)
+## 8. F2-M3 — preparação da homologação real (executada no Arch; resultado na §9)
 
 ### 8.1 Escopo confirmado (master plan §7 F2 e §8.3, sem acréscimos)
 
@@ -309,3 +309,41 @@ Veja [`docs/evidence/f2-m3-2026-11-09/`](evidence/f2-m3-2026-11-09/).
 4. depois: registros em `docs/evidence/`, master plan §5/§6/§14 em commit próprio e decisão P3.
 
 **Próxima ação mínima:** o operador roda no Arch os passos 0–2 da §8.3 (sem quota). Se os portões passarem e houver autorização, roda os passos 3 e 4 no mesmo terminal. Nada precisa ser colado: o executor lê `$OUT` pelo checkout compartilhado e gera os registros.
+
+## 9. F2-M3 — resultado da execução real e fechamento técnico
+
+**Executado pelo operador no Arch em 2026-11-09, commit `de29ef9`.** Os arquivos brutos estão em [`evidence/f2-m3-arch-2026-11-09/`](evidence/f2-m3-arch-2026-11-09/), cópia byte a byte com `SHA256SUMS`. Registros: [`e4-claude-real-arch.md`](evidence/e4-claude-real-arch.md) e [`f2-codex-orphan-arch.md`](evidence/f2-codex-orphan-arch.md).
+
+| Passo | Resultado (lido dos arquivos) |
+| --- | --- |
+| 0. commit | `de29ef92adca…` gravado em `commit` |
+| 1. local | typecheck limpo, 455/0, drill E4 PASS, `artifact` PASS |
+| 2. smoke base Claude / Codex | todas PASS, exceto `orphan_ledger` NOT_VERIFIED `no_surviving_msb_child`, `exit=2`: o portão esperado da §8.4 |
+| 3. prova Claude | `NOT_VERIFIED`. PASS: `orphan_turn_started`, `partial_preserved` (209 → 209 caracteres, incompleta, prompt 1×), `run_unknown_after_crash`, `reconcile_conservative` (`provider_cannot_confirm`, 0 filho novo), `reconcile_after_release`. NOT_VERIFIED `no_surviving_msb_child`: `orphan_ledger`, `orphan_blocks_send`, `orphan_released` |
+| 4. prova Codex | `NOT_VERIFIED`. PASS: `orphan_turn_started`, `run_unknown_after_crash`, `reconcile_after_release` (o Codex relatou `interrupted`, confirmado pelo provider). NOT_VERIFIED `no_surviving_msb_child`: `orphan_ledger`, `orphan_blocks_send`, `reconcile_conservative`, `orphan_released` |
+| porta 8787 | `active`, `MainPID=66227`, `NRestarts=0` antes (07:57) e depois (08:26) |
+| atestado, sem arquivo | código de saída 2 dos passos 3 e 4 (os `.exit` não foram gravados; coerente com `NOT_VERIFIED`); VMs ociosas; execução única |
+
+Pela §8.4, o resultado cai na linha "checagens de órfão NOT_VERIFIED `no_surviving_msb_child`": CONDITIONAL GO, registrar como achado e não repetir. O Tech Lead decidiu exatamente isso.
+
+### Critérios de aceite da F2 (master plan §7)
+
+| Critério | Estado | Bloqueia a integração? |
+| --- | --- | --- |
+| L4/D10: `reconcile` recusa reatar com órfão Codex vivo na VM (`orphan_owns_turn`), mantendo `unknown` | **cumprido em teste** (processo real no `/proc`, HTTP real, controles negativos); **não verificado** com Codex real, porque não houve órfão | não: risco aceito |
+| L8: drill registrado com Claude real (`kill -9`, restart) | **cumprido** (executado, registrado) | — |
+| L8: parcial preservada | **comprovado** no Arch | — |
+| L8: órfão listado, envio bloqueado, `kill <pid>` libera | **não verificado** (nenhum órfão; coberto pelo drill E4 com processos reais e agentes simulados) | não: risco aceito pelo Tech Lead |
+| Arquivos previstos: `src/execution.ts`, testes, `docs/e4-confiabilidade.md`, `docs/evidence/e4-claude-real-arch.md` | **cumprido** (os testes do M1 ficaram num arquivo próprio, §4) | — |
+| Master plan §5/§6/§14 em commit próprio | **cumprido** (`bead513`, versão 2.0.2) | — |
+| P2 (aprovação/`AskUserQuestion` reais), P3 (turno `running` de dono morto) | **abertas** | não: decisões futuras do Tech Lead |
+
+**Requisito ainda não atendido fora da F2:** o critério **V1 §8.3** ("órfãos visíveis e bloqueando" com Claude e Codex reais) não foi demonstrado com órfão real. Ele é critério da **V1**, não da F2. O Tech Lead precisa decidir, antes de declarar a V1, se o aceita como risco ou como "não ocorreu sob o systemd". Não bloqueia a integração da F2.
+
+### Riscos residuais aceitos
+
+- O caminho de órfão real (listado, bloqueando, liberado; `orphan_owns_turn` no Codex) só tem prova automatizada, com processo real `sleep` e agentes simulados. Não se afirma que órfãos sejam impossíveis sob o systemd: `KillMode=process` os permite, e a causa do fim do `msb exec` não foi observada.
+- O lado da VM depois da queda (o agente parou ou terminou o turno) não foi observado.
+- P3: se um Codex real algum dia ler `running` um turno de dono morto, a reconciliação reata como no E0 e o run pode ficar sem eventos até o reinício ou a interrupção (§6). A mitigação é só de texto.
+- Intermitências de teste pré-existentes (o badge de sessão, §6, e `brand-visual-check`, §8.5): relevantes para a F3.
+

@@ -60,3 +60,9 @@ O Tech Lead aceitou **excepcionalmente** este resultado `NOT_VERIFIED` como evid
 5. Registrar em `docs/evidence/` o resultado, separando o executado do atestado.
 
 **Por que o smoke não o cobriu:** o `msb exec` do smoke serve só leituras curtas (`thread/list`) e termina junto com o Cockpit. Só um turno em andamento mantém um filho vivo. Isso exige um prompt real (quota mínima, 1–2 prompts), que o smoke deliberadamente não faz. Este teste coincide com o drill manual da **F2** do master plan §7, e pode ser feito junto com ele. O master plan não foi alterado: esta pendência vive aqui e em `docs/f1-operacao-diaria.md`.
+
+## Atualização 2026-11-09: F1-P1 executada na F2-M3
+
+O teste controlado acima foi executado pelo operador no Arch, no commit `de29ef9`, com um turno real em voo em uma VM Codex de teste (`codex-cockpit-e0-test`) e em uma VM Claude de teste (`claude-cockpit-e2-test`). Resultado do próprio smoke: **`NOT_VERIFIED`** nos dois casos. **Nenhum** filho `msb exec` sobreviveu ao SIGKILL do Cockpit, então o órfão real (listado, bloqueando, liberado) continua **não observado**. O que foi comprovado: run `unknown` após a queda, sem reenvio, parcial preservada (Claude), reconciliação conservadora (Claude) e com evidência do provider (Codex: `interrupted`). Registros: [`f2-codex-orphan-arch.md`](f2-codex-orphan-arch.md) e [`e4-claude-real-arch.md`](e4-claude-real-arch.md).
+
+Decisão do Tech Lead (2026-11-09, CONDITIONAL GO para o fechamento técnico da F2): **não repetir** a prova só para produzir um órfão. O risco desta pendência continua **aberto e aceito**. **Não** se afirma que órfãos sejam impossíveis sob o systemd (`KillMode=process` os permite; a causa do fim do `msb exec` não foi observada).
